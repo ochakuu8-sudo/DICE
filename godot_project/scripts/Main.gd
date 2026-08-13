@@ -10,6 +10,15 @@ class BoardView:
 	extends Control
 
 	var main: Control
+	var glow_phase := 0.0
+
+	func _ready() -> void:
+		set_process(true)
+
+	func _process(delta: float) -> void:
+		glow_phase = fmod(glow_phase + delta, TAU)
+		if main != null and main.board_grid == self and (main.state == "player" or main.state == "moving"):
+			queue_redraw()
 
 	func _draw() -> void:
 		if main == null or main.track_cells.is_empty():
@@ -31,6 +40,23 @@ class BoardView:
 			draw_line(a, b, segment_color, width, true)
 			if i % 2 == 0:
 				_draw_arrow(a, b, segment_color)
+		_draw_player_marker()
+
+	# The current-position cell used to be told apart only by a gold fill.
+	# This adds a dedicated token that floats above the cell, so "this is
+	# you" reads as a piece on the board rather than a recolored square.
+	func _draw_player_marker() -> void:
+		var center: Vector2 = main._board_cell_center(main.player_pos)
+		var token: float = main._board_token_size()
+		var lift: Vector2 = center + Vector2(0.0, -token * 0.62)
+		var pulse: float = 0.5 + sin(glow_phase * 2.2) * 0.5
+		var glow_r: float = token * (0.46 + pulse * 0.16)
+		draw_circle(lift, glow_r, Color(0.89, 0.7, 0.33, 0.16 + pulse * 0.12))
+		draw_circle(lift, token * 0.30, Color("#1c130a"))
+		draw_circle(lift, token * 0.27, Color("#f6dfa6"))
+		var blade_a: Vector2 = lift + Vector2(-0.14, 0.14) * token
+		var blade_b: Vector2 = lift + Vector2(0.14, -0.14) * token
+		draw_line(blade_a, blade_b, Color("#3a2a08"), token * 0.055, true)
 
 	func _draw_arrow(a: Vector2, b: Vector2, color: Color) -> void:
 		var dir := b - a
@@ -44,6 +70,198 @@ class BoardView:
 		var right := mid - dir * 7.0 - side * 6.0
 		draw_colored_polygon([tip, left, right], color.lightened(0.12))
 
+# A tiny vector-icon renderer. Cell tokens used to be told apart only by
+# fill color plus a single kanji character; this draws a real glyph per
+# tile/enemy kind so the board reads at a glance instead of by color memory.
+class IconGlyph:
+	extends Control
+
+	var kind := ""
+	var glyph_color := Color.WHITE
+
+	func _draw() -> void:
+		if kind == "" or kind == "empty":
+			return
+		var s: float = min(size.x, size.y)
+		var c: Vector2 = size * 0.5
+		match kind:
+			"slash":
+				_sword(c, s)
+			"guard":
+				_shield(c, s)
+			"fire":
+				_flame(c, s)
+			"heal":
+				_heart(c, s)
+			"bow":
+				_bow(c, s)
+			"trap":
+				_spike(c, s)
+			"warp":
+				_warp(c, s)
+			"shock":
+				_bolt(c, s)
+			"focus":
+				_focus(c, s)
+			"skull":
+				_skull(c, s)
+			"flag_start", "flag_goal":
+				_flag(c, s)
+			"pip_on":
+				draw_circle(c, s * 0.34, glyph_color)
+			"pip_off":
+				draw_arc(c, s * 0.30, 0.0, TAU, 16, glyph_color, s * 0.09, true)
+
+	func _sword(c: Vector2, s: float) -> void:
+		var p1 := c + Vector2(-0.30, 0.30) * s
+		var p2 := c + Vector2(0.30, -0.30) * s
+		draw_line(p1, p2, glyph_color, s * 0.10, true)
+		var dir := (p2 - p1).normalized()
+		var perp := Vector2(-dir.y, dir.x)
+		var guard := p1.lerp(p2, 0.44)
+		draw_line(guard - perp * 0.14 * s, guard + perp * 0.14 * s, glyph_color, s * 0.08, true)
+		draw_circle(p1, s * 0.07, glyph_color)
+
+	func _shield(c: Vector2, s: float) -> void:
+		var pts := [
+			c + Vector2(-0.26, -0.30) * s, c + Vector2(0.26, -0.30) * s,
+			c + Vector2(0.28, 0.02) * s, c + Vector2(0.0, 0.34) * s,
+			c + Vector2(-0.28, 0.02) * s,
+		]
+		draw_colored_polygon(pts, glyph_color)
+
+	func _flame(c: Vector2, s: float) -> void:
+		var pts := [
+			c + Vector2(0.0, -0.36) * s, c + Vector2(0.22, -0.04) * s,
+			c + Vector2(0.15, 0.30) * s, c + Vector2(0.0, 0.38) * s,
+			c + Vector2(-0.15, 0.30) * s, c + Vector2(-0.22, -0.04) * s,
+		]
+		draw_colored_polygon(pts, glyph_color)
+
+	func _heart(c: Vector2, s: float) -> void:
+		var r := s * 0.16
+		draw_circle(c + Vector2(-0.15, -0.10) * s, r, glyph_color)
+		draw_circle(c + Vector2(0.15, -0.10) * s, r, glyph_color)
+		var tri := [c + Vector2(-0.30, -0.02) * s, c + Vector2(0.30, -0.02) * s, c + Vector2(0.0, 0.34) * s]
+		draw_colored_polygon(tri, glyph_color)
+
+	func _bow(c: Vector2, s: float) -> void:
+		var center := c + Vector2(-0.06, 0.0) * s
+		var radius := s * 0.32
+		draw_arc(center, radius, -1.2, 1.2, 16, glyph_color, s * 0.07, true)
+		var top := center + Vector2(cos(-1.2), sin(-1.2)) * radius
+		var bot := center + Vector2(cos(1.2), sin(1.2)) * radius
+		draw_line(top, bot, glyph_color, s * 0.05, true)
+		var arrow_end := c + Vector2(0.32, 0.0) * s
+		draw_line(c + Vector2(-0.06, 0.0) * s, arrow_end, glyph_color, s * 0.05, true)
+		var head := [arrow_end, arrow_end + Vector2(-0.11, -0.09) * s, arrow_end + Vector2(-0.11, 0.09) * s]
+		draw_colored_polygon(head, glyph_color)
+
+	func _spike(c: Vector2, s: float) -> void:
+		var pts := []
+		var spikes := 6
+		for i in range(spikes * 2):
+			var ang := i * PI / spikes
+			var r := (0.34 if i % 2 == 0 else 0.13) * s
+			pts.append(c + Vector2(cos(ang), sin(ang)) * r)
+		draw_colored_polygon(pts, glyph_color)
+
+	func _warp(c: Vector2, s: float) -> void:
+		var radius := s * 0.28
+		var end_ang := deg_to_rad(250.0)
+		draw_arc(c, radius, deg_to_rad(-40.0), end_ang, 20, glyph_color, s * 0.08, true)
+		var end_pt := c + Vector2(cos(end_ang), sin(end_ang)) * radius
+		var tangent := Vector2(-sin(end_ang), cos(end_ang))
+		var head := [end_pt + tangent * 0.15 * s, end_pt + Vector2(cos(end_ang), sin(end_ang)) * 0.13 * s, end_pt - tangent * 0.15 * s]
+		draw_colored_polygon(head, glyph_color)
+
+	func _bolt(c: Vector2, s: float) -> void:
+		var pts := [
+			c + Vector2(0.06, -0.36) * s, c + Vector2(-0.20, 0.04) * s,
+			c + Vector2(-0.02, 0.04) * s, c + Vector2(-0.10, 0.36) * s,
+			c + Vector2(0.22, -0.06) * s, c + Vector2(0.02, -0.06) * s,
+		]
+		draw_colored_polygon(pts, glyph_color)
+
+	func _focus(c: Vector2, s: float) -> void:
+		draw_arc(c, s * 0.30, 0.0, TAU, 24, glyph_color, s * 0.06, true)
+		draw_circle(c, s * 0.11, glyph_color)
+
+	func _skull(c: Vector2, s: float) -> void:
+		draw_circle(c + Vector2(0.0, -0.05) * s, s * 0.30, glyph_color)
+		var eye_col := Color(0.0, 0.0, 0.0, 0.55)
+		draw_circle(c + Vector2(-0.12, -0.08) * s, s * 0.07, eye_col)
+		draw_circle(c + Vector2(0.12, -0.08) * s, s * 0.07, eye_col)
+		draw_rect(Rect2(c + Vector2(-0.11, 0.18) * s, Vector2(0.07, 0.11) * s), glyph_color)
+		draw_rect(Rect2(c + Vector2(0.04, 0.18) * s, Vector2(0.07, 0.11) * s), glyph_color)
+
+	func _flag(c: Vector2, s: float) -> void:
+		var base := c + Vector2(-0.16, 0.32) * s
+		var top := c + Vector2(-0.16, -0.34) * s
+		draw_line(base, top, glyph_color, s * 0.06, true)
+		var flag := [top, top + Vector2(0.34, 0.10) * s, top + Vector2(0.0, 0.20) * s]
+		draw_colored_polygon(flag, glyph_color)
+
+# Segmented gauge bar for HP/shield: a glanceable strip instead of "HP 36/36"
+# as plain text.
+class GaugeBar:
+	extends Control
+
+	var value := 0
+	var max_value := 1
+	var segments := 10
+	var fill_color := Color("#4f9d72")
+	var track_color := Color("#2a3040")
+
+	func _draw() -> void:
+		if segments <= 0 or size.x <= 0.0 or size.y <= 0.0:
+			return
+		var gap := 2.0
+		var seg_w: float = (size.x - gap * float(segments - 1)) / float(segments)
+		var filled := 0
+		if max_value > 0:
+			filled = int(round(float(value) / float(max_value) * float(segments)))
+		filled = clamp(filled, 0, segments)
+		for i in range(segments):
+			var x: float = i * (seg_w + gap)
+			var col := fill_color if i < filled else track_color
+			draw_rect(Rect2(Vector2(x, 0.0), Vector2(seg_w, size.y)), col, true)
+
+# A die face drawn with real pips instead of a "面 1/2/3/4/5/6" text string.
+class DiceFace:
+	extends Control
+
+	var value := 1
+	var dot_color := Color("#14171f")
+	var face_color := Color("#ede7d8")
+
+	func _draw() -> void:
+		draw_rect(Rect2(Vector2.ZERO, size), face_color, true)
+		var dot_r: float = min(size.x, size.y) * 0.09
+		for p in _pip_positions(value):
+			draw_circle(Vector2(p.x * size.x, p.y * size.y), dot_r, dot_color)
+
+	func _pip_positions(v: int) -> Array:
+		var l := 0.24
+		var c := 0.5
+		var r := 0.76
+		var t := 0.24
+		var m := 0.5
+		var b := 0.76
+		match v:
+			1:
+				return [Vector2(c, m)]
+			2:
+				return [Vector2(l, t), Vector2(r, b)]
+			3:
+				return [Vector2(l, t), Vector2(c, m), Vector2(r, b)]
+			4:
+				return [Vector2(l, t), Vector2(r, t), Vector2(l, b), Vector2(r, b)]
+			5:
+				return [Vector2(l, t), Vector2(r, t), Vector2(c, m), Vector2(l, b), Vector2(r, b)]
+			_:
+				return [Vector2(l, t), Vector2(r, t), Vector2(l, m), Vector2(r, m), Vector2(l, b), Vector2(r, b)]
+
 var rng := RandomNumberGenerator.new()
 
 var bg_rect: ColorRect
@@ -51,8 +269,15 @@ var root_box: VBoxContainer
 var header_label: Label
 var instruction_label: Label
 var route_label: Label
+var gauges_box: VBoxContainer
+var hp_bar: GaugeBar
+var hp_value_label: Label
+var shield_bar: GaugeBar
+var shield_value_label: Label
+var action_pip_box: HBoxContainer
 var stats_label: Label
 var enemy_plan_label: Label
+var lookahead_box: HBoxContainer
 var board_grid: BoardView
 var dice_box: HBoxContainer
 var command_box: HBoxContainer
@@ -63,6 +288,9 @@ var restart_button: Button
 var ui_font: Font
 
 var cell_buttons: Array = []
+var cell_icons: Array = []
+var cell_index_labels: Array = []
+var cell_badges: Array = []
 
 var state := "title"
 var hero_key := ""
@@ -205,10 +433,34 @@ func _build_ui() -> void:
 	root_box.add_child(instruction_label)
 	route_label = _make_label(16, Color("#dfe7f3"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(route_label)
-	stats_label = _make_label(16, Color("#d7d2c4"), HORIZONTAL_ALIGNMENT_CENTER)
+
+	gauges_box = VBoxContainer.new()
+	gauges_box.add_theme_constant_override("separation", 4)
+	gauges_box.custom_minimum_size = Vector2(280, 0)
+	gauges_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	root_box.add_child(gauges_box)
+	hp_bar = GaugeBar.new()
+	hp_value_label = Label.new()
+	gauges_box.add_child(_build_gauge_row("HP", Color("#f0b7a7"), Color("#4f9d72"), hp_bar, hp_value_label))
+	shield_bar = GaugeBar.new()
+	shield_bar.fill_color = Color("#4d7fc4")
+	shield_value_label = Label.new()
+	gauges_box.add_child(_build_gauge_row("盾", Color("#8fb6e8"), Color("#4d7fc4"), shield_bar, shield_value_label))
+
+	action_pip_box = HBoxContainer.new()
+	action_pip_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	action_pip_box.add_theme_constant_override("separation", 6)
+	root_box.add_child(action_pip_box)
+
+	stats_label = _make_label(14, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(stats_label)
 	enemy_plan_label = _make_label(14, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(enemy_plan_label)
+
+	lookahead_box = HBoxContainer.new()
+	lookahead_box.alignment = BoxContainer.ALIGNMENT_CENTER
+	lookahead_box.add_theme_constant_override("separation", 5)
+	root_box.add_child(lookahead_box)
 
 	board_grid = BoardView.new()
 	board_grid.main = self
@@ -226,6 +478,36 @@ func _build_ui() -> void:
 		cell.pressed.connect(Callable(self, "_on_cell_pressed").bind(i))
 		board_grid.add_child(cell)
 		cell_buttons.append(cell)
+
+		var icon := IconGlyph.new()
+		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+		cell.add_child(icon)
+		cell_icons.append(icon)
+
+		var index_label := Label.new()
+		index_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		index_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		index_label.position = Vector2(4, 1)
+		_apply_font(index_label)
+		index_label.add_theme_font_size_override("font_size", 9)
+		index_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+		cell.add_child(index_label)
+		cell_index_labels.append(index_label)
+
+		var badge := Label.new()
+		badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		badge.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+		badge.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		badge.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		badge.position = Vector2(-20, -15)
+		_apply_font(badge)
+		badge.add_theme_font_size_override("font_size", 10)
+		badge.add_theme_color_override("font_color", Color("#ffd9cf"))
+		badge.add_theme_constant_override("outline_size", 3)
+		badge.add_theme_color_override("font_outline_color", Color("#5a1710"))
+		cell.add_child(badge)
+		cell_badges.append(badge)
 
 	dice_box = HBoxContainer.new()
 	dice_box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -265,6 +547,25 @@ func _make_label(size: int, color: Color, align: HorizontalAlignment) -> Label:
 	label.add_theme_color_override("font_color", color)
 	return label
 
+func _build_gauge_row(caption: String, caption_color: Color, fill_color: Color, bar: GaugeBar, value_label: Label) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var cap := _make_label(12, caption_color, HORIZONTAL_ALIGNMENT_LEFT)
+	cap.text = caption
+	cap.custom_minimum_size = Vector2(24, 0)
+	row.add_child(cap)
+	bar.fill_color = fill_color
+	bar.custom_minimum_size = Vector2(0, 11)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(bar)
+	_apply_font(value_label)
+	value_label.add_theme_font_size_override("font_size", 12)
+	value_label.add_theme_color_override("font_color", Color("#ede7d8"))
+	value_label.custom_minimum_size = Vector2(54, 0)
+	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	row.add_child(value_label)
+	return row
+
 func _show_title() -> void:
 	state = "title"
 	encounter = 0
@@ -279,6 +580,9 @@ func _show_title() -> void:
 	log_label.text = "戦闘後は毎回、新しいマスを永続ボードへ配置します。進む先のルートを育ててください。"
 	end_turn_button.visible = false
 	restart_button.visible = false
+	gauges_box.visible = false
+	action_pip_box.visible = false
+	lookahead_box.visible = false
 
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
@@ -418,9 +722,31 @@ func _refresh_header() -> void:
 	header_label.text = "%s / 第%d戦%s" % [hero_name, encounter, " ボス" if encounter == MAX_ENCOUNTERS else ""]
 	instruction_label.text = _state_instruction()
 	route_label.text = _route_status_text()
-	stats_label.text = "HP %d/%d   盾 %d   行動 %d/%d   山札 %d   捨札 %d   手札 %d" % [
-		player_hp, player_max_hp, player_shield, actions_left, ACTIONS_PER_TURN, draw_pile.size(), discard_pile.size(), hand.size()
-	]
+	gauges_box.visible = true
+	action_pip_box.visible = true
+
+	hp_bar.value = player_hp
+	hp_bar.max_value = max(player_max_hp, 1)
+	hp_bar.segments = max(player_max_hp, 1)
+	hp_bar.queue_redraw()
+	hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
+
+	var shield_cap: int = max(player_shield, 6)
+	shield_bar.value = player_shield
+	shield_bar.max_value = shield_cap
+	shield_bar.segments = shield_cap
+	shield_bar.queue_redraw()
+	shield_value_label.text = str(player_shield)
+
+	_clear_children(action_pip_box)
+	for i in range(ACTIONS_PER_TURN):
+		var pip := IconGlyph.new()
+		pip.custom_minimum_size = Vector2(14, 14)
+		pip.kind = "pip_on" if i < actions_left else "pip_off"
+		pip.glyph_color = Color("#e3b355") if i < actions_left else Color("#4a5470")
+		action_pip_box.add_child(pip)
+
+	stats_label.text = "山札 %d　捨札 %d　手札 %d" % [draw_pile.size(), discard_pile.size(), hand.size()]
 	enemy_plan_label.text = _enemy_plan_summary()
 
 func _layout_board_buttons() -> void:
@@ -441,14 +767,6 @@ func _board_token_size() -> float:
 		return 46.0
 	var step := _board_spacing()
 	return clamp(step * 0.56, 36.0, 70.0)
-
-func _cell_font_size() -> int:
-	var token_size := _board_token_size()
-	if token_size >= 62.0:
-		return 15
-	if token_size >= 50.0:
-		return 13
-	return 10
 
 func _board_spacing() -> float:
 	if board_grid == null:
@@ -527,56 +845,52 @@ func _refresh_board() -> void:
 		for x in range(BOARD_W):
 			var idx := _idx(x, y)
 			var button: Button = cell_buttons[idx]
+			var icon: IconGlyph = cell_icons[idx]
+			var index_label: Label = cell_index_labels[idx]
+			var badge: Label = cell_badges[idx]
 			var pos := Vector2i(x, y)
 			var perm_type: String = str(permanent_board[y][x])
 			var temp_type: String = str(temp_board[y][x])
 			var color: Color = tile_defs[perm_type]["color"]
+			var icon_kind: String = perm_type if perm_type != "empty" else ""
 			var border_color := Color("#a9a292")
 			var border_width := 1
 			var is_player_cell := pos == player_pos
 			var has_enemy := false
-			var font_size := _cell_font_size()
-			var text_parts := []
 			var track_index := _track_index(pos)
+			var is_start := track_index == 0
+			var is_goal := track_index == track_cells.size() - 1
 
 			if temp_type != "none":
 				color = temp_defs[temp_type]["color"]
-				text_parts.append(temp_defs[temp_type]["short"])
-			if track_index == 0:
-				text_parts.append("始")
-			elif track_index == track_cells.size() - 1:
-				text_parts.append("戻")
-			else:
-				text_parts.append("%02d" % track_index)
-			text_parts.append(str(tile_defs[perm_type]["short"]))
+				icon_kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
+
+			index_label.text = "始" if is_start else ("戻" if is_goal else "%02d" % track_index)
+			if is_start or is_goal:
+				icon_kind = "flag_goal" if is_goal else "flag_start"
+
+			badge.text = ""
 
 			var enemy := _enemy_at(pos)
 			if not enemy.is_empty():
 				has_enemy = true
 				color = Color("#8d2f35")
-				text_parts = ["敵", "HP%d" % int(enemy["hp"])]
+				icon_kind = "skull"
+				badge.text = str(int(enemy["hp"]))
 				border_color = Color("#ffb1a4")
 				border_width = 5
-				font_size += 2
 
 			if is_player_cell:
 				color = Color("#e1b93c")
-				if has_enemy:
-					text_parts = ["現在地", "敵HP%d" % int(enemy["hp"])]
-				else:
-					text_parts = ["現在地", "%02d" % track_index]
 				border_color = Color("#fff2a1")
 				border_width = 6
-				font_size += 2
 			elif route_path.has(pos):
-				text_parts.push_front("通過")
 				border_color = Color("#f5d86a")
 				border_width = 3
 				color = color.lightened(0.14)
 			elif state == "player":
 				var ahead := _steps_ahead(pos)
 				if ahead > 0 and ahead <= 6:
-					text_parts.push_front("+%d" % ahead)
 					border_color = Color("#8fe8ff")
 					border_width = 2
 
@@ -594,11 +908,79 @@ func _refresh_board() -> void:
 			elif state == "title" or state == "reward_select":
 				button.disabled = true
 
-			button.text = "\n".join(text_parts)
+			button.text = ""
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
-			button.add_theme_font_size_override("font_size", font_size)
+			icon.kind = icon_kind
+			icon.glyph_color = Color(1, 1, 1, 0.92)
+			icon.queue_redraw()
 			_apply_cell_button_color(button, color, border_color, border_width, is_player_cell, has_enemy)
 	board_grid.queue_redraw()
+	_refresh_lookahead()
+
+func _refresh_lookahead() -> void:
+	if lookahead_box == null:
+		return
+	_clear_children(lookahead_box)
+	lookahead_box.visible = state == "player"
+	if state != "player":
+		return
+	var shown := 0
+	var step := player_step + 1
+	while shown < 6 and shown < track_cells.size() - 1:
+		var pos := _pos_for_step(step)
+		lookahead_box.add_child(_make_lookahead_chip(pos))
+		step += 1
+		shown += 1
+
+func _make_lookahead_chip(pos: Vector2i) -> Control:
+	var perm_type: String = str(permanent_board[pos.y][pos.x])
+	var temp_type: String = str(temp_board[pos.y][pos.x])
+	var color: Color = tile_defs[perm_type]["color"]
+	var kind: String = perm_type if perm_type != "empty" else ""
+	if temp_type != "none":
+		color = temp_defs[temp_type]["color"]
+		kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
+
+	var wrap := Panel.new()
+	wrap.custom_minimum_size = Vector2(34, 34)
+	var box := StyleBoxFlat.new()
+	box.corner_radius_top_left = 10
+	box.corner_radius_top_right = 10
+	box.corner_radius_bottom_left = 10
+	box.corner_radius_bottom_right = 10
+	box.border_width_left = 1
+	box.border_width_top = 1
+	box.border_width_right = 1
+	box.border_width_bottom = 1
+	box.border_color = Color(1, 1, 1, 0.12)
+
+	var enemy := _enemy_at(pos)
+	if not enemy.is_empty():
+		color = Color("#8d2f35")
+		kind = "skull"
+	box.bg_color = color
+	wrap.add_theme_stylebox_override("panel", box)
+
+	var icon := IconGlyph.new()
+	icon.kind = kind
+	icon.glyph_color = Color(1, 1, 1, 0.92)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(icon)
+
+	if not enemy.is_empty():
+		var hp_tag := Label.new()
+		hp_tag.text = str(int(enemy["hp"]))
+		_apply_font(hp_tag)
+		hp_tag.add_theme_font_size_override("font_size", 9)
+		hp_tag.add_theme_color_override("font_color", Color("#ffd9cf"))
+		hp_tag.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+		hp_tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		hp_tag.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		hp_tag.position = Vector2(-16, -13)
+		wrap.add_child(hp_tag)
+
+	return wrap
 
 func _refresh_dice() -> void:
 	_clear_children(dice_box)
@@ -608,12 +990,46 @@ func _refresh_dice() -> void:
 		var die: Dictionary = hand[i]
 		var b := Button.new()
 		var tag := str(die["tag"])
-		b.text = "%s\n面 %s\n%s" % [die["name"], _faces_to_text(die["faces"]), _tag_name(tag)]
-		b.custom_minimum_size = Vector2(176, 78)
+		var faces: Array = die["faces"]
+		b.text = ""
+		b.custom_minimum_size = Vector2(126, 128)
 		b.disabled = state != "player" or actions_left <= 0
 		b.pressed.connect(Callable(self, "_on_die_pressed").bind(i))
 		_apply_button_color(b, _tag_color(tag))
+
+		var col := VBoxContainer.new()
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.set_anchors_preset(Control.PRESET_FULL_RECT)
+		col.alignment = BoxContainer.ALIGNMENT_CENTER
+		col.add_theme_constant_override("separation", 2)
+		b.add_child(col)
+
+		var face := DiceFace.new()
+		face.value = _die_display_value(faces)
+		face.custom_minimum_size = Vector2(34, 34)
+		face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		col.add_child(face)
+
+		var name_label := _make_label(13, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_CENTER)
+		name_label.text = str(die["name"])
+		col.add_child(name_label)
+
+		var range_label := _make_label(10, Color("#c9c2b2"), HORIZONTAL_ALIGNMENT_CENTER)
+		range_label.text = _faces_to_text(faces)
+		col.add_child(range_label)
+
+		var tag_label := _make_label(10, Color("#f6dfa6"), HORIZONTAL_ALIGNMENT_CENTER)
+		tag_label.text = _tag_name(tag)
+		col.add_child(tag_label)
+
 		dice_box.add_child(b)
+
+func _die_display_value(faces: Array) -> int:
+	if faces.is_empty():
+		return 1
+	var sorted_faces: Array = faces.duplicate()
+	sorted_faces.sort()
+	return int(sorted_faces[int(sorted_faces.size() / 2)])
 
 func _on_die_pressed(index: int) -> void:
 	if state != "player" or index < 0 or index >= hand.size() or actions_left <= 0:
@@ -874,10 +1290,39 @@ func _show_reward() -> void:
 		var reward_type := str(reward["type"])
 		var tile: Dictionary = tile_defs[reward_type]
 		var b := Button.new()
-		b.text = "[%s] %sマス\n%s / %s" % [tile["kind"], tile["name"], tile["pass"], tile["stop"]]
+		b.text = ""
 		b.custom_minimum_size = Vector2(0, 88)
 		b.pressed.connect(Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % tile["name"]))
 		_apply_button_color(b, tile["color"], Color("#f5d86a"), 2)
+
+		var row := HBoxContainer.new()
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.set_anchors_preset(Control.PRESET_FULL_RECT)
+		row.add_theme_constant_override("separation", 12)
+		row.offset_left = 14
+		row.offset_right = -14
+		b.add_child(row)
+
+		var icon := IconGlyph.new()
+		icon.kind = reward_type
+		icon.glyph_color = Color(1, 1, 1, 0.92)
+		icon.custom_minimum_size = Vector2(30, 30)
+		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(icon)
+
+		var col := VBoxContainer.new()
+		col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		col.add_theme_constant_override("separation", 2)
+		row.add_child(col)
+
+		var title_label := _make_label(14, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_LEFT)
+		title_label.text = "[%s] %sマス" % [tile["kind"], tile["name"]]
+		col.add_child(title_label)
+
+		var desc_label := _make_label(11, Color("#e6dfc8"), HORIZONTAL_ALIGNMENT_LEFT)
+		desc_label.text = "%s / %s" % [tile["pass"], tile["stop"]]
+		col.add_child(desc_label)
+
 		reward_box.add_child(b)
 	_refresh_board()
 
