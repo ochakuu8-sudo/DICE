@@ -196,6 +196,7 @@ func _build_ui() -> void:
 
 	root_box = VBoxContainer.new()
 	root_box.add_theme_constant_override("separation", 8)
+	root_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	add_child(root_box)
 
 	header_label = _make_label(26, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_CENTER)
@@ -454,9 +455,13 @@ func _board_spacing() -> float:
 		return 64.0
 	var available := board_grid.size - Vector2(80, 64)
 	var raw_spacing: float = min(available.x / float(BOARD_W - 1), available.y / float(BOARD_H - 1))
-	var max_spacing := 96.0
-	if get_viewport_rect().size.x > get_viewport_rect().size.y:
-		max_spacing = 122.0
+	# Scale the cap with the viewport's smaller side instead of a fixed pixel
+	# value: with canvas_items/expand stretch, a wide desktop window reports a
+	# much larger logical viewport than the portrait design size, so a fixed
+	# cap left the board using only a small fraction of the space it was
+	# actually given.
+	var viewport_size := get_viewport_rect().size
+	var max_spacing: float = min(viewport_size.x, viewport_size.y) * 0.16
 	return clamp(raw_spacing, 50.0, max_spacing)
 
 func _board_origin() -> Vector2:
