@@ -1,0 +1,15 @@
+# Godot generated/editor state
+/.godot/
+godot_project/.godot/*
+!godot_project/.godot/imported/
+godot_project/.godot/imported/*
+!godot_project/.godot/imported/NotoSansJP.ttf-*.fontdata
+!godot_project/.godot/imported/NotoSansJP.ttf-*.md5
+
+# Local exports from the editable Godot project
+godot_project/builds/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
