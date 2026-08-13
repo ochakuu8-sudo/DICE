@@ -5,6 +5,11 @@ const BOARD_H := 5
 const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
 const MAX_ENCOUNTERS := 6
+const CROSS_CENTER := Vector2i(2, 2)
+
+# Fired when the player taps one of the highlighted cells while
+# state == "choosing_branch"; _advance_player() awaits this to resume.
+signal branch_chosen(pos: Vector2i)
 
 class BoardView:
 	extends Control
@@ -17,29 +22,51 @@ class BoardView:
 
 	func _process(delta: float) -> void:
 		glow_phase = fmod(glow_phase + delta, TAU)
-		if main != null and main.board_grid == self and (main.state == "player" or main.state == "moving"):
+		if main != null and main.board_grid == self and (main.state == "player" or main.state == "moving" or main.state == "choosing_branch"):
 			queue_redraw()
 
+	func _edge_key(a: Vector2i, b: Vector2i) -> String:
+		var av := a.x * 100 + a.y
+		var bv := b.x * 100 + b.y
+		if av <= bv:
+			return "%d_%d" % [av, bv]
+		return "%d_%d" % [bv, av]
+
 	func _draw() -> void:
-		if main == null or main.track_cells.is_empty():
+		if main == null or main.track_graph.is_empty():
 			return
 		var line_color := Color("#6e6556")
 		var next_color := Color("#65cfe6")
 		var passed_color := Color("#f5d86a")
-		for i in range(main.track_cells.size() - 1):
-			var a: Vector2 = main._board_cell_center(main.track_cells[i])
-			var b: Vector2 = main._board_cell_center(main.track_cells[i + 1])
-			var segment_color := line_color
-			var width := 10.0
-			if main._segment_is_recent(i):
-				segment_color = passed_color
-				width = 14.0
-			elif main._segment_is_next(i):
-				segment_color = next_color
-				width = 12.0
-			draw_line(a, b, segment_color, width, true)
-			if i % 2 == 0:
-				_draw_arrow(a, b, segment_color)
+		var drawn := {}
+		for a in main.track_graph.keys():
+			for b in main.track_graph[a]:
+				var key: String = _edge_key(a, b)
+				if drawn.has(key):
+					continue
+				drawn[key] = true
+				var pa: Vector2 = main._board_cell_center(a)
+				var pb: Vector2 = main._board_cell_center(b)
+				var segment_color := line_color
+				var width := 10.0
+				if main._segment_is_recent(a, b):
+					segment_color = passed_color
+					width = 14.0
+				elif main._segment_is_next(a, b):
+					segment_color = next_color
+					width = 12.0
+				draw_line(pa, pb, segment_color, width, true)
+		# Small arrows along the ring only, showing its fixed one-way flow.
+		for pos in main.ring_forward.keys():
+			var nxt: Vector2i = main.ring_forward[pos]
+			var pa2: Vector2 = main._board_cell_center(pos)
+			var pb2: Vector2 = main._board_cell_center(nxt)
+			var arrow_color := line_color
+			if main._segment_is_recent(pos, nxt):
+				arrow_color = passed_color
+			elif main._segment_is_next(pos, nxt):
+				arrow_color = next_color
+			_draw_arrow(pa2, pb2, arrow_color)
 		_draw_player_marker()
 
 	# The current-position cell used to be told apart only by a gold fill.
@@ -109,6 +136,10 @@ class IconGlyph:
 				_skull(c, s)
 			"flag_start", "flag_goal":
 				_flag(c, s)
+			"hub":
+				_hub(c, s)
+			"fork":
+				_fork(c, s)
 			"pip_on":
 				draw_circle(c, s * 0.34, glyph_color)
 			"pip_off":
@@ -203,6 +234,22 @@ class IconGlyph:
 		draw_line(base, top, glyph_color, s * 0.06, true)
 		var flag := [top, top + Vector2(0.34, 0.10) * s, top + Vector2(0.0, 0.20) * s]
 		draw_colored_polygon(flag, glyph_color)
+
+	# Crossroads landmark: marks the 4-way hub at the board's center.
+	func _hub(c: Vector2, s: float) -> void:
+		var arm := s * 0.30
+		var w := s * 0.11
+		draw_line(c + Vector2(0.0, -arm), c + Vector2(0.0, arm), glyph_color, w, true)
+		draw_line(c + Vector2(-arm, 0.0), c + Vector2(arm, 0.0), glyph_color, w, true)
+		draw_circle(c, s * 0.08, glyph_color)
+
+	# Marks a branch point in the lookahead ribbon: the preview stops here
+	# because where you go next is a choice, not a certainty.
+	func _fork(c: Vector2, s: float) -> void:
+		var base := c + Vector2(0.0, 0.30) * s
+		draw_line(base, c, glyph_color, s * 0.09, true)
+		draw_line(c, c + Vector2(-0.24, -0.30) * s, glyph_color, s * 0.09, true)
+		draw_line(c, c + Vector2(0.24, -0.30) * s, glyph_color, s * 0.09, true)
 
 # Segmented gauge bar for HP/shield: a glanceable strip instead of "HP 36/36"
 # as plain text.
@@ -326,15 +373,28 @@ var player_hp := 30
 var player_max_hp := 30
 var player_shield := 0
 var player_pos := Vector2i(2, 2)
+var player_prev_pos := Vector2i(-1, -1)
 var player_step := 0
 var actions_left := 0
 var player_visual_pos := Vector2.ZERO
 var player_visual_ready := false
 var player_hop := 0.0
 
+# Board topology: a one-way ring around the perimeter (enemies only ever
+# walk this) plus a cross-shaped shortcut through the middle that only the
+# player can use. ring_forward gives the ring's single next cell; a cell
+# only has a real choice where cross_adjacency adds an extra option.
+var ring_cells: Array[Vector2i] = []
+var ring_index_map: Dictionary = {}
+var ring_forward: Dictionary = {}
+var cross_adjacency: Dictionary = {}
+var track_graph: Dictionary = {}
+var branch_options: Array = []
+var preview_path: Array[Vector2i] = []
+var preview_branch_ahead := false
+
 var permanent_board: Array = []
 var temp_board: Array = []
-var track_cells: Array[Vector2i] = []
 var enemies: Array = []
 var dice_bag: Array = []
 var draw_pile: Array = []
@@ -400,7 +460,7 @@ var hero_defs := {
 			{"name": "集中ダイス", "faces": [2, 2, 3, 3, 4, 4], "tag": "focus"},
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
-		"tiles": [[0, 0, "fire"], [4, 0, "fire"], [0, 4, "shock"], [4, 4, "warp"], [2, 2, "focus"]]
+		"tiles": [[1, 0, "fire"], [4, 0, "fire"], [0, 4, "shock"], [4, 4, "warp"], [2, 2, "focus"]]
 	},
 	"rogue": {
 		"name": "盗賊",
@@ -412,13 +472,13 @@ var hero_defs := {
 			{"name": "幸運ダイス", "faces": [1, 2, 2, 4, 4, 6], "tag": "lucky"},
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"}
 		],
-		"tiles": [[1, 1, "trap"], [3, 1, "trap"], [1, 3, "bow"], [3, 3, "bow"], [2, 2, "warp"]]
+		"tiles": [[1, 0, "trap"], [3, 4, "trap"], [4, 1, "bow"], [0, 3, "bow"], [2, 2, "warp"]]
 	}
 }
 
 func _ready() -> void:
 	rng.randomize()
-	_build_track_cells()
+	_build_track_graph()
 	ui_font = load("res://assets/NotoSansJP.ttf")
 	_build_ui()
 	_fit_layout()
@@ -637,6 +697,7 @@ func _start_run(key: String) -> void:
 	player_shield = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
+	player_prev_pos = Vector2i(-1, -1)
 	_snap_player_visual()
 	encounter = 0
 	permanent_board = _make_empty_board("empty")
@@ -651,6 +712,7 @@ func _start_encounter() -> void:
 	encounter += 1
 	board_grid.visible = true
 	player_pos = _pos_for_step(player_step)
+	player_prev_pos = Vector2i(-1, -1)
 	_snap_player_visual()
 	player_shield = 0
 	actions_left = ACTIONS_PER_TURN
@@ -669,10 +731,12 @@ func _start_encounter() -> void:
 	_start_player_turn("第%d戦開始。先のコースを見て、使うダイスを選んでください。" % encounter)
 
 func _setup_encounter() -> void:
+	# Offsets are step counts along the 16-cell ring (was a 25-cell track),
+	# scaled down to keep encounters feeling the same distance away.
 	if encounter == MAX_ENCOUNTERS:
-		enemies.append(_make_enemy_on_track("ボス", player_step + 8, 32, 7, 1))
-		enemies.append(_make_enemy_on_track("護衛", player_step + 4, 12, 4, 1))
-		enemies.append(_make_enemy_on_track("護衛", player_step + 12, 12, 4, 1))
+		enemies.append(_make_enemy_on_track("ボス", player_step + 5, 32, 7, 1))
+		enemies.append(_make_enemy_on_track("護衛", player_step + 3, 12, 4, 1))
+		enemies.append(_make_enemy_on_track("護衛", player_step + 8, 12, 4, 1))
 		return
 
 	var enemy_count: int = min(2 + int(encounter / 2), 4)
@@ -680,7 +744,7 @@ func _setup_encounter() -> void:
 		var type_name := "敵"
 		var hp := 8 + encounter * 2
 		var damage := 3 + int(encounter / 2)
-		var offset := 3 + i * 3 + rng.randi_range(0, 1)
+		var offset := 2 + i * 2 + rng.randi_range(0, 1)
 		if encounter >= 3 and i == 0:
 			type_name = "射手"
 			hp -= 2
@@ -929,6 +993,8 @@ func _state_instruction() -> String:
 			return "ダイスを選ぶ"
 		"moving":
 			return "出目ぶん前進中"
+		"choosing_branch":
+			return "分岐: 進む方向を選ぶ"
 		"enemy":
 			return "敵の行動中"
 		"reward_select":
@@ -946,8 +1012,10 @@ func _route_status_text() -> String:
 		return "%s の出目 %d / 残り %d歩 / 通過攻撃+%d / 命中 %d回" % [
 			selected_die.get("name", "ダイス"), selected_roll, steps_left, route_power, route_hits
 		]
+	if state == "choosing_branch":
+		return "光っているマスをタップして進む方向を決めてください。残り%d歩。" % steps_left
 	if state == "player":
-		return "コースは一方通行。先にいる敵や効果マスを見て、ちょうどよい出目のダイスを切ります。"
+		return "外周は一方通行。中央の十字路だけ近道できます。先の敵や効果マスを見てダイスを選びましょう。"
 	if state == "reward_select":
 		return "選んだマスは永続ボードに残ります。次の戦闘のルートが変わります。"
 	if state == "reward_place":
@@ -963,6 +1031,7 @@ func _enemy_plan(enemy: Dictionary) -> String:
 	return "逆走接近"
 
 func _refresh_board() -> void:
+	_rebuild_preview_path()
 	_layout_board_buttons()
 	for y in range(BOARD_H):
 		for x in range(BOARD_W):
@@ -972,6 +1041,15 @@ func _refresh_board() -> void:
 			var index_label: Label = cell_index_labels[idx]
 			var badge: Label = cell_badges[idx]
 			var pos := Vector2i(x, y)
+
+			if not track_graph.has(pos):
+				# Off-path cell (the four inner corners): not part of the
+				# ring or the cross, so there's nothing to show or click.
+				button.visible = false
+				button.disabled = true
+				continue
+			button.visible = true
+
 			var perm_type: String = str(permanent_board[y][x])
 			var temp_type: String = str(temp_board[y][x])
 			var color: Color = tile_defs[perm_type]["color"]
@@ -980,17 +1058,26 @@ func _refresh_board() -> void:
 			var border_width := 1
 			var is_player_cell := pos == player_pos
 			var has_enemy := false
-			var track_index := _track_index(pos)
-			var is_start := track_index == 0
-			var is_goal := track_index == track_cells.size() - 1
+			var is_start := pos == _start_pos()
+
+			if _is_junction(pos):
+				border_color = Color("#6fb8c9")
+				border_width = 3
+				if icon_kind == "":
+					icon_kind = "hub"
+					color = color.lightened(0.08)
 
 			if temp_type != "none":
 				color = temp_defs[temp_type]["color"]
 				icon_kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
 
-			index_label.text = "始" if is_start else ("戻" if is_goal else "%02d" % track_index)
-			if is_start or is_goal:
-				icon_kind = "flag_goal" if is_goal else "flag_start"
+			if is_start:
+				index_label.text = "始"
+				icon_kind = "flag_start"
+			elif ring_index_map.has(pos):
+				index_label.text = "%02d" % int(ring_index_map[pos])
+			else:
+				index_label.text = ""
 
 			badge.text = ""
 
@@ -1013,13 +1100,20 @@ func _refresh_board() -> void:
 				color = color.lightened(0.14)
 			elif state == "player":
 				var ahead := _steps_ahead(pos)
-				if ahead > 0 and ahead <= 6:
+				if ahead > 0:
 					border_color = Color("#8fe8ff")
 					border_width = 2
 
 			button.disabled = false
 			if state == "moving":
 				button.disabled = true
+			elif state == "choosing_branch":
+				if branch_options.has(pos):
+					color = color.lightened(0.24)
+					border_color = Color("#65e6ff")
+					border_width = 5
+				else:
+					button.disabled = true
 			elif state == "reward_place":
 				if _can_place_reward(pos):
 					color = color.lightened(0.16)
@@ -1047,19 +1141,19 @@ func _refresh_lookahead() -> void:
 	lookahead_box.visible = state == "player"
 	if state != "player":
 		return
-	var shown := 0
-	var step := player_step + 1
-	while shown < 6 and shown < track_cells.size() - 1:
-		var pos := _pos_for_step(step)
+	for pos in preview_path:
 		lookahead_box.add_child(_make_lookahead_chip(pos))
-		step += 1
-		shown += 1
+	if preview_branch_ahead:
+		lookahead_box.add_child(_make_branch_chip())
 
 func _make_lookahead_chip(pos: Vector2i) -> Control:
 	var perm_type: String = str(permanent_board[pos.y][pos.x])
 	var temp_type: String = str(temp_board[pos.y][pos.x])
 	var color: Color = tile_defs[perm_type]["color"]
 	var kind: String = perm_type if perm_type != "empty" else ""
+	if pos == CROSS_CENTER and kind == "":
+		kind = "hub"
+		color = color.lightened(0.08)
 	if temp_type != "none":
 		color = temp_defs[temp_type]["color"]
 		kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
@@ -1105,6 +1199,32 @@ func _make_lookahead_chip(pos: Vector2i) -> Control:
 		hp_tag.position = Vector2(-18, -15)
 		wrap.add_child(hp_tag)
 
+	return wrap
+
+# Caps the lookahead ribbon when the forced preview runs into a branch:
+# there's no single "next tile" to show, since that's about to be a choice.
+func _make_branch_chip() -> Control:
+	var wrap := Panel.new()
+	wrap.custom_minimum_size = Vector2(34, 34)
+	var box := StyleBoxFlat.new()
+	box.corner_radius_top_left = 10
+	box.corner_radius_top_right = 10
+	box.corner_radius_bottom_left = 10
+	box.corner_radius_bottom_right = 10
+	box.border_width_left = 1
+	box.border_width_top = 1
+	box.border_width_right = 1
+	box.border_width_bottom = 1
+	box.border_color = Color("#65e6ff")
+	box.bg_color = Color("#204652")
+	wrap.add_theme_stylebox_override("panel", box)
+
+	var icon := IconGlyph.new()
+	icon.kind = "fork"
+	icon.glyph_color = Color("#a8ecff")
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	wrap.add_child(icon)
 	return wrap
 
 func _refresh_dice() -> void:
@@ -1224,12 +1344,37 @@ func _on_cell_pressed(index: int) -> void:
 				_start_encounter()
 				log_label.text = "%s を配置しました。次の戦闘へ。" % pending_reward_name
 				_refresh_all()
+	elif state == "choosing_branch":
+		if branch_options.has(pos):
+			branch_chosen.emit(pos)
+
+# Pauses movement at a real fork: highlights the valid next cells and waits
+# for the player to tap one, instead of picking a direction automatically.
+func _prompt_branch_choice(options: Array) -> Vector2i:
+	branch_options = options
+	state = "choosing_branch"
+	log_label.text = "分岐です。進む方向を選んでください。"
+	_refresh_all()
+	var chosen: Vector2i = await branch_chosen
+	branch_options = []
+	state = "moving"
+	return chosen
 
 func _advance_player() -> void:
 	var messages := []
 	while steps_left > 0:
-		player_step = _normalize_step(player_step + 1)
-		player_pos = _pos_for_step(player_step)
+		var options := _forward_options(player_pos, player_prev_pos)
+		var next_pos: Vector2i
+		if options.size() > 1:
+			next_pos = await _prompt_branch_choice(options)
+		elif options.size() == 1:
+			next_pos = options[0]
+		else:
+			break
+		player_prev_pos = player_pos
+		player_pos = next_pos
+		if ring_index_map.has(player_pos):
+			player_step = int(ring_index_map[player_pos])
 		route_path.append(player_pos)
 		steps_left -= 1
 		var pass_message := _resolve_pass_tile(player_pos)
@@ -1560,7 +1705,11 @@ func _can_step_to(pos: Vector2i) -> bool:
 func _can_place_reward(pos: Vector2i) -> bool:
 	if not _inside(pos):
 		return false
+	if not track_graph.has(pos):
+		return false
 	if pos == _start_pos():
+		return false
+	if pos == CROSS_CENTER:
 		return false
 	if temp_board[pos.y][pos.x] == "block":
 		return false
@@ -1603,16 +1752,14 @@ func _enemy_at_excluding(pos: Vector2i, excluded: Dictionary) -> Dictionary:
 
 func _random_empty_cell() -> Vector2i:
 	var choices := []
-	for y in range(BOARD_H):
-		for x in range(BOARD_W):
-			var p := Vector2i(x, y)
-			if p == player_pos:
-				continue
-			if temp_board[y][x] != "none":
-				continue
-			if not _enemy_at(p).is_empty():
-				continue
-			choices.append(p)
+	for p in track_graph.keys():
+		if p == player_pos or p == CROSS_CENTER:
+			continue
+		if temp_board[p.y][p.x] != "none":
+			continue
+		if not _enemy_at(p).is_empty():
+			continue
+		choices.append(p)
 	if choices.is_empty():
 		return Vector2i(-1, -1)
 	return choices[rng.randi_range(0, choices.size() - 1)]
@@ -1709,37 +1856,89 @@ func _make_empty_board(value: String) -> Array:
 		board.append(row)
 	return board
 
-func _build_track_cells() -> void:
-	track_cells = []
-	for y in range(BOARD_H):
-		if y % 2 == 0:
-			for x in range(BOARD_W):
-				track_cells.append(Vector2i(x, y))
-		else:
-			for x in range(BOARD_W - 1, -1, -1):
-				track_cells.append(Vector2i(x, y))
+# Builds the ring (16 perimeter cells, one-way) and the cross-shaped
+# shortcut through the middle (5 cells, player-only). ring_forward is the
+# ring's fixed one-way step; cross_adjacency is the extra, undirected
+# connections that create real choices at the 4 ring/cross junctions and
+# the center hub.
+func _build_track_graph() -> void:
+	ring_cells = [
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
+		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3), Vector2i(4, 4),
+		Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4), Vector2i(0, 4),
+		Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
+	]
+	ring_index_map = {}
+	ring_forward = {}
+	for i in range(ring_cells.size()):
+		ring_index_map[ring_cells[i]] = i
+		ring_forward[ring_cells[i]] = ring_cells[(i + 1) % ring_cells.size()]
+
+	cross_adjacency = {
+		Vector2i(2, 0): [Vector2i(2, 1)],
+		Vector2i(2, 1): [Vector2i(2, 0), CROSS_CENTER],
+		CROSS_CENTER: [Vector2i(2, 1), Vector2i(1, 2), Vector2i(3, 2), Vector2i(2, 3)],
+		Vector2i(2, 3): [CROSS_CENTER, Vector2i(2, 4)],
+		Vector2i(2, 4): [Vector2i(2, 3)],
+		Vector2i(0, 2): [Vector2i(1, 2)],
+		Vector2i(1, 2): [Vector2i(0, 2), CROSS_CENTER],
+		Vector2i(3, 2): [CROSS_CENTER, Vector2i(4, 2)],
+		Vector2i(4, 2): [Vector2i(3, 2)],
+	}
+
+	track_graph = {}
+	for pos in ring_cells:
+		_add_graph_edge(pos, ring_forward[pos])
+	for pos in cross_adjacency.keys():
+		for n in cross_adjacency[pos]:
+			_add_graph_edge(pos, n)
+
+func _add_graph_edge(a: Vector2i, b: Vector2i) -> void:
+	if not track_graph.has(a):
+		track_graph[a] = []
+	if not track_graph.has(b):
+		track_graph[b] = []
+	if not track_graph[a].has(b):
+		track_graph[a].append(b)
+	if not track_graph[b].has(a):
+		track_graph[b].append(a)
+
+# All cells you can move to *from* pos, given you just arrived from prev
+# (so you don't reverse). Ring flow is always forced forward regardless of
+# prev; only the cross side ever offers a real choice — 2 options at a
+# ring/cross junction, 3 at the center hub.
+func _forward_options(pos: Vector2i, prev: Vector2i) -> Array:
+	var options: Array = []
+	if ring_forward.has(pos):
+		options.append(ring_forward[pos])
+	for n in cross_adjacency.get(pos, []):
+		if n != prev:
+			options.append(n)
+	return options
+
+func _is_junction(pos: Vector2i) -> bool:
+	if pos == CROSS_CENTER:
+		return true
+	return ring_forward.has(pos) and cross_adjacency.has(pos)
 
 func _normalize_step(step: int) -> int:
-	if track_cells.is_empty():
+	if ring_cells.is_empty():
 		return 0
-	var size := track_cells.size()
+	var size := ring_cells.size()
 	return ((step % size) + size) % size
 
 func _pos_for_step(step: int) -> Vector2i:
-	if track_cells.is_empty():
+	if ring_cells.is_empty():
 		return Vector2i.ZERO
-	return track_cells[_normalize_step(step)]
+	return ring_cells[_normalize_step(step)]
 
 func _track_index(pos: Vector2i) -> int:
-	for i in range(track_cells.size()):
-		if track_cells[i] == pos:
-			return i
-	return 0
+	return int(ring_index_map.get(pos, 0))
 
 func _forward_distance(from_step: int, to_step: int) -> int:
-	if track_cells.is_empty():
+	if ring_cells.is_empty():
 		return 0
-	var size := track_cells.size()
+	var size := ring_cells.size()
 	return (_normalize_step(to_step) - _normalize_step(from_step) + size) % size
 
 func _track_gap(enemy: Dictionary) -> int:
@@ -1748,28 +1947,56 @@ func _track_gap(enemy: Dictionary) -> int:
 	var backward := _forward_distance(enemy_step, player_step)
 	return min(forward, backward)
 
+# How many steps ahead pos is along the player's currently *forced* path
+# (up to the next branch, if any) — not a raw graph distance, since past a
+# branch "how far" depends on a choice that hasn't been made yet.
 func _steps_ahead(pos: Vector2i) -> int:
-	return _forward_distance(player_step, _track_index(pos))
+	var idx := preview_path.find(pos)
+	if idx == -1:
+		return -1
+	return idx + 1
 
 func _start_pos() -> Vector2i:
-	return Vector2i(int(BOARD_W / 2), int(BOARD_H / 2))
+	if ring_cells.is_empty():
+		return Vector2i.ZERO
+	return ring_cells[0]
 
-func _segment_is_recent(index: int) -> bool:
+# Walks forward from the player along cells with only one forward option,
+# stopping at 6 cells or at the first branch point (whichever comes
+# first). Drives both the lookahead ribbon and the board's "next" glow.
+func _rebuild_preview_path() -> void:
+	preview_path = []
+	preview_branch_ahead = false
+	if state != "player":
+		return
+	var pos := player_pos
+	var prev := player_prev_pos
+	for i in range(6):
+		var options := _forward_options(pos, prev)
+		if options.size() != 1:
+			preview_branch_ahead = options.size() > 1
+			break
+		prev = pos
+		pos = options[0]
+		preview_path.append(pos)
+
+func _segment_is_recent(a: Vector2i, b: Vector2i) -> bool:
 	if route_path.size() < 2:
 		return false
-	var a := track_cells[index]
-	var b := track_cells[index + 1]
 	for i in range(route_path.size() - 1):
-		if route_path[i] == a and route_path[i + 1] == b:
+		if (route_path[i] == a and route_path[i + 1] == b) or (route_path[i] == b and route_path[i + 1] == a):
 			return true
 	return false
 
-func _segment_is_next(index: int) -> bool:
+func _segment_is_next(a: Vector2i, b: Vector2i) -> bool:
 	if state != "player":
 		return false
-	var start := _normalize_step(player_step)
-	for ahead in range(0, 6):
-		if _normalize_step(start + ahead) == index:
+	if not preview_path.is_empty():
+		var first: Vector2i = preview_path[0]
+		if (a == player_pos and b == first) or (b == player_pos and a == first):
+			return true
+	for i in range(preview_path.size() - 1):
+		if (preview_path[i] == a and preview_path[i + 1] == b) or (preview_path[i] == b and preview_path[i + 1] == a):
 			return true
 	return false
 
@@ -1852,8 +2079,17 @@ func _hero_color(key: String) -> Color:
 
 func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> String:
 	var lines := []
+	if ring_index_map.has(pos):
+		lines.append("外周コース%02d" % int(ring_index_map[pos]))
+	elif pos == CROSS_CENTER:
+		lines.append("十字路の中心(4方向に分岐)")
+	elif cross_adjacency.has(pos):
+		lines.append("十字路のショートカット(自分だけが通れる)")
 	var ahead := _steps_ahead(pos)
-	lines.append("コース%d / 現在地から%dマス先" % [_track_index(pos), ahead])
+	if ahead > 0:
+		lines.append("現在地から%dマス先" % ahead)
+	if _is_junction(pos):
+		lines.append("分岐点: 進む方向を選べます")
 	if pos == player_pos:
 		lines.append("自分の現在地")
 	var enemy := _enemy_at(pos)
