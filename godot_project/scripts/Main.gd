@@ -46,9 +46,11 @@ class BoardView:
 	# This adds a dedicated token that floats above the cell, so "this is
 	# you" reads as a piece on the board rather than a recolored square.
 	func _draw_player_marker() -> void:
-		var center: Vector2 = main._board_cell_center(main.player_pos)
+		if not main.player_visual_ready:
+			return
+		var center: Vector2 = main.player_visual_pos
 		var token: float = main._board_token_size()
-		var lift: Vector2 = center + Vector2(0.0, -token * 0.62)
+		var lift: Vector2 = center + Vector2(0.0, -token * 0.62 - main.player_hop)
 		var pulse: float = 0.5 + sin(glow_phase * 2.2) * 0.5
 		var glow_r: float = token * (0.46 + pulse * 0.16)
 		draw_circle(lift, glow_r, Color(0.89, 0.7, 0.33, 0.16 + pulse * 0.12))
@@ -262,6 +264,30 @@ class DiceFace:
 			_:
 				return [Vector2(l, t), Vector2(r, t), Vector2(l, m), Vector2(r, m), Vector2(l, b), Vector2(r, b)]
 
+# A short expanding ring + radiating spark lines, played once at an enemy's
+# cell when it's defeated. Driving redraws off a single tweened "progress"
+# property keeps the whole effect to one _draw() call.
+class BurstEffect:
+	extends Control
+
+	var center := Vector2.ZERO
+	var token := 40.0
+	var progress: float = 0.0:
+		set(v):
+			progress = v
+			queue_redraw()
+
+	func _draw() -> void:
+		var a: float = 1.0 - progress
+		if a <= 0.0:
+			return
+		var ring_r: float = token * (0.32 + progress * 0.85)
+		draw_arc(center, ring_r, 0.0, TAU, 22, Color(1.0, 0.85, 0.6, a * 0.85), token * 0.10 * (1.0 - progress * 0.6), true)
+		for i in range(6):
+			var ang: float = i * TAU / 6.0
+			var dir := Vector2(cos(ang), sin(ang))
+			draw_line(center + dir * token * 0.22, center + dir * ring_r, Color(1.0, 0.78, 0.5, a), token * 0.05, true)
+
 var rng := RandomNumberGenerator.new()
 
 var bg_rect: ColorRect
@@ -302,6 +328,9 @@ var player_shield := 0
 var player_pos := Vector2i(2, 2)
 var player_step := 0
 var actions_left := 0
+var player_visual_pos := Vector2.ZERO
+var player_visual_ready := false
+var player_hop := 0.0
 
 var permanent_board: Array = []
 var temp_board: Array = []
@@ -472,6 +501,7 @@ func _build_ui() -> void:
 	board_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	board_grid.custom_minimum_size = Vector2(0, 430)
 	board_grid.resized.connect(Callable(self, "_layout_board_buttons"))
+	board_grid.resized.connect(Callable(self, "_resync_player_visual"))
 	root_box.add_child(board_grid)
 
 	for i in range(BOARD_W * BOARD_H):
@@ -607,6 +637,7 @@ func _start_run(key: String) -> void:
 	player_shield = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
+	_snap_player_visual()
 	encounter = 0
 	permanent_board = _make_empty_board("empty")
 	for entry in hero["tiles"]:
@@ -620,6 +651,7 @@ func _start_encounter() -> void:
 	encounter += 1
 	board_grid.visible = true
 	player_pos = _pos_for_step(player_step)
+	_snap_player_visual()
 	player_shield = 0
 	actions_left = ACTIONS_PER_TURN
 	selected_die = {}
@@ -858,6 +890,39 @@ func _board_cell_center(pos: Vector2i) -> Vector2:
 	var step := _board_spacing()
 	return origin + Vector2(float(pos.x) * step, float(pos.y) * step)
 
+# Places the piece token instantly at player_pos with no motion — for a
+# fresh spawn (run start, new encounter), not an in-turn step. Waits a
+# couple of frames first: board_grid has often just become visible, and
+# its real size isn't final until the container layout pass catches up
+# (see _resync_player_visual for the general case, e.g. window resize).
+func _snap_player_visual() -> void:
+	player_visual_ready = false
+	await get_tree().process_frame
+	await get_tree().process_frame
+	player_visual_pos = _board_cell_center(player_pos)
+	player_visual_ready = true
+	player_hop = 0.0
+
+func _resync_player_visual() -> void:
+	if player_visual_ready:
+		player_visual_pos = _board_cell_center(player_pos)
+
+# Hops the piece token from wherever it's currently drawn to player_pos:
+# a straight slide plus a small up-and-down arc, instead of teleporting.
+func _animate_player_step(duration: float = 0.16) -> void:
+	var target: Vector2 = _board_cell_center(player_pos)
+	if not player_visual_ready:
+		_snap_player_visual()
+		return
+	var move_tween := create_tween()
+	move_tween.tween_property(self, "player_visual_pos", target, duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	var hop_tween := create_tween()
+	hop_tween.tween_property(self, "player_hop", 16.0, duration * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	hop_tween.tween_property(self, "player_hop", 0.0, duration * 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+
+	await move_tween.finished
+
 func _state_instruction() -> String:
 	match state:
 		"player":
@@ -1091,12 +1156,50 @@ func _die_display_value(faces: Array) -> int:
 	sorted_faces.sort()
 	return int(sorted_faces[int(sorted_faces.size() / 2)])
 
+func _set_dice_box_disabled(flag: bool) -> void:
+	for child in dice_box.get_children():
+		if child is Button:
+			child.disabled = flag
+
+# Flickers the pressed die through a few random faces before settling on
+# the real roll, with a small punch on landing — instead of the result
+# just appearing.
+func _animate_dice_roll(button: Button, faces: Array, final_value: int) -> void:
+	if button == null or not is_instance_valid(button) or button.get_child_count() == 0:
+		return
+	var col: Node = button.get_child(0)
+	if col == null or col.get_child_count() == 0:
+		return
+	var face: DiceFace = col.get_child(0) as DiceFace
+	if face == null:
+		return
+	for i in range(6):
+		face.value = int(faces[rng.randi_range(0, faces.size() - 1)])
+		face.queue_redraw()
+		await get_tree().create_timer(0.045).timeout
+		if not is_instance_valid(face):
+			return
+	face.value = final_value
+	face.queue_redraw()
+	face.pivot_offset = face.size / 2.0
+	var tween := create_tween()
+	tween.tween_property(face, "scale", Vector2(1.4, 1.4), 0.08).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(face, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	await tween.finished
+
 func _on_die_pressed(index: int) -> void:
 	if state != "player" or index < 0 or index >= hand.size() or actions_left <= 0:
 		return
-	selected_die = hand[index].duplicate(true)
-	var faces: Array = selected_die["faces"]
-	selected_roll = int(faces[rng.randi_range(0, faces.size() - 1)])
+	var die: Dictionary = hand[index]
+	var faces: Array = die["faces"]
+	var final_roll := int(faces[rng.randi_range(0, faces.size() - 1)])
+
+	_set_dice_box_disabled(true)
+	if index < dice_box.get_child_count():
+		await _animate_dice_roll(dice_box.get_child(index) as Button, faces, final_roll)
+
+	selected_die = die.duplicate(true)
+	selected_roll = final_roll
 	selected_tag = str(selected_die["tag"])
 	steps_left = selected_roll
 	route_power = _tag_route_bonus(selected_tag)
@@ -1138,7 +1241,7 @@ func _advance_player() -> void:
 		_cleanup_dead_enemies()
 		log_label.text = " ".join(messages)
 		_refresh_all()
-		await get_tree().create_timer(0.12).timeout
+		await _animate_player_step(0.16)
 
 		if player_hp <= 0:
 			_show_game_over("移動中に倒れました。")
@@ -1204,7 +1307,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 		messages.append("跳躍路を通過。追加で1歩。")
 	elif tile_type == "shock":
 		for enemy in enemies:
-			enemy["hp"] -= 1
+			_damage_enemy(enemy, 1)
 		messages.append("雷線を通過。全敵に1ダメージ。")
 	elif tile_type == "focus":
 		route_power += 1
@@ -1226,7 +1329,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 	if tile_type == "fire":
 		var target := _nearest_enemy(player_pos, 99)
 		if not target.is_empty():
-			target["hp"] -= 2
+			_damage_enemy(target, 2)
 			return "火走りで停止。最も近い敵に2ダメージ。"
 		return "火走りで停止。敵はいない。"
 	if tile_type == "heal":
@@ -1235,7 +1338,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 	if tile_type == "bow":
 		var shot := _line_enemy(player_pos)
 		if not shot.is_empty():
-			shot["hp"] -= 3
+			_damage_enemy(shot, 3)
 			return "射撃台で停止。同じ行/列の敵に3ダメージ。"
 		return "射撃台で停止。射線上に敵はいない。"
 	if tile_type == "trap":
@@ -1252,7 +1355,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 		return "跳躍路で停止。追加行動+1。"
 	if tile_type == "shock":
 		for enemy in enemies:
-			enemy["hp"] -= 2
+			_damage_enemy(enemy, 2)
 		return "雷線で停止。全敵に2ダメージ。"
 	if tile_type == "focus":
 		_draw_to_hand()
@@ -1265,7 +1368,7 @@ func _hit_enemy_on_route(enemy: Dictionary) -> String:
 		damage += 1
 	if selected_tag == "fire":
 		damage += 1
-	enemy["hp"] -= damage
+	_damage_enemy(enemy, damage)
 	route_hits += 1
 	return "%sを通過攻撃。%dダメージ。" % [enemy["type"], damage]
 
@@ -1287,11 +1390,11 @@ func _enemy_turn() -> void:
 			_move_enemy_toward(enemy)
 			var epos: Vector2i = enemy["pos"]
 			if temp_board[epos.y][epos.x] == "trap_temp":
-				enemy["hp"] -= 5
+				_damage_enemy(enemy, 5)
 				temp_board[epos.y][epos.x] = "none"
 				messages.append("%sが罠で5ダメージ。" % enemy["type"])
 			elif temp_board[epos.y][epos.x] == "hazard":
-				enemy["hp"] -= 2
+				_damage_enemy(enemy, 2)
 				messages.append("%sが毒で2ダメージ。" % enemy["type"])
 			else:
 				messages.append("%sがコースを逆走して接近。" % enemy["type"])
@@ -1407,6 +1510,7 @@ func _show_victory() -> void:
 	end_turn_button.visible = false
 	restart_button.visible = true
 	_refresh_board()
+	_play_result_flourish(Color(1.0, 0.85, 0.45, 0.5))
 
 func _show_game_over(reason: String) -> void:
 	state = "game_over"
@@ -1421,6 +1525,27 @@ func _show_game_over(reason: String) -> void:
 	end_turn_button.visible = false
 	restart_button.visible = true
 	_refresh_board()
+	_play_result_flourish(Color(0.16, 0.05, 0.05, 0.6))
+
+# A full-screen flash that dissolves away, plus a bounce on the header
+# text — the win/lose moment used to just be a couple of lines of text
+# swapped in place, no punctuation at all.
+func _play_result_flourish(flash_color: Color) -> void:
+	var overlay := ColorRect.new()
+	overlay.color = flash_color
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.z_index = 100
+	add_child(overlay)
+	var fade_tween := create_tween()
+	fade_tween.tween_property(overlay, "modulate:a", 0.0, 0.6).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	fade_tween.tween_callback(overlay.queue_free)
+
+	if header_label != null and header_label.size.length() > 0.0:
+		header_label.pivot_offset = header_label.size / 2.0
+		header_label.scale = Vector2(1.6, 1.6)
+		var header_tween := create_tween()
+		header_tween.tween_property(header_label, "scale", Vector2(1.0, 1.0), 0.5).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
 
 func _on_end_turn_pressed() -> void:
 	if state == "moving":
@@ -1495,17 +1620,85 @@ func _random_empty_cell() -> Vector2i:
 func _take_damage(amount: int) -> void:
 	var blocked: int = min(player_shield, amount)
 	player_shield -= blocked
-	player_hp -= amount - blocked
+	var hp_loss := amount - blocked
+	player_hp -= hp_loss
+	if hp_loss > 0:
+		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#ff9a86"))
+	elif blocked > 0:
+		_spawn_floating_text(player_pos, "防", Color("#8fb6e8"))
 
 func _heal(amount: int) -> void:
+	var gained: int = min(player_max_hp, player_hp + amount) - player_hp
 	player_hp = min(player_max_hp, player_hp + amount)
+	if gained > 0:
+		_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
+
+# All enemy HP loss should route through here so the hit always gets a
+# number and a flash, wherever the damage came from (route attacks, tile
+# effects, traps).
+func _damage_enemy(enemy: Dictionary, amount: int) -> void:
+	if amount <= 0:
+		return
+	enemy["hp"] = int(enemy["hp"]) - amount
+	_spawn_floating_text(enemy["pos"], "-%d" % amount, Color("#ffb199"))
+	_flash_cell(enemy["pos"])
 
 func _cleanup_dead_enemies() -> void:
 	var survivors := []
 	for enemy in enemies:
 		if int(enemy["hp"]) > 0:
 			survivors.append(enemy)
+		else:
+			_spawn_death_burst(enemy["pos"])
 	enemies = survivors
+
+# A number that drifts up and fades out at a board cell — the only
+# feedback HP changes used to get was the gauge silently jumping.
+func _spawn_floating_text(pos: Vector2i, text: String, color: Color) -> void:
+	if board_grid == null or not is_instance_valid(board_grid):
+		return
+	var label := Label.new()
+	label.text = text
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_apply_font(label)
+	label.add_theme_font_size_override("font_size", 19)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_constant_override("outline_size", 5)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
+	var center: Vector2 = _board_cell_center(pos)
+	label.position = center + Vector2(-16, -_board_token_size() * 0.9)
+	label.z_index = 20
+	board_grid.add_child(label)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(label, "position:y", label.position.y - 30.0, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.7).set_delay(0.15).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.chain().tween_callback(label.queue_free)
+
+# A quick scale punch on the tile's icon, so a hit registers even before
+# the reader parses the popup number.
+func _flash_cell(pos: Vector2i) -> void:
+	var idx := _idx(pos.x, pos.y)
+	if idx < 0 or idx >= cell_icons.size():
+		return
+	var icon: IconGlyph = cell_icons[idx]
+	icon.pivot_offset = icon.size / 2.0
+	var tween := create_tween()
+	tween.tween_property(icon, "scale", Vector2(1.35, 1.35), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(icon, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+func _spawn_death_burst(pos: Vector2i) -> void:
+	if board_grid == null or not is_instance_valid(board_grid):
+		return
+	var burst := BurstEffect.new()
+	burst.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	burst.center = _board_cell_center(pos)
+	burst.token = _board_token_size()
+	burst.z_index = 15
+	board_grid.add_child(burst)
+	var tween := create_tween()
+	tween.tween_property(burst, "progress", 1.0, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(burst.queue_free)
 
 func _make_empty_board(value: String) -> Array:
 	var board := []
