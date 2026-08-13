@@ -276,7 +276,7 @@ var shield_bar: GaugeBar
 var shield_value_label: Label
 var action_pip_box: HBoxContainer
 var stats_label: Label
-var enemy_plan_label: Label
+var enemy_status_box: VBoxContainer
 var lookahead_box: HBoxContainer
 var board_grid: BoardView
 var dice_box: HBoxContainer
@@ -454,8 +454,12 @@ func _build_ui() -> void:
 
 	stats_label = _make_label(14, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(stats_label)
-	enemy_plan_label = _make_label(14, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_CENTER)
-	root_box.add_child(enemy_plan_label)
+
+	enemy_status_box = VBoxContainer.new()
+	enemy_status_box.add_theme_constant_override("separation", 3)
+	enemy_status_box.custom_minimum_size = Vector2(300, 0)
+	enemy_status_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	root_box.add_child(enemy_status_box)
 
 	lookahead_box = HBoxContainer.new()
 	lookahead_box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -500,12 +504,12 @@ func _build_ui() -> void:
 		badge.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 		badge.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		badge.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		badge.position = Vector2(-20, -15)
+		badge.position = Vector2(-26, -19)
 		_apply_font(badge)
-		badge.add_theme_font_size_override("font_size", 10)
-		badge.add_theme_color_override("font_color", Color("#ffd9cf"))
-		badge.add_theme_constant_override("outline_size", 3)
-		badge.add_theme_color_override("font_outline_color", Color("#5a1710"))
+		badge.add_theme_font_size_override("font_size", 13)
+		badge.add_theme_color_override("font_color", Color("#fff1ea"))
+		badge.add_theme_constant_override("outline_size", 5)
+		badge.add_theme_color_override("font_outline_color", Color("#4a120c"))
 		cell.add_child(badge)
 		cell_badges.append(badge)
 
@@ -576,7 +580,7 @@ func _show_title() -> void:
 	instruction_label.text = "キャラクターを選択"
 	route_label.text = "一本道のすごろくコースを出目ぶん前進し、通過した敵と道で効果が発生します。"
 	stats_label.text = "自由移動ではなく、先のコースを読んでどのダイスを使うかを選びます。"
-	enemy_plan_label.text = ""
+	_clear_children(enemy_status_box)
 	log_label.text = "戦闘後は毎回、新しいマスを永続ボードへ配置します。進む先のルートを育ててください。"
 	end_turn_button.visible = false
 	restart_button.visible = false
@@ -727,11 +731,12 @@ func _refresh_header() -> void:
 
 	hp_bar.value = player_hp
 	hp_bar.max_value = max(player_max_hp, 1)
-	hp_bar.segments = max(player_max_hp, 1)
+	hp_bar.segments = clamp(player_max_hp, 1, 18)
+	hp_bar.fill_color = _hp_ratio_color(float(player_hp) / float(max(player_max_hp, 1)))
 	hp_bar.queue_redraw()
 	hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
 
-	var shield_cap: int = max(player_shield, 6)
+	var shield_cap: int = clamp(max(player_shield, 6), 1, 14)
 	shield_bar.value = player_shield
 	shield_bar.max_value = shield_cap
 	shield_bar.segments = shield_cap
@@ -747,7 +752,68 @@ func _refresh_header() -> void:
 		action_pip_box.add_child(pip)
 
 	stats_label.text = "山札 %d　捨札 %d　手札 %d" % [draw_pile.size(), discard_pile.size(), hand.size()]
-	enemy_plan_label.text = _enemy_plan_summary()
+	_refresh_enemy_status()
+
+# Green while healthy, amber in the middle, red when in danger — the color
+# itself carries the warning, not just the fraction filled.
+func _hp_ratio_color(ratio: float) -> Color:
+	if ratio > 0.55:
+		return Color("#4f9d72")
+	if ratio > 0.25:
+		return Color("#c9a23f")
+	return Color("#c1483a")
+
+# Enemy bars stay in the "danger" family throughout (a full-HP enemy is not
+# "safe" the way full player HP is): bright ember while strong, fading
+# toward a dull, weakened tone as it nears death.
+func _enemy_hp_color(ratio: float) -> Color:
+	return Color("#5c463d").lerp(Color("#e2704a"), clamp(ratio, 0.0, 1.0))
+
+func _refresh_enemy_status() -> void:
+	if enemy_status_box == null:
+		return
+	_clear_children(enemy_status_box)
+	enemy_status_box.visible = state != "title" and not enemies.is_empty()
+	for enemy in enemies:
+		enemy_status_box.add_child(_make_enemy_status_row(enemy))
+
+func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 7)
+
+	var icon := IconGlyph.new()
+	icon.kind = "skull"
+	icon.glyph_color = Color("#f0b7a7")
+	icon.custom_minimum_size = Vector2(15, 15)
+	row.add_child(icon)
+
+	var name_label := _make_label(11, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_LEFT)
+	name_label.text = str(enemy["type"])
+	name_label.custom_minimum_size = Vector2(46, 0)
+	row.add_child(name_label)
+
+	var max_hp: int = max(int(enemy["max_hp"]), 1)
+	var bar := GaugeBar.new()
+	bar.fill_color = _enemy_hp_color(float(int(enemy["hp"])) / float(max_hp))
+	bar.track_color = Color("#2a3040")
+	bar.value = int(enemy["hp"])
+	bar.max_value = max_hp
+	bar.segments = clamp(max_hp, 1, 14)
+	bar.custom_minimum_size = Vector2(0, 9)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(bar)
+
+	var value_label := _make_label(11, Color("#ede7d8"), HORIZONTAL_ALIGNMENT_RIGHT)
+	value_label.text = "%d/%d" % [int(enemy["hp"]), max_hp]
+	value_label.custom_minimum_size = Vector2(44, 0)
+	row.add_child(value_label)
+
+	var plan_label := _make_label(10, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_LEFT)
+	plan_label.text = _enemy_plan(enemy)
+	plan_label.custom_minimum_size = Vector2(58, 0)
+	row.add_child(plan_label)
+
+	return row
 
 func _layout_board_buttons() -> void:
 	if board_grid == null or cell_buttons.is_empty():
@@ -822,14 +888,6 @@ func _route_status_text() -> String:
 	if state == "reward_place":
 		return "配置中: %s" % pending_reward_name
 	return ""
-
-func _enemy_plan_summary() -> String:
-	if enemies.is_empty() or state == "title":
-		return ""
-	var parts := []
-	for enemy in enemies:
-		parts.append("%s HP%d: %s" % [enemy["type"], int(enemy["hp"]), _enemy_plan(enemy)])
-	return "敵予告  " + " / ".join(parts)
 
 func _enemy_plan(enemy: Dictionary) -> String:
 	var dist := _track_gap(enemy)
@@ -972,12 +1030,14 @@ func _make_lookahead_chip(pos: Vector2i) -> Control:
 		var hp_tag := Label.new()
 		hp_tag.text = str(int(enemy["hp"]))
 		_apply_font(hp_tag)
-		hp_tag.add_theme_font_size_override("font_size", 9)
-		hp_tag.add_theme_color_override("font_color", Color("#ffd9cf"))
+		hp_tag.add_theme_font_size_override("font_size", 11)
+		hp_tag.add_theme_color_override("font_color", Color("#fff1ea"))
+		hp_tag.add_theme_constant_override("outline_size", 4)
+		hp_tag.add_theme_color_override("font_outline_color", Color("#4a120c"))
 		hp_tag.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
 		hp_tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		hp_tag.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		hp_tag.position = Vector2(-16, -13)
+		hp_tag.position = Vector2(-18, -15)
 		wrap.add_child(hp_tag)
 
 	return wrap
@@ -1280,7 +1340,7 @@ func _show_reward() -> void:
 	instruction_label.text = _state_instruction()
 	route_label.text = _route_status_text()
 	stats_label.text = "HP %d/%d   現在のボードは次戦へ持ち越されます。" % [player_hp, player_max_hp]
-	enemy_plan_label.text = ""
+	_clear_children(enemy_status_box)
 	log_label.text = "勝利。報酬マスを1つ選んで、永続ボードに配置してください。"
 
 	var options := reward_pool.duplicate(true)
@@ -1342,7 +1402,7 @@ func _show_victory() -> void:
 	instruction_label.text = "踏破成功"
 	route_label.text = "すごろく式ルート戦闘のプロトタイプはここまでです。"
 	stats_label.text = "%s は最終戦を突破しました。" % hero_name
-	enemy_plan_label.text = ""
+	_clear_children(enemy_status_box)
 	log_label.text = "別キャラや別配置で再挑戦できます。"
 	end_turn_button.visible = false
 	restart_button.visible = true
@@ -1356,7 +1416,7 @@ func _show_game_over(reason: String) -> void:
 	instruction_label.text = "ゲームオーバー"
 	route_label.text = "次は敵を通るルート、攻撃路、防御路の配置を変えて挑戦してください。"
 	stats_label.text = reason
-	enemy_plan_label.text = ""
+	_clear_children(enemy_status_box)
 	log_label.text = "ボード構築とダイス選択を変えて再挑戦できます。"
 	end_turn_button.visible = false
 	restart_button.visible = true
