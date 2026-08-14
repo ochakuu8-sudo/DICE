@@ -5,11 +5,6 @@ const BOARD_H := 5
 const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
 const MAX_ENCOUNTERS := 6
-const CROSS_CENTER := Vector2i(2, 2)
-
-# Fired when the player taps one of the highlighted cells while
-# state == "choosing_branch"; _advance_player() awaits this to resume.
-signal branch_chosen(pos: Vector2i)
 
 class BoardView:
 	extends Control
@@ -22,51 +17,31 @@ class BoardView:
 
 	func _process(delta: float) -> void:
 		glow_phase = fmod(glow_phase + delta, TAU)
-		if main != null and main.board_grid == self and (main.state == "player" or main.state == "moving" or main.state == "choosing_branch"):
+		if main != null and main.board_grid == self and (main.state == "player" or main.state == "moving"):
 			queue_redraw()
 
-	func _edge_key(a: Vector2i, b: Vector2i) -> String:
-		var av := a.x * 100 + a.y
-		var bv := b.x * 100 + b.y
-		if av <= bv:
-			return "%d_%d" % [av, bv]
-		return "%d_%d" % [bv, av]
-
 	func _draw() -> void:
-		if main == null or main.track_graph.is_empty():
+		if main == null or main.ring_cells.is_empty():
 			return
 		var line_color := Color("#6e6556")
 		var next_color := Color("#65cfe6")
 		var passed_color := Color("#f5d86a")
-		var drawn := {}
-		for a in main.track_graph.keys():
-			for b in main.track_graph[a]:
-				var key: String = _edge_key(a, b)
-				if drawn.has(key):
-					continue
-				drawn[key] = true
-				var pa: Vector2 = main._board_cell_center(a)
-				var pb: Vector2 = main._board_cell_center(b)
-				var segment_color := line_color
-				var width := 10.0
-				if main._segment_is_recent(a, b):
-					segment_color = passed_color
-					width = 14.0
-				elif main._segment_is_next(a, b):
-					segment_color = next_color
-					width = 12.0
-				draw_line(pa, pb, segment_color, width, true)
-		# Small arrows along the ring only, showing its fixed one-way flow.
-		for pos in main.ring_forward.keys():
-			var nxt: Vector2i = main.ring_forward[pos]
-			var pa2: Vector2 = main._board_cell_center(pos)
-			var pb2: Vector2 = main._board_cell_center(nxt)
-			var arrow_color := line_color
-			if main._segment_is_recent(pos, nxt):
-				arrow_color = passed_color
-			elif main._segment_is_next(pos, nxt):
-				arrow_color = next_color
-			_draw_arrow(pa2, pb2, arrow_color)
+		var count: int = main.ring_cells.size()
+		for i in range(count):
+			var a: Vector2i = main.ring_cells[i]
+			var b: Vector2i = main.ring_cells[(i + 1) % count]
+			var pa: Vector2 = main._board_cell_center(a)
+			var pb: Vector2 = main._board_cell_center(b)
+			var segment_color := line_color
+			var width := 10.0
+			if main._segment_is_recent(a, b):
+				segment_color = passed_color
+				width = 14.0
+			elif main._segment_is_next(a, b):
+				segment_color = next_color
+				width = 12.0
+			draw_line(pa, pb, segment_color, width, true)
+			_draw_arrow(pa, pb, segment_color)
 		_draw_player_marker()
 
 	# The current-position cell used to be told apart only by a gold fill.
@@ -373,25 +348,24 @@ var player_hp := 30
 var player_max_hp := 30
 var player_shield := 0
 var player_pos := Vector2i(2, 2)
-var player_prev_pos := Vector2i(-1, -1)
 var player_step := 0
 var actions_left := 0
 var player_visual_pos := Vector2.ZERO
 var player_visual_ready := false
 var player_hop := 0.0
 
-# Board topology: a one-way ring around the perimeter (enemies only ever
-# walk this) plus a cross-shaped shortcut through the middle that only the
-# player can use. ring_forward gives the ring's single next cell; a cell
-# only has a real choice where cross_adjacency adds an extra option.
+# Board topology: a single one-way ring around the perimeter. Enemies live
+# off-board (see enemy_status_box) and never occupy a cell — the ring is
+# purely the player's own resource/hazard track.
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
 var ring_forward: Dictionary = {}
-var cross_adjacency: Dictionary = {}
-var track_graph: Dictionary = {}
-var branch_options: Array = []
 var preview_path: Array[Vector2i] = []
-var preview_branch_ahead := false
+
+# Cells the player has passed through or stopped on this *turn* (across
+# every die rolled this turn, not just the current one) — checked against
+# each enemy's telegraph when the turn ends.
+var turn_visited: Dictionary = {}
 
 var permanent_board: Array = []
 var temp_board: Array = []
@@ -413,21 +387,20 @@ var pending_reward_name := ""
 
 var tile_defs := {
 	"empty": {"short": "道", "name": "道", "kind": "基本", "color": Color("#2f3442"), "pass": "", "stop": "停止: シールド+1"},
-	"slash": {"short": "攻", "name": "斬撃路", "kind": "攻撃", "color": Color("#a74646"), "pass": "通過: この移動中の通過攻撃+2", "stop": "停止: 攻撃力+1"},
+	"slash": {"short": "攻", "name": "斬撃路", "kind": "攻撃", "color": Color("#a74646"), "pass": "通過: 最もHPが低い敵に2+コンボダメージ", "stop": "停止: 最もHPが低い敵に4+コンボダメージ"},
 	"guard": {"short": "守", "name": "防御路", "kind": "防御", "color": Color("#3d67a8"), "pass": "通過: シールド+1", "stop": "停止: シールド+3"},
-	"fire": {"short": "火", "name": "火走り", "kind": "攻撃", "color": Color("#bd6238"), "pass": "通過: 通過攻撃+1、敵を燃やす", "stop": "停止: 最も近い敵に2ダメージ"},
+	"fire": {"short": "火", "name": "火走り", "kind": "攻撃", "color": Color("#bd6238"), "pass": "通過: 全敵に1+コンボダメージ", "stop": "停止: 最もHPが低い敵に3+コンボダメージ"},
 	"heal": {"short": "癒", "name": "癒し道", "kind": "回復", "color": Color("#459a5d"), "pass": "通過: HP+1", "stop": "停止: HP+3"},
-	"bow": {"short": "射", "name": "射撃台", "kind": "遠隔", "color": Color("#a59446"), "pass": "通過: 通過攻撃+1", "stop": "停止: 同じ行か列の敵に3ダメージ"},
-	"trap": {"short": "罠", "name": "罠道", "kind": "妨害", "color": Color("#7550a8"), "pass": "通過: 今いるマスに罠を残す", "stop": "停止: 周囲に罠を置く"},
+	"bow": {"short": "射", "name": "射撃台", "kind": "遠隔", "color": Color("#a59446"), "pass": "通過: 最もHPが低い敵に1+コンボダメージ", "stop": "停止: 最もHPが低い敵に3+コンボダメージ"},
+	"trap": {"short": "罠", "name": "罠道", "kind": "牽制", "color": Color("#7550a8"), "pass": "通過: 最もHPが高い敵に2+コンボダメージ", "stop": "停止: 最もHPが高い敵に4+コンボダメージ"},
 	"warp": {"short": "跳", "name": "跳躍路", "kind": "移動", "color": Color("#2f8c9b"), "pass": "通過: 追加で1歩進める", "stop": "停止: 追加行動+1"},
-	"shock": {"short": "雷", "name": "雷線", "kind": "全体", "color": Color("#7d70d6"), "pass": "通過: 全敵に1ダメージ", "stop": "停止: 全敵に2ダメージ"},
-	"focus": {"short": "集", "name": "集中路", "kind": "補助", "color": Color("#718063"), "pass": "通過: 攻撃力+1、シールド+1", "stop": "停止: ダイスを1個引く"}
+	"shock": {"short": "雷", "name": "雷線", "kind": "全体", "color": Color("#7d70d6"), "pass": "通過: 全敵に1+コンボダメージ", "stop": "停止: 全敵に2+コンボダメージ"},
+	"focus": {"short": "集", "name": "集中路", "kind": "補助", "color": Color("#718063"), "pass": "通過: シールド+1、以降の攻撃+1", "stop": "停止: ダイスを1個引く"}
 }
 
 var temp_defs := {
 	"none": {"short": "", "color": Color("#00000000"), "desc": ""},
-	"hazard": {"short": "毒", "color": Color("#58385c"), "desc": "通過: HP-2。敵も踏むと2ダメージ"},
-	"trap_temp": {"short": "罠", "color": Color("#8b3e72"), "desc": "敵が踏むと5ダメージ"},
+	"hazard": {"short": "毒", "color": Color("#58385c"), "desc": "通過: HP-2"},
 	"block": {"short": "壁", "color": Color("#171a21"), "desc": "通れない"}
 }
 
@@ -441,38 +414,38 @@ var hero_defs := {
 	"knight": {
 		"name": "剣士",
 		"hp": 36,
-		"desc": "攻撃路と防御路をつないで、敵を通過しながら倒す。",
+		"desc": "斬撃路と防御路をつないで、HPの低い敵から確実に仕留める。",
 		"dice": [
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"},
 			{"name": "重撃ダイス", "faces": [3, 4, 4, 5, 6, 6], "tag": "heavy"},
 			{"name": "守りダイス", "faces": [1, 2, 2, 3, 3, 4], "tag": "steel"},
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
-		"tiles": [[1, 2, "slash"], [2, 2, "guard"], [3, 2, "slash"], [0, 2, "bow"], [4, 2, "heal"]]
+		"tiles": [[2, 0, "slash"], [4, 1, "guard"], [4, 3, "slash"], [1, 4, "guard"], [0, 2, "heal"]]
 	},
 	"mage": {
 		"name": "魔導士",
 		"hp": 28,
-		"desc": "火走りと雷線で、離れた敵にも通過効果を飛ばす。",
+		"desc": "火走りと雷線で、敵全体を薄く広く削っていく。",
 		"dice": [
 			{"name": "火花ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "fire"},
 			{"name": "揺らぎダイス", "faces": [1, 1, 3, 5, 6, 6], "tag": "arcane"},
 			{"name": "集中ダイス", "faces": [2, 2, 3, 3, 4, 4], "tag": "focus"},
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
-		"tiles": [[1, 0, "fire"], [4, 0, "fire"], [0, 4, "shock"], [4, 4, "warp"], [2, 2, "focus"]]
+		"tiles": [[2, 0, "fire"], [4, 2, "fire"], [3, 4, "shock"], [0, 4, "warp"], [0, 2, "focus"]]
 	},
 	"rogue": {
 		"name": "盗賊",
 		"hp": 31,
-		"desc": "罠と射撃台を仕込み、敵の進路を利用する。",
+		"desc": "罠道でタフな敵を、射撃台で弱った敵を狙い分ける。",
 		"dice": [
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
 			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"},
 			{"name": "幸運ダイス", "faces": [1, 2, 2, 4, 4, 6], "tag": "lucky"},
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"}
 		],
-		"tiles": [[1, 0, "trap"], [3, 4, "trap"], [4, 1, "bow"], [0, 3, "bow"], [2, 2, "warp"]]
+		"tiles": [[1, 0, "trap"], [3, 4, "trap"], [4, 1, "bow"], [0, 3, "bow"], [0, 1, "warp"]]
 	}
 }
 
@@ -546,7 +519,7 @@ func _build_ui() -> void:
 
 	enemy_status_box = VBoxContainer.new()
 	enemy_status_box.add_theme_constant_override("separation", 3)
-	enemy_status_box.custom_minimum_size = Vector2(300, 0)
+	enemy_status_box.custom_minimum_size = Vector2(330, 0)
 	enemy_status_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	root_box.add_child(enemy_status_box)
 
@@ -668,10 +641,10 @@ func _show_title() -> void:
 	_clear_children(reward_box)
 	header_label.text = "Dice Board Rogue"
 	instruction_label.text = "キャラクターを選択"
-	route_label.text = "一本道のすごろくコースを出目ぶん前進し、通過した敵と道で効果が発生します。"
-	stats_label.text = "自由移動ではなく、先のコースを読んでどのダイスを使うかを選びます。"
+	route_label.text = "環状のコースを出目ぶん前進し、攻撃マスを踏んで敵を倒します。敵は中央から攻撃を予告してきます。"
+	stats_label.text = "予告された危険マスを避けつつ、攻撃・防御マスを踏むダイスを選びましょう。"
 	_clear_children(enemy_status_box)
-	log_label.text = "戦闘後は毎回、新しいマスを永続ボードへ配置します。進む先のルートを育ててください。"
+	log_label.text = "戦闘後は毎回、新しいマスを永続ボードへ配置します。育てたコースで戦いましょう。"
 	end_turn_button.visible = false
 	restart_button.visible = false
 	gauges_box.visible = false
@@ -697,7 +670,6 @@ func _start_run(key: String) -> void:
 	player_shield = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
-	player_prev_pos = Vector2i(-1, -1)
 	_snap_player_visual()
 	encounter = 0
 	permanent_board = _make_empty_board("empty")
@@ -712,7 +684,6 @@ func _start_encounter() -> void:
 	encounter += 1
 	board_grid.visible = true
 	player_pos = _pos_for_step(player_step)
-	player_prev_pos = Vector2i(-1, -1)
 	_snap_player_visual()
 	player_shield = 0
 	actions_left = ACTIONS_PER_TURN
@@ -731,51 +702,65 @@ func _start_encounter() -> void:
 	_start_player_turn("第%d戦開始。先のコースを見て、使うダイスを選んでください。" % encounter)
 
 func _setup_encounter() -> void:
-	# Offsets are step counts along the 16-cell ring (was a 25-cell track),
-	# scaled down to keep encounters feeling the same distance away.
 	if encounter == MAX_ENCOUNTERS:
-		enemies.append(_make_enemy_on_track("ボス", player_step + 5, 32, 7, 1))
-		enemies.append(_make_enemy_on_track("護衛", player_step + 3, 12, 4, 1))
-		enemies.append(_make_enemy_on_track("護衛", player_step + 8, 12, 4, 1))
-		return
-
-	var enemy_count: int = min(2 + int(encounter / 2), 4)
-	for i in range(enemy_count):
-		var type_name := "敵"
-		var hp := 8 + encounter * 2
-		var damage := 3 + int(encounter / 2)
-		var offset := 2 + i * 2 + rng.randi_range(0, 1)
-		if encounter >= 3 and i == 0:
-			type_name = "射手"
-			hp -= 2
-			damage += 1
-		elif encounter >= 4 and i == 1:
-			type_name = "重装"
-			hp += 6
-			damage += 2
-			offset += 2
-		enemies.append(_make_enemy_on_track(type_name, player_step + offset, hp, damage, 1))
+		enemies.append(_make_enemy("ボス", 32, 8, "guaranteed", []))
+		enemies.append(_make_enemy("護衛", 12, 4, "positional", [1, 3]))
+		enemies.append(_make_enemy("護衛", 12, 4, "positional", [2, 5]))
+	else:
+		var enemy_count: int = min(2 + int(encounter / 2), 4)
+		for i in range(enemy_count):
+			var type_name := "敵"
+			var hp := 8 + encounter * 2
+			var damage := 3 + int(encounter / 2)
+			var attack_kind := "positional"
+			var offsets: Array = [2 + i]
+			if encounter >= 3 and i == 0:
+				type_name = "射手"
+				hp -= 2
+				damage += 1
+				attack_kind = "guaranteed"
+				offsets = []
+			elif encounter >= 4 and i == 1:
+				type_name = "重装"
+				hp += 6
+				damage += 2
+				offsets = [1, 3, 5]
+			enemies.append(_make_enemy(type_name, hp, damage, attack_kind, offsets))
 
 	for n in range(min(encounter, 4)):
 		var p2 := _random_empty_cell()
 		if p2.x >= 0:
 			temp_board[p2.y][p2.x] = "hazard"
 
-func _make_enemy(type_name: String, x: int, y: int, hp: int, damage: int, move: int) -> Dictionary:
-	var step := _track_index(Vector2i(x, y))
-	return _make_enemy_on_track(type_name, step, hp, damage, move)
+	for enemy in enemies:
+		_generate_telegraph(enemy)
 
-func _make_enemy_on_track(type_name: String, step: int, hp: int, damage: int, move: int) -> Dictionary:
-	var normalized_step := _normalize_step(step)
+# attack_kind "guaranteed" always hits the player each turn; "positional"
+# only hits if the player's route this turn touches one of the cells it
+# telegraphs (attack_offsets: ring steps ahead of the player, resolved to
+# fixed cells at telegraph time — see _generate_telegraph).
+func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, offsets: Array) -> Dictionary:
 	return {
 		"type": type_name,
-		"step": normalized_step,
-		"pos": _pos_for_step(normalized_step),
 		"hp": hp,
 		"max_hp": hp,
 		"damage": damage,
-		"move": move
+		"attack_kind": attack_kind,
+		"attack_offsets": offsets,
+		"telegraph_cells": [],
 	}
+
+# Locks in this enemy's next attack. For a positional attacker, the target
+# cells are fixed now, based on the player's position right now — they do
+# not follow the player around as the turn plays out.
+func _generate_telegraph(enemy: Dictionary) -> void:
+	if str(enemy.get("attack_kind", "positional")) == "guaranteed":
+		enemy["telegraph_cells"] = []
+		return
+	var cells: Array = []
+	for offset in enemy.get("attack_offsets", []):
+		cells.append(_pos_for_step(player_step + int(offset)))
+	enemy["telegraph_cells"] = cells
 
 func _reset_dice_for_encounter() -> void:
 	draw_pile = []
@@ -796,6 +781,7 @@ func _start_player_turn(message: String = "") -> void:
 	route_path = []
 	route_power = 0
 	route_hits = 0
+	turn_visited = {}
 	_draw_to_hand()
 	if message != "":
 		log_label.text = message
@@ -906,7 +892,7 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 
 	var plan_label := _make_label(10, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_LEFT)
 	plan_label.text = _enemy_plan(enemy)
-	plan_label.custom_minimum_size = Vector2(58, 0)
+	plan_label.custom_minimum_size = Vector2(88, 0)
 	row.add_child(plan_label)
 
 	return row
@@ -993,8 +979,6 @@ func _state_instruction() -> String:
 			return "ダイスを選ぶ"
 		"moving":
 			return "出目ぶん前進中"
-		"choosing_branch":
-			return "分岐: 進む方向を選ぶ"
 		"enemy":
 			return "敵の行動中"
 		"reward_select":
@@ -1012,10 +996,8 @@ func _route_status_text() -> String:
 		return "%s の出目 %d / 残り %d歩 / 通過攻撃+%d / 命中 %d回" % [
 			selected_die.get("name", "ダイス"), selected_roll, steps_left, route_power, route_hits
 		]
-	if state == "choosing_branch":
-		return "光っているマスをタップして進む方向を決めてください。残り%d歩。" % steps_left
 	if state == "player":
-		return "外周は一方通行。中央の十字路だけ近道できます。先の敵や効果マスを見てダイスを選びましょう。"
+		return "コースは一方通行。敵の攻撃予告と効果マスを見て、ちょうどよい出目のダイスを選びましょう。"
 	if state == "reward_select":
 		return "選んだマスは永続ボードに残ります。次の戦闘のルートが変わります。"
 	if state == "reward_place":
@@ -1023,16 +1005,18 @@ func _route_status_text() -> String:
 	return ""
 
 func _enemy_plan(enemy: Dictionary) -> String:
-	var dist := _track_gap(enemy)
-	if str(enemy["type"]) == "射手" and dist <= 4:
-		return "射撃%d" % int(enemy["damage"])
-	if dist <= 1:
-		return "攻撃%d" % int(enemy["damage"])
-	return "逆走接近"
+	if str(enemy.get("attack_kind", "positional")) == "guaranteed":
+		return "必中%d" % int(enemy["damage"])
+	var offsets: Array = enemy.get("attack_offsets", [])
+	var parts := []
+	for o in offsets:
+		parts.append(str(o))
+	return "%sマス先 %d" % ["・".join(parts), int(enemy["damage"])]
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
 	_layout_board_buttons()
+	var danger_cells := _telegraphed_cells()
 	for y in range(BOARD_H):
 		for x in range(BOARD_W):
 			var idx := _idx(x, y)
@@ -1042,9 +1026,9 @@ func _refresh_board() -> void:
 			var badge: Label = cell_badges[idx]
 			var pos := Vector2i(x, y)
 
-			if not track_graph.has(pos):
-				# Off-path cell (the four inner corners): not part of the
-				# ring or the cross, so there's nothing to show or click.
+			if not ring_index_map.has(pos):
+				# Off-ring cell: enemies live in the status panel now, not
+				# on the board, so only the ring itself is ever clickable.
 				button.visible = false
 				button.disabled = true
 				continue
@@ -1057,38 +1041,26 @@ func _refresh_board() -> void:
 			var border_color := Color("#a9a292")
 			var border_width := 1
 			var is_player_cell := pos == player_pos
-			var has_enemy := false
 			var is_start := pos == _start_pos()
-
-			if _is_junction(pos):
-				border_color = Color("#6fb8c9")
-				border_width = 3
-				if icon_kind == "":
-					icon_kind = "hub"
-					color = color.lightened(0.08)
 
 			if temp_type != "none":
 				color = temp_defs[temp_type]["color"]
-				icon_kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
+				icon_kind = "trap" if temp_type == "hazard" else ""
 
 			if is_start:
 				index_label.text = "始"
 				icon_kind = "flag_start"
-			elif ring_index_map.has(pos):
-				index_label.text = "%02d" % int(ring_index_map[pos])
 			else:
-				index_label.text = ""
+				index_label.text = "%02d" % int(ring_index_map[pos])
 
 			badge.text = ""
 
-			var enemy := _enemy_at(pos)
-			if not enemy.is_empty():
-				has_enemy = true
-				color = Color("#8d2f35")
-				icon_kind = "skull"
-				badge.text = str(int(enemy["hp"]))
-				border_color = Color("#ffb1a4")
+			var is_danger := danger_cells.has(pos)
+			if is_danger:
+				color = Color("#7a2a2a")
+				border_color = Color("#ff8f6b")
 				border_width = 5
+				badge.text = "!"
 
 			if is_player_cell:
 				color = Color("#e1b93c")
@@ -1098,7 +1070,7 @@ func _refresh_board() -> void:
 				border_color = Color("#f5d86a")
 				border_width = 3
 				color = color.lightened(0.14)
-			elif state == "player":
+			elif not is_danger and state == "player":
 				var ahead := _steps_ahead(pos)
 				if ahead > 0:
 					border_color = Color("#8fe8ff")
@@ -1107,13 +1079,6 @@ func _refresh_board() -> void:
 			button.disabled = false
 			if state == "moving":
 				button.disabled = true
-			elif state == "choosing_branch":
-				if branch_options.has(pos):
-					color = color.lightened(0.24)
-					border_color = Color("#65e6ff")
-					border_width = 5
-				else:
-					button.disabled = true
 			elif state == "reward_place":
 				if _can_place_reward(pos):
 					color = color.lightened(0.16)
@@ -1130,9 +1095,22 @@ func _refresh_board() -> void:
 			icon.kind = icon_kind
 			icon.glyph_color = Color(1, 1, 1, 0.92)
 			icon.queue_redraw()
-			_apply_cell_button_color(button, color, border_color, border_width, is_player_cell, has_enemy)
+			_apply_cell_button_color(button, color, border_color, border_width, is_player_cell, is_danger)
 	board_grid.queue_redraw()
 	_refresh_lookahead()
+
+# Union of every living enemy's telegraphed cells, for the board's warning
+# highlight. Only meaningful once the encounter is under way.
+func _telegraphed_cells() -> Dictionary:
+	var cells := {}
+	if state == "title" or state == "reward_select":
+		return cells
+	for enemy in enemies:
+		if int(enemy["hp"]) <= 0:
+			continue
+		for c in enemy.get("telegraph_cells", []):
+			cells[c] = true
+	return cells
 
 func _refresh_lookahead() -> void:
 	if lookahead_box == null:
@@ -1143,20 +1121,15 @@ func _refresh_lookahead() -> void:
 		return
 	for pos in preview_path:
 		lookahead_box.add_child(_make_lookahead_chip(pos))
-	if preview_branch_ahead:
-		lookahead_box.add_child(_make_branch_chip())
 
 func _make_lookahead_chip(pos: Vector2i) -> Control:
 	var perm_type: String = str(permanent_board[pos.y][pos.x])
 	var temp_type: String = str(temp_board[pos.y][pos.x])
 	var color: Color = tile_defs[perm_type]["color"]
 	var kind: String = perm_type if perm_type != "empty" else ""
-	if pos == CROSS_CENTER and kind == "":
-		kind = "hub"
-		color = color.lightened(0.08)
 	if temp_type != "none":
 		color = temp_defs[temp_type]["color"]
-		kind = "trap" if temp_type in ["hazard", "trap_temp"] else ""
+		kind = "trap" if temp_type == "hazard" else ""
 
 	var wrap := Panel.new()
 	wrap.custom_minimum_size = Vector2(34, 34)
@@ -1171,10 +1144,10 @@ func _make_lookahead_chip(pos: Vector2i) -> Control:
 	box.border_width_bottom = 1
 	box.border_color = Color(1, 1, 1, 0.12)
 
-	var enemy := _enemy_at(pos)
-	if not enemy.is_empty():
-		color = Color("#8d2f35")
-		kind = "skull"
+	var is_danger := _telegraphed_cells().has(pos)
+	if is_danger:
+		color = Color("#7a2a2a")
+		box.border_color = Color("#ff8f6b")
 	box.bg_color = color
 	wrap.add_theme_stylebox_override("panel", box)
 
@@ -1185,46 +1158,20 @@ func _make_lookahead_chip(pos: Vector2i) -> Control:
 	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
 	wrap.add_child(icon)
 
-	if not enemy.is_empty():
-		var hp_tag := Label.new()
-		hp_tag.text = str(int(enemy["hp"]))
-		_apply_font(hp_tag)
-		hp_tag.add_theme_font_size_override("font_size", 11)
-		hp_tag.add_theme_color_override("font_color", Color("#fff1ea"))
-		hp_tag.add_theme_constant_override("outline_size", 4)
-		hp_tag.add_theme_color_override("font_outline_color", Color("#4a120c"))
-		hp_tag.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-		hp_tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-		hp_tag.grow_vertical = Control.GROW_DIRECTION_BEGIN
-		hp_tag.position = Vector2(-18, -15)
-		wrap.add_child(hp_tag)
+	if is_danger:
+		var warn_tag := Label.new()
+		warn_tag.text = "!"
+		_apply_font(warn_tag)
+		warn_tag.add_theme_font_size_override("font_size", 13)
+		warn_tag.add_theme_color_override("font_color", Color("#fff1ea"))
+		warn_tag.add_theme_constant_override("outline_size", 4)
+		warn_tag.add_theme_color_override("font_outline_color", Color("#4a120c"))
+		warn_tag.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+		warn_tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		warn_tag.grow_vertical = Control.GROW_DIRECTION_BEGIN
+		warn_tag.position = Vector2(-14, -15)
+		wrap.add_child(warn_tag)
 
-	return wrap
-
-# Caps the lookahead ribbon when the forced preview runs into a branch:
-# there's no single "next tile" to show, since that's about to be a choice.
-func _make_branch_chip() -> Control:
-	var wrap := Panel.new()
-	wrap.custom_minimum_size = Vector2(34, 34)
-	var box := StyleBoxFlat.new()
-	box.corner_radius_top_left = 10
-	box.corner_radius_top_right = 10
-	box.corner_radius_bottom_left = 10
-	box.corner_radius_bottom_right = 10
-	box.border_width_left = 1
-	box.border_width_top = 1
-	box.border_width_right = 1
-	box.border_width_bottom = 1
-	box.border_color = Color("#65e6ff")
-	box.bg_color = Color("#204652")
-	wrap.add_theme_stylebox_override("panel", box)
-
-	var icon := IconGlyph.new()
-	icon.kind = "fork"
-	icon.glyph_color = Color("#a8ecff")
-	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
-	wrap.add_child(icon)
 	return wrap
 
 func _refresh_dice() -> void:
@@ -1344,45 +1291,18 @@ func _on_cell_pressed(index: int) -> void:
 				_start_encounter()
 				log_label.text = "%s を配置しました。次の戦闘へ。" % pending_reward_name
 				_refresh_all()
-	elif state == "choosing_branch":
-		if branch_options.has(pos):
-			branch_chosen.emit(pos)
-
-# Pauses movement at a real fork: highlights the valid next cells and waits
-# for the player to tap one, instead of picking a direction automatically.
-func _prompt_branch_choice(options: Array) -> Vector2i:
-	branch_options = options
-	state = "choosing_branch"
-	log_label.text = "分岐です。進む方向を選んでください。"
-	_refresh_all()
-	var chosen: Vector2i = await branch_chosen
-	branch_options = []
-	state = "moving"
-	return chosen
 
 func _advance_player() -> void:
 	var messages := []
 	while steps_left > 0:
-		var options := _forward_options(player_pos, player_prev_pos)
-		var next_pos: Vector2i
-		if options.size() > 1:
-			next_pos = await _prompt_branch_choice(options)
-		elif options.size() == 1:
-			next_pos = options[0]
-		else:
-			break
-		player_prev_pos = player_pos
-		player_pos = next_pos
-		if ring_index_map.has(player_pos):
-			player_step = int(ring_index_map[player_pos])
+		player_step = _normalize_step(player_step + 1)
+		player_pos = _pos_for_step(player_step)
 		route_path.append(player_pos)
+		turn_visited[player_pos] = true
 		steps_left -= 1
 		var pass_message := _resolve_pass_tile(player_pos)
 		if pass_message != "":
 			messages.append(pass_message)
-		var enemy := _enemy_at(player_pos)
-		if not enemy.is_empty():
-			messages.append(_hit_enemy_on_route(enemy))
 		_cleanup_dead_enemies()
 		log_label.text = " ".join(messages)
 		_refresh_all()
@@ -1430,34 +1350,38 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 		_take_damage(2)
 		messages.append("毒沼を通過して2ダメージ。")
 	if tile_type == "slash":
-		route_power += 2
-		messages.append("斬撃路を通過。通過攻撃+2。")
+		var dmg := _combo_damage(2)
+		if _strike_lowest(dmg):
+			messages.append("斬撃路を通過。%dダメージ。" % dmg)
 	elif tile_type == "guard":
 		player_shield += 1
 		messages.append("防御路を通過。盾+1。")
 	elif tile_type == "fire":
-		route_power += 1
-		messages.append("火走りを通過。通過攻撃+1。")
+		var dmg := _combo_damage(1)
+		if _strike_all(dmg):
+			messages.append("火走りを通過。全敵に%dダメージ。" % dmg)
 	elif tile_type == "heal":
 		_heal(1)
 		messages.append("癒し道を通過。HP+1。")
 	elif tile_type == "bow":
-		route_power += 1
-		messages.append("射撃台を通過。通過攻撃+1。")
+		var dmg := _combo_damage(1)
+		if _strike_lowest(dmg):
+			messages.append("射撃台を通過。%dダメージ。" % dmg)
 	elif tile_type == "trap":
-		temp_board[pos.y][pos.x] = "trap_temp"
-		messages.append("罠道を通過。罠を残した。")
+		var dmg := _combo_damage(2)
+		if _strike_highest(dmg):
+			messages.append("罠道を通過。最もHPが高い敵に%dダメージ。" % dmg)
 	elif tile_type == "warp":
 		steps_left += 1
 		messages.append("跳躍路を通過。追加で1歩。")
 	elif tile_type == "shock":
-		for enemy in enemies:
-			_damage_enemy(enemy, 1)
-		messages.append("雷線を通過。全敵に1ダメージ。")
+		var dmg := _combo_damage(1)
+		if _strike_all(dmg):
+			messages.append("雷線を通過。全敵に%dダメージ。" % dmg)
 	elif tile_type == "focus":
-		route_power += 1
 		player_shield += 1
-		messages.append("集中路を通過。通過攻撃+1、盾+1。")
+		route_power += 1
+		messages.append("集中路を通過。盾+1、以降の攻撃+%d。" % route_power)
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
@@ -1466,89 +1390,106 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 		player_shield += 1
 		return "道で停止。盾+1。"
 	if tile_type == "slash":
-		route_power += 1
-		return "斬撃路で停止。次の通過攻撃を構えた。"
+		var dmg := _combo_damage(4)
+		if _strike_lowest(dmg):
+			return "斬撃路で停止。%dダメージ。" % dmg
+		return "斬撃路で停止。敵はいない。"
 	if tile_type == "guard":
 		player_shield += 3
 		return "防御路で停止。盾+3。"
 	if tile_type == "fire":
-		var target := _nearest_enemy(player_pos, 99)
-		if not target.is_empty():
-			_damage_enemy(target, 2)
-			return "火走りで停止。最も近い敵に2ダメージ。"
+		var dmg := _combo_damage(3)
+		if _strike_lowest(dmg):
+			return "火走りで停止。%dダメージ。" % dmg
 		return "火走りで停止。敵はいない。"
 	if tile_type == "heal":
 		_heal(3)
 		return "癒し道で停止。HP+3。"
 	if tile_type == "bow":
-		var shot := _line_enemy(player_pos)
-		if not shot.is_empty():
-			_damage_enemy(shot, 3)
-			return "射撃台で停止。同じ行/列の敵に3ダメージ。"
-		return "射撃台で停止。射線上に敵はいない。"
+		var dmg := _combo_damage(3)
+		if _strike_lowest(dmg):
+			return "射撃台で停止。%dダメージ。" % dmg
+		return "射撃台で停止。敵はいない。"
 	if tile_type == "trap":
-		var placed := 0
-		var dirs: Array[Vector2i] = [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]
-		for d: Vector2i in dirs:
-			var p: Vector2i = player_pos + d
-			if _inside(p) and temp_board[p.y][p.x] == "none":
-				temp_board[p.y][p.x] = "trap_temp"
-				placed += 1
-		return "罠道で停止。周囲に罠を%d個置いた。" % placed
+		var dmg := _combo_damage(4)
+		if _strike_highest(dmg):
+			return "罠道で停止。最もHPが高い敵に%dダメージ。" % dmg
+		return "罠道で停止。敵はいない。"
 	if tile_type == "warp":
 		actions_left += 1
 		return "跳躍路で停止。追加行動+1。"
 	if tile_type == "shock":
-		for enemy in enemies:
-			_damage_enemy(enemy, 2)
-		return "雷線で停止。全敵に2ダメージ。"
+		var dmg := _combo_damage(2)
+		if _strike_all(dmg):
+			return "雷線で停止。全敵に%dダメージ。" % dmg
+		return "雷線で停止。敵はいない。"
 	if tile_type == "focus":
 		_draw_to_hand()
 		return "集中路で停止。ダイスを補充。"
 	return ""
 
-func _hit_enemy_on_route(enemy: Dictionary) -> String:
-	var damage := 1 + route_power + int(selected_roll / 3)
-	if selected_tag == "heavy":
-		damage += 1
-	if selected_tag == "fire":
-		damage += 1
-	_damage_enemy(enemy, damage)
-	route_hits += 1
-	return "%sを通過攻撃。%dダメージ。" % [enemy["type"], damage]
+# Attack tiles deal this much: a flat base, plus every attack tile already
+# hit this move (route_hits) and any temporary bonus from 集中路 this move
+# (route_power) — chaining several attack tiles in one big roll compounds.
+func _combo_damage(base: int) -> int:
+	return base + route_power + route_hits
 
+func _strike_lowest(amount: int) -> bool:
+	var target := _lowest_hp_enemy()
+	if target.is_empty():
+		return false
+	_damage_enemy(target, amount)
+	route_hits += 1
+	return true
+
+func _strike_highest(amount: int) -> bool:
+	var target := _highest_hp_enemy()
+	if target.is_empty():
+		return false
+	_damage_enemy(target, amount)
+	route_hits += 1
+	return true
+
+func _strike_all(amount: int) -> bool:
+	var hit_any := false
+	for enemy in enemies:
+		if int(enemy["hp"]) > 0:
+			_damage_enemy(enemy, amount)
+			hit_any = true
+	if hit_any:
+		route_hits += 1
+	return hit_any
+
+# Resolves every enemy's already-telegraphed attack: guaranteed-hit enemies
+# always land; positional ones only land if the player's route this *turn*
+# (every cell passed or stopped on, across every die rolled) touched one of
+# the cells that enemy telegraphed at the start of the turn.
 func _enemy_turn() -> void:
 	state = "enemy"
 	var messages := []
 	for enemy in enemies:
 		if int(enemy["hp"]) <= 0:
 			continue
-		var dist := _track_gap(enemy)
-		if str(enemy["type"]) == "射手" and dist <= 4:
-			_take_damage(int(enemy["damage"]))
-			messages.append("射手の射撃%d。" % int(enemy["damage"]))
-			continue
-		if dist <= 1:
-			_take_damage(int(enemy["damage"]))
-			messages.append("%sの攻撃%d。" % [enemy["type"], int(enemy["damage"])])
+		var hit := false
+		if str(enemy.get("attack_kind", "positional")) == "guaranteed":
+			hit = true
 		else:
-			_move_enemy_toward(enemy)
-			var epos: Vector2i = enemy["pos"]
-			if temp_board[epos.y][epos.x] == "trap_temp":
-				_damage_enemy(enemy, 5)
-				temp_board[epos.y][epos.x] = "none"
-				messages.append("%sが罠で5ダメージ。" % enemy["type"])
-			elif temp_board[epos.y][epos.x] == "hazard":
-				_damage_enemy(enemy, 2)
-				messages.append("%sが毒で2ダメージ。" % enemy["type"])
-			else:
-				messages.append("%sがコースを逆走して接近。" % enemy["type"])
+			var cells: Array = enemy.get("telegraph_cells", [])
+			for c in cells:
+				if turn_visited.has(c):
+					hit = true
+					break
+		if hit:
+			_take_damage(int(enemy["damage"]))
+			messages.append("%sの攻撃、%dダメージ。" % [enemy["type"], int(enemy["damage"])])
+		else:
+			messages.append("%sの攻撃を回避。" % enemy["type"])
 
 	if encounter >= 3 and not enemies.is_empty() and rng.randi_range(0, 100) < 45:
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
-			messages.append("敵の侵食で毒沼が増えた。")
+			messages.append("毒沼が広がった。")
 
 	_cleanup_dead_enemies()
 	if player_hp <= 0:
@@ -1557,23 +1498,9 @@ func _enemy_turn() -> void:
 	if enemies.is_empty():
 		_show_reward()
 		return
+	for enemy in enemies:
+		_generate_telegraph(enemy)
 	_start_player_turn(" ".join(messages))
-
-func _move_enemy_toward(enemy: Dictionary) -> void:
-	var move_count := int(enemy["move"])
-	var direction := -1
-	var enemy_step := int(enemy["step"])
-	var player_to_enemy := _forward_distance(player_step, enemy_step)
-	var enemy_to_player := _forward_distance(enemy_step, player_step)
-	if enemy_to_player < player_to_enemy:
-		direction = 1
-	for i in range(move_count):
-		var next_step := _normalize_step(int(enemy["step"]) + direction)
-		var next_pos := _pos_for_step(next_step)
-		if not _enemy_at_excluding(next_pos, enemy).is_empty():
-			break
-		enemy["step"] = next_step
-		enemy["pos"] = next_pos
 
 func _show_reward() -> void:
 	state = "reward_select"
@@ -1705,59 +1632,42 @@ func _can_step_to(pos: Vector2i) -> bool:
 func _can_place_reward(pos: Vector2i) -> bool:
 	if not _inside(pos):
 		return false
-	if not track_graph.has(pos):
+	if not ring_index_map.has(pos):
 		return false
 	if pos == _start_pos():
-		return false
-	if pos == CROSS_CENTER:
 		return false
 	if temp_board[pos.y][pos.x] == "block":
 		return false
 	return true
 
-func _nearest_enemy(origin: Vector2i, max_range: int) -> Dictionary:
+# Attack tiles auto-target: "slash"/"bow" go for the kill on whatever's
+# already weakest, "trap" goes after the toughest target instead.
+func _lowest_hp_enemy() -> Dictionary:
 	var best := {}
-	var best_dist := 999
+	var best_hp := 2147483647
 	for enemy in enemies:
-		var dist := _manhattan(origin, enemy["pos"])
-		if dist <= max_range and dist < best_dist:
+		var hp := int(enemy["hp"])
+		if hp > 0 and hp < best_hp:
 			best = enemy
-			best_dist = dist
+			best_hp = hp
 	return best
 
-func _line_enemy(origin: Vector2i) -> Dictionary:
+func _highest_hp_enemy() -> Dictionary:
 	var best := {}
-	var best_dist := 999
+	var best_hp := -1
 	for enemy in enemies:
-		if _same_line(origin, enemy["pos"]):
-			var dist := _manhattan(origin, enemy["pos"])
-			if dist < best_dist:
-				best = enemy
-				best_dist = dist
+		var hp := int(enemy["hp"])
+		if hp > 0 and hp > best_hp:
+			best = enemy
+			best_hp = hp
 	return best
-
-func _enemy_at(pos: Vector2i) -> Dictionary:
-	for enemy in enemies:
-		if enemy["pos"] == pos:
-			return enemy
-	return {}
-
-func _enemy_at_excluding(pos: Vector2i, excluded: Dictionary) -> Dictionary:
-	for enemy in enemies:
-		if enemy == excluded:
-			continue
-		if enemy["pos"] == pos:
-			return enemy
-	return {}
 
 func _random_empty_cell() -> Vector2i:
 	var choices := []
-	for p in track_graph.keys():
-		if p == player_pos or p == CROSS_CENTER:
+	for p in ring_cells:
+		if p == player_pos:
 			continue
 		if temp_board[p.y][p.x] != "none":
-			continue
-		if not _enemy_at(p).is_empty():
 			continue
 		choices.append(p)
 	if choices.is_empty():
@@ -1781,23 +1691,28 @@ func _heal(amount: int) -> void:
 		_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
 
 # All enemy HP loss should route through here so the hit always gets a
-# number and a flash, wherever the damage came from (route attacks, tile
-# effects, traps).
+# number and a punch, wherever the damage came from (route attacks, tile
+# effects, traps). Enemies live in the status panel now, not the board, so
+# the feedback plays there instead of at a cell.
 func _damage_enemy(enemy: Dictionary, amount: int) -> void:
 	if amount <= 0:
 		return
 	enemy["hp"] = int(enemy["hp"]) - amount
-	_spawn_floating_text(enemy["pos"], "-%d" % amount, Color("#ffb199"))
-	_flash_cell(enemy["pos"])
+	_spawn_enemy_panel_popup("-%d" % amount, Color("#ffb199"))
+	_flash_enemy_panel()
 
 func _cleanup_dead_enemies() -> void:
 	var survivors := []
+	var any_died := false
 	for enemy in enemies:
 		if int(enemy["hp"]) > 0:
 			survivors.append(enemy)
 		else:
-			_spawn_death_burst(enemy["pos"])
+			any_died = true
 	enemies = survivors
+	if any_died:
+		_spawn_enemy_panel_popup("撃破!", Color("#f6dfa6"))
+		_spawn_death_burst_at_panel()
 
 # A number that drifts up and fades out at a board cell — the only
 # feedback HP changes used to get was the gauge silently jumping.
@@ -1822,27 +1737,47 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color) -> void:
 	tween.tween_property(label, "modulate:a", 0.0, 0.7).set_delay(0.15).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.chain().tween_callback(label.queue_free)
 
-# A quick scale punch on the tile's icon, so a hit registers even before
-# the reader parses the popup number.
-func _flash_cell(pos: Vector2i) -> void:
-	var idx := _idx(pos.x, pos.y)
-	if idx < 0 or idx >= cell_icons.size():
+# Same idea as _spawn_floating_text, but for the enemy status panel (no
+# board cell to anchor to since enemies don't occupy one).
+func _spawn_enemy_panel_popup(text: String, color: Color) -> void:
+	if enemy_status_box == null or not is_instance_valid(enemy_status_box):
 		return
-	var icon: IconGlyph = cell_icons[idx]
-	icon.pivot_offset = icon.size / 2.0
+	var label := Label.new()
+	label.text = text
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_apply_font(label)
+	label.add_theme_font_size_override("font_size", 17)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_constant_override("outline_size", 5)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
+	label.position = enemy_status_box.global_position + Vector2(enemy_status_box.size.x + 10.0, float(rng.randi_range(-4, 4)))
+	label.z_index = 20
+	add_child(label)
 	var tween := create_tween()
-	tween.tween_property(icon, "scale", Vector2(1.35, 1.35), 0.06).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(icon, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.set_parallel(true)
+	tween.tween_property(label, "position:y", label.position.y - 26.0, 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.65).set_delay(0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.chain().tween_callback(label.queue_free)
 
-func _spawn_death_burst(pos: Vector2i) -> void:
-	if board_grid == null or not is_instance_valid(board_grid):
+# A quick scale punch on the whole panel, so a hit registers even before
+# the reader parses the popup number.
+func _flash_enemy_panel() -> void:
+	if enemy_status_box == null or not is_instance_valid(enemy_status_box):
+		return
+	enemy_status_box.pivot_offset = enemy_status_box.size / 2.0
+	var tween := create_tween()
+	tween.tween_property(enemy_status_box, "scale", Vector2(1.03, 1.03), 0.05).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(enemy_status_box, "scale", Vector2(1.0, 1.0), 0.12).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+func _spawn_death_burst_at_panel() -> void:
+	if enemy_status_box == null or not is_instance_valid(enemy_status_box):
 		return
 	var burst := BurstEffect.new()
 	burst.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	burst.center = _board_cell_center(pos)
-	burst.token = _board_token_size()
-	burst.z_index = 15
-	board_grid.add_child(burst)
+	burst.center = enemy_status_box.global_position + Vector2(16.0, enemy_status_box.size.y * 0.5)
+	burst.token = 44.0
+	burst.z_index = 21
+	add_child(burst)
 	var tween := create_tween()
 	tween.tween_property(burst, "progress", 1.0, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_callback(burst.queue_free)
@@ -1856,11 +1791,9 @@ func _make_empty_board(value: String) -> Array:
 		board.append(row)
 	return board
 
-# Builds the ring (16 perimeter cells, one-way) and the cross-shaped
-# shortcut through the middle (5 cells, player-only). ring_forward is the
-# ring's fixed one-way step; cross_adjacency is the extra, undirected
-# connections that create real choices at the 4 ring/cross junctions and
-# the center hub.
+# Builds the ring: 16 perimeter cells, one-way. This is the player's whole
+# board — enemies live off-board in enemy_status_box and never occupy a
+# cell themselves.
 func _build_track_graph() -> void:
 	ring_cells = [
 		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
@@ -1873,53 +1806,6 @@ func _build_track_graph() -> void:
 	for i in range(ring_cells.size()):
 		ring_index_map[ring_cells[i]] = i
 		ring_forward[ring_cells[i]] = ring_cells[(i + 1) % ring_cells.size()]
-
-	cross_adjacency = {
-		Vector2i(2, 0): [Vector2i(2, 1)],
-		Vector2i(2, 1): [Vector2i(2, 0), CROSS_CENTER],
-		CROSS_CENTER: [Vector2i(2, 1), Vector2i(1, 2), Vector2i(3, 2), Vector2i(2, 3)],
-		Vector2i(2, 3): [CROSS_CENTER, Vector2i(2, 4)],
-		Vector2i(2, 4): [Vector2i(2, 3)],
-		Vector2i(0, 2): [Vector2i(1, 2)],
-		Vector2i(1, 2): [Vector2i(0, 2), CROSS_CENTER],
-		Vector2i(3, 2): [CROSS_CENTER, Vector2i(4, 2)],
-		Vector2i(4, 2): [Vector2i(3, 2)],
-	}
-
-	track_graph = {}
-	for pos in ring_cells:
-		_add_graph_edge(pos, ring_forward[pos])
-	for pos in cross_adjacency.keys():
-		for n in cross_adjacency[pos]:
-			_add_graph_edge(pos, n)
-
-func _add_graph_edge(a: Vector2i, b: Vector2i) -> void:
-	if not track_graph.has(a):
-		track_graph[a] = []
-	if not track_graph.has(b):
-		track_graph[b] = []
-	if not track_graph[a].has(b):
-		track_graph[a].append(b)
-	if not track_graph[b].has(a):
-		track_graph[b].append(a)
-
-# All cells you can move to *from* pos, given you just arrived from prev
-# (so you don't reverse). Ring flow is always forced forward regardless of
-# prev; only the cross side ever offers a real choice — 2 options at a
-# ring/cross junction, 3 at the center hub.
-func _forward_options(pos: Vector2i, prev: Vector2i) -> Array:
-	var options: Array = []
-	if ring_forward.has(pos):
-		options.append(ring_forward[pos])
-	for n in cross_adjacency.get(pos, []):
-		if n != prev:
-			options.append(n)
-	return options
-
-func _is_junction(pos: Vector2i) -> bool:
-	if pos == CROSS_CENTER:
-		return true
-	return ring_forward.has(pos) and cross_adjacency.has(pos)
 
 func _normalize_step(step: int) -> int:
 	if ring_cells.is_empty():
@@ -1935,21 +1821,7 @@ func _pos_for_step(step: int) -> Vector2i:
 func _track_index(pos: Vector2i) -> int:
 	return int(ring_index_map.get(pos, 0))
 
-func _forward_distance(from_step: int, to_step: int) -> int:
-	if ring_cells.is_empty():
-		return 0
-	var size := ring_cells.size()
-	return (_normalize_step(to_step) - _normalize_step(from_step) + size) % size
-
-func _track_gap(enemy: Dictionary) -> int:
-	var enemy_step := int(enemy.get("step", _track_index(enemy["pos"])))
-	var forward := _forward_distance(player_step, enemy_step)
-	var backward := _forward_distance(enemy_step, player_step)
-	return min(forward, backward)
-
-# How many steps ahead pos is along the player's currently *forced* path
-# (up to the next branch, if any) — not a raw graph distance, since past a
-# branch "how far" depends on a choice that hasn't been made yet.
+# How many steps ahead pos is on the ring, within the 6-cell preview window.
 func _steps_ahead(pos: Vector2i) -> int:
 	var idx := preview_path.find(pos)
 	if idx == -1:
@@ -1961,24 +1833,14 @@ func _start_pos() -> Vector2i:
 		return Vector2i.ZERO
 	return ring_cells[0]
 
-# Walks forward from the player along cells with only one forward option,
-# stopping at 6 cells or at the first branch point (whichever comes
-# first). Drives both the lookahead ribbon and the board's "next" glow.
+# The next 6 cells ahead of the player on the ring. Drives both the
+# lookahead ribbon and the board's "next" glow.
 func _rebuild_preview_path() -> void:
 	preview_path = []
-	preview_branch_ahead = false
 	if state != "player":
 		return
-	var pos := player_pos
-	var prev := player_prev_pos
-	for i in range(6):
-		var options := _forward_options(pos, prev)
-		if options.size() != 1:
-			preview_branch_ahead = options.size() > 1
-			break
-		prev = pos
-		pos = options[0]
-		preview_path.append(pos)
+	for i in range(1, 7):
+		preview_path.append(_pos_for_step(player_step + i))
 
 func _segment_is_recent(a: Vector2i, b: Vector2i) -> bool:
 	if route_path.size() < 2:
@@ -2005,12 +1867,6 @@ func _idx(x: int, y: int) -> int:
 
 func _inside(pos: Vector2i) -> bool:
 	return pos.x >= 0 and pos.x < BOARD_W and pos.y >= 0 and pos.y < BOARD_H
-
-func _manhattan(a: Vector2i, b: Vector2i) -> int:
-	return abs(a.x - b.x) + abs(a.y - b.y)
-
-func _same_line(a: Vector2i, b: Vector2i) -> bool:
-	return a.x == b.x or a.y == b.y
 
 func _faces_to_text(faces: Array) -> String:
 	var parts := []
@@ -2080,21 +1936,14 @@ func _hero_color(key: String) -> Color:
 func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> String:
 	var lines := []
 	if ring_index_map.has(pos):
-		lines.append("外周コース%02d" % int(ring_index_map[pos]))
-	elif pos == CROSS_CENTER:
-		lines.append("十字路の中心(4方向に分岐)")
-	elif cross_adjacency.has(pos):
-		lines.append("十字路のショートカット(自分だけが通れる)")
+		lines.append("コース%02d" % int(ring_index_map[pos]))
 	var ahead := _steps_ahead(pos)
 	if ahead > 0:
 		lines.append("現在地から%dマス先" % ahead)
-	if _is_junction(pos):
-		lines.append("分岐点: 進む方向を選べます")
+	if _telegraphed_cells().has(pos):
+		lines.append("敵の攻撃予告: このマスを通過/停止すると被弾します")
 	if pos == player_pos:
 		lines.append("自分の現在地")
-	var enemy := _enemy_at(pos)
-	if not enemy.is_empty():
-		lines.append("%s / HP %d / 次: %s" % [enemy["type"], int(enemy["hp"]), _enemy_plan(enemy)])
 	if temp_type != "none":
 		lines.append(temp_defs[temp_type]["desc"])
 	var tile: Dictionary = tile_defs[perm_type]
