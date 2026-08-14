@@ -638,12 +638,6 @@ func _build_ui() -> void:
 	stats_label = _make_label(14, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(stats_label)
 
-	enemy_status_box = VBoxContainer.new()
-	enemy_status_box.add_theme_constant_override("separation", 3)
-	enemy_status_box.custom_minimum_size = Vector2(360, 0)
-	enemy_status_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	root_box.add_child(enemy_status_box)
-
 	lookahead_box = HBoxContainer.new()
 	lookahead_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	lookahead_box.add_theme_constant_override("separation", 5)
@@ -696,6 +690,15 @@ func _build_ui() -> void:
 		badge.add_theme_color_override("font_outline_color", Color("#4a120c"))
 		cell.add_child(badge)
 		cell_badges.append(badge)
+
+	# The ring is a perimeter — its middle is empty board space (reserved
+	# for an enemy sprite later). The single enemy's status card lives
+	# there instead of above the board, positioned by _layout_enemy_status
+	# (called alongside _layout_board_buttons, since both depend on the
+	# same board_grid size).
+	enemy_status_box = VBoxContainer.new()
+	enemy_status_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	board_grid.add_child(enemy_status_box)
 
 	dice_box = HBoxContainer.new()
 	dice_box.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -1153,7 +1156,24 @@ func _layout_board_buttons() -> void:
 			var center := _board_cell_center(Vector2i(x, y))
 			button.position = center - Vector2(token_size, token_size) * 0.5
 			button.size = Vector2(token_size, token_size)
+	_layout_enemy_status()
 	board_grid.queue_redraw()
+
+# The ring's perimeter cells leave its middle empty — that's where the
+# single enemy's status card sits (and later, its sprite). get_combined_
+# minimum_size() is queryable synchronously right after the card's
+# children are built (unlike a Control's actual .size, which needs a
+# layout pass to catch up — see _show_cell_info's PanelContainer note for
+# the bug that taught us that), so this can size and center it in the
+# same call that rebuilt it, no waiting a frame.
+func _layout_enemy_status() -> void:
+	if enemy_status_box == null or board_grid == null:
+		return
+	var wanted: Vector2 = enemy_status_box.get_combined_minimum_size()
+	enemy_status_box.size = wanted
+	var step := _board_spacing()
+	var center := _board_origin() + Vector2(1.5, 1.5) * step
+	enemy_status_box.position = center - wanted * 0.5
 
 func _board_token_size() -> float:
 	if board_grid == null:
