@@ -458,14 +458,14 @@ var pending_reward_name := ""
 
 var tile_defs := {
 	"empty": {"short": "道", "name": "道", "kind": "基本", "color": Color("#453a5c"), "pass": "", "stop": "停止: シールド+1"},
-	"slash": {"short": "攻", "name": "斬撃路", "kind": "攻撃", "color": Color("#a74646"), "pass": "通過: 最もHPが低い敵に2+コンボダメージ", "stop": "停止: 最もHPが低い敵に4+コンボダメージ"},
+	"slash": {"short": "攻", "name": "斬撃路", "kind": "攻撃", "color": Color("#a74646"), "pass": "通過: 敵に2+コンボダメージ", "stop": "停止: 敵に4+コンボダメージ"},
 	"guard": {"short": "守", "name": "防御路", "kind": "防御", "color": Color("#3d67a8"), "pass": "通過: シールド+1", "stop": "停止: シールド+3"},
-	"fire": {"short": "火", "name": "火走り", "kind": "攻撃", "color": Color("#bd6238"), "pass": "通過: 全敵に1+コンボダメージ", "stop": "停止: 最もHPが低い敵に3+コンボダメージ"},
+	"fire": {"short": "火", "name": "火走り", "kind": "攻撃", "color": Color("#bd6238"), "pass": "通過: 敵に1+コンボダメージ", "stop": "停止: 敵に3+コンボダメージ"},
 	"heal": {"short": "癒", "name": "癒し道", "kind": "回復", "color": Color("#459a5d"), "pass": "通過: HP+1", "stop": "停止: HP+3"},
-	"bow": {"short": "射", "name": "射撃台", "kind": "遠隔", "color": Color("#a59446"), "pass": "通過: 最もHPが低い敵に1+コンボダメージ", "stop": "停止: 最もHPが低い敵に3+コンボダメージ"},
-	"trap": {"short": "罠", "name": "罠道", "kind": "牽制", "color": Color("#7550a8"), "pass": "通過: 最もHPが高い敵に2+コンボダメージ", "stop": "停止: 最もHPが高い敵に4+コンボダメージ"},
+	"bow": {"short": "射", "name": "射撃台", "kind": "遠隔", "color": Color("#a59446"), "pass": "通過: 敵に1+コンボダメージ", "stop": "停止: 敵に3+コンボダメージ"},
+	"trap": {"short": "罠", "name": "罠道", "kind": "牽制", "color": Color("#7550a8"), "pass": "通過: 敵に2+コンボダメージ", "stop": "停止: 敵に4+コンボダメージ"},
 	"warp": {"short": "跳", "name": "跳躍路", "kind": "移動", "color": Color("#2f8c9b"), "pass": "通過: 追加で1歩進める", "stop": "停止: 追加行動+1"},
-	"shock": {"short": "雷", "name": "雷線", "kind": "全体", "color": Color("#7d70d6"), "pass": "通過: 全敵に1+コンボダメージ", "stop": "停止: 全敵に2+コンボダメージ"},
+	"shock": {"short": "雷", "name": "雷線", "kind": "全体", "color": Color("#7d70d6"), "pass": "通過: 敵に1+コンボダメージ", "stop": "停止: 敵に2+コンボダメージ"},
 	"focus": {"short": "集", "name": "集中路", "kind": "補助", "color": Color("#718063"), "pass": "通過: シールド+1、以降の攻撃+1", "stop": "停止: ダイスを1個引く"}
 }
 
@@ -485,7 +485,7 @@ var hero_defs := {
 	"knight": {
 		"name": "剣士",
 		"hp": 36,
-		"desc": "盤面は斬撃路と防御路で埋め尽くされている。HPの低い敵から確実に仕留める。",
+		"desc": "盤面は斬撃路と防御路で埋め尽くされている。着実に敵を削って倒す。",
 		"dice": [
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"},
 			{"name": "重撃ダイス", "faces": [3, 4, 4, 5, 6, 6], "tag": "heavy"},
@@ -501,7 +501,7 @@ var hero_defs := {
 	"mage": {
 		"name": "魔導士",
 		"hp": 28,
-		"desc": "盤面は火走りと防御路で埋め尽くされている。敵全体を薄く広く削っていく。",
+		"desc": "盤面は火走りと防御路で埋め尽くされている。小さなダメージを重ねて敵を焼き削る。",
 		"dice": [
 			{"name": "火花ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "fire"},
 			{"name": "揺らぎダイス", "faces": [1, 1, 3, 5, 6, 6], "tag": "arcane"},
@@ -640,7 +640,7 @@ func _build_ui() -> void:
 
 	enemy_status_box = VBoxContainer.new()
 	enemy_status_box.add_theme_constant_override("separation", 3)
-	enemy_status_box.custom_minimum_size = Vector2(330, 0)
+	enemy_status_box.custom_minimum_size = Vector2(360, 0)
 	enemy_status_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	root_box.add_child(enemy_status_box)
 
@@ -832,57 +832,43 @@ func _start_encounter() -> void:
 		intro += "\nマスをタップすると効果を確認できます（移動はダイス選択のみ）。"
 	_start_player_turn(intro)
 
+# One enemy per encounter, always — the UI (a single enemy card, not a
+# list) and the tile flavor text ("敵に3ダメージ", no "最もHPが低い")
+# both assume this. Difficulty ramps through hp/damage and through the
+# attack pattern itself (more telegraphed cells, then a guaranteed hit)
+# rather than through enemy count.
 func _setup_encounter() -> void:
 	if encounter == MAX_ENCOUNTERS:
-		enemies.append(_make_enemy("ボス", 32, 8, "guaranteed", []))
-		enemies.append(_make_enemy("護衛", 12, 4, "positional", [1, 3]))
-		enemies.append(_make_enemy("護衛", 12, 4, "positional", [2, 5]))
+		enemies.append(_make_enemy("ボス", 58, 10, "guaranteed", []))
 	else:
-		var enemy_count: int = min(2 + int(encounter / 2), 4)
-		for i in range(enemy_count):
-			var type_name := "敵"
-			var hp := 8 + encounter * 2
-			var damage := 3 + int(encounter / 2)
-			var attack_kind := "positional"
-			var offsets: Array = [2 + i]
-			if encounter >= 3 and i == 0:
+		var type_name := "敵"
+		var hp := 12 + encounter * 8
+		var damage := 4 + encounter
+		var attack_kind := "positional"
+		var offsets: Array = [2]
+		match encounter:
+			1:
+				offsets = [2]
+			2:
+				offsets = [2, 4]
+			3:
 				type_name = "射手"
-				hp -= 2
-				damage += 1
 				attack_kind = "guaranteed"
 				offsets = []
-			elif encounter >= 4 and i == 1:
+			4:
 				type_name = "重装"
-				hp += 6
-				damage += 2
 				offsets = [1, 3, 5]
-			enemies.append(_make_enemy(type_name, hp, damage, attack_kind, offsets))
+			_:
+				offsets = [2, 4, 5]
+		enemies.append(_make_enemy(type_name, hp, damage, attack_kind, offsets))
 
 	for n in range(min(encounter, 4)):
 		var p2 := _random_empty_cell()
 		if p2.x >= 0:
 			temp_board[p2.y][p2.x] = "hazard"
 
-	_assign_enemy_labels()
 	for enemy in enemies:
 		_generate_telegraph(enemy)
-
-# Two "敵" rows next to each other were indistinguishable — this numbers
-# same-typed enemies ("敵1"/"敵2") so status rows and log lines can tell
-# them apart. Left alone when a type is unique this encounter.
-func _assign_enemy_labels() -> void:
-	var type_counts: Dictionary = {}
-	for enemy in enemies:
-		var t: String = str(enemy["type"])
-		type_counts[t] = int(type_counts.get(t, 0)) + 1
-	var seen: Dictionary = {}
-	for enemy in enemies:
-		var t: String = str(enemy["type"])
-		if int(type_counts.get(t, 0)) > 1:
-			seen[t] = int(seen.get(t, 0)) + 1
-			enemy["label"] = "%s%d" % [t, int(seen[t])]
-		else:
-			enemy["label"] = t
 
 # attack_kind "guaranteed" always hits the player each turn; "positional"
 # only hits if the player's route this turn touches one of the cells it
@@ -1062,45 +1048,72 @@ func _refresh_enemy_status() -> void:
 	for enemy in enemies:
 		enemy_status_box.add_child(_make_enemy_status_row(enemy))
 
-func _make_enemy_status_row(enemy: Dictionary) -> VBoxContainer:
+# There's only ever one enemy on screen at a time now, so this gets a full
+# bordered card — the same visual weight as the player's own gauges — not
+# a cramped list row sized for up to four.
+func _make_enemy_status_row(enemy: Dictionary) -> PanelContainer:
+	var card := PanelContainer.new()
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color("#2e2036")
+	box.border_color = Color("#a8613f")
+	box.border_width_left = 2
+	box.border_width_top = 2
+	box.border_width_right = 2
+	box.border_width_bottom = 2
+	box.corner_radius_top_left = 12
+	box.corner_radius_top_right = 12
+	box.corner_radius_bottom_left = 12
+	box.corner_radius_bottom_right = 12
+	box.content_margin_left = 14.0
+	box.content_margin_right = 14.0
+	box.content_margin_top = 10.0
+	box.content_margin_bottom = 10.0
+	card.add_theme_stylebox_override("panel", box)
+
 	var block := VBoxContainer.new()
-	block.add_theme_constant_override("separation", 1)
+	block.add_theme_constant_override("separation", 5)
+	card.add_child(block)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 7)
+	row.add_theme_constant_override("separation", 8)
 	block.add_child(row)
 
 	var icon := IconGlyph.new()
 	icon.kind = "skull"
 	icon.glyph_color = Color("#f0b7a7")
-	icon.custom_minimum_size = Vector2(15, 15)
+	icon.custom_minimum_size = Vector2(24, 24)
 	row.add_child(icon)
 
-	# "護衛1"/"護衛2" instead of two identical "護衛" rows — see
-	# _assign_enemy_labels, called once per encounter setup.
-	var name_label := _make_label(11, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_LEFT)
-	name_label.text = str(enemy.get("label", enemy["type"]))
-	name_label.custom_minimum_size = Vector2(46, 0)
+	var name_label := _make_label(16, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_LEFT, true)
+	name_label.text = str(enemy["type"])
+	name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(name_label)
 
 	var max_hp: int = max(int(enemy["max_hp"]), 1)
 	var real_hp: int = int(enemy["hp"])
 	var uid: int = int(enemy.get("uid", -1))
 	var prev_hp: int = int(enemy_hp_prev.get(uid, real_hp))
-	# Mid-turn (suppressed), this row keeps showing whatever it showed last
+	# Mid-turn (suppressed), this card keeps showing whatever it showed last
 	# turn — real_hp may already have dropped (even to 0, if this enemy
 	# died to a combo mid-move) but that only becomes visible at the flush.
 	var shown_hp: int = prev_hp if suppress_stat_reveal else real_hp
+
+	var value_label := _make_label(15, Color("#fff8ec"), HORIZONTAL_ALIGNMENT_RIGHT, true)
+	value_label.text = "%d / %d" % [shown_hp, max_hp]
+	value_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.add_child(value_label)
+
 	var bar := GaugeBar.new()
 	bar.fill_color = _enemy_hp_color(float(shown_hp) / float(max_hp))
 	bar.track_color = Color("#3d3654")
 	bar.value = shown_hp
 	bar.display_value = float(prev_hp)
 	bar.max_value = max_hp
-	bar.segments = clamp(max_hp, 1, 14)
-	bar.custom_minimum_size = Vector2(0, 9)
+	bar.segments = clamp(max_hp, 1, 20)
+	bar.custom_minimum_size = Vector2(0, 14)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(bar)
+	block.add_child(bar)
 	if not suppress_stat_reveal:
 		if prev_hp != real_hp:
 			var tween := create_tween()
@@ -1108,35 +1121,26 @@ func _make_enemy_status_row(enemy: Dictionary) -> VBoxContainer:
 			tween.tween_property(bar, "display_value", float(real_hp), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 		enemy_hp_prev[uid] = real_hp
 
-	var value_label := _make_label(12, Color("#fff8ec"), HORIZONTAL_ALIGNMENT_RIGHT, true)
-	value_label.text = "%d/%d" % [shown_hp, max_hp]
-	value_label.custom_minimum_size = Vector2(44, 0)
-	row.add_child(value_label)
-
-	# A second, full-width line for the attack plan instead of squeezing it
-	# into a narrow trailing column — "2マス先 3" read as noise; spelling
-	# out "先で3ダメージ" plus a sword glyph makes the "3" unambiguous.
+	# Spelling out "先で3ダメージ" plus a sword/target glyph instead of the
+	# old "2マス先 3" so the trailing number reads as damage, not a second
+	# location.
 	var plan_row := HBoxContainer.new()
-	plan_row.add_theme_constant_override("separation", 4)
+	plan_row.add_theme_constant_override("separation", 5)
 	block.add_child(plan_row)
-
-	var plan_spacer := Control.new()
-	plan_spacer.custom_minimum_size = Vector2(15, 0)
-	plan_row.add_child(plan_spacer)
 
 	var plan_icon := IconGlyph.new()
 	plan_icon.kind = "bolt" if str(enemy.get("attack_kind", "positional")) == "guaranteed" else "focus"
-	plan_icon.glyph_color = Color("#8d95ab")
-	plan_icon.custom_minimum_size = Vector2(11, 11)
+	plan_icon.glyph_color = Color("#c9a89a")
+	plan_icon.custom_minimum_size = Vector2(13, 13)
 	plan_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	plan_row.add_child(plan_icon)
 
-	var plan_label := _make_label(10, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_LEFT)
+	var plan_label := _make_label(12, Color("#c9a89a"), HORIZONTAL_ALIGNMENT_LEFT)
 	plan_label.text = _enemy_plan(enemy)
 	plan_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	plan_row.add_child(plan_label)
 
-	return block
+	return card
 
 func _layout_board_buttons() -> void:
 	if board_grid == null or cell_buttons.is_empty():
@@ -1744,7 +1748,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	elif tile_type == "fire":
 		var dmg := _combo_damage(1)
 		if _strike_all(dmg):
-			messages.append("火走りを通過。全敵に%dダメージ。" % dmg)
+			messages.append("火走りを通過。敵に%dダメージ。" % dmg)
 	elif tile_type == "heal":
 		_heal(1)
 		messages.append("癒し道を通過。HP+1。")
@@ -1755,14 +1759,14 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	elif tile_type == "trap":
 		var dmg := _combo_damage(2)
 		if _strike_highest(dmg):
-			messages.append("罠道を通過。最もHPが高い敵に%dダメージ。" % dmg)
+			messages.append("罠道を通過。敵に%dダメージ。" % dmg)
 	elif tile_type == "warp":
 		steps_left += 1
 		messages.append("跳躍路を通過。追加で1歩。")
 	elif tile_type == "shock":
 		var dmg := _combo_damage(1)
 		if _strike_all(dmg):
-			messages.append("雷線を通過。全敵に%dダメージ。" % dmg)
+			messages.append("雷線を通過。敵に%dダメージ。" % dmg)
 	elif tile_type == "focus":
 		_gain_shield(1)
 		route_power += 1
@@ -1799,7 +1803,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 	if tile_type == "trap":
 		var dmg := _combo_damage(4)
 		if _strike_highest(dmg):
-			return "罠道で停止。最もHPが高い敵に%dダメージ。" % dmg
+			return "罠道で停止。敵に%dダメージ。" % dmg
 		return "罠道で停止。敵はいない。"
 	if tile_type == "warp":
 		actions_left += 1
@@ -1807,7 +1811,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 	if tile_type == "shock":
 		var dmg := _combo_damage(2)
 		if _strike_all(dmg):
-			return "雷線で停止。全敵に%dダメージ。" % dmg
+			return "雷線で停止。敵に%dダメージ。" % dmg
 		return "雷線で停止。敵はいない。"
 	if tile_type == "focus":
 		_draw_to_hand()
@@ -1865,7 +1869,7 @@ func _enemy_turn() -> void:
 				if turn_visited.has(c):
 					hit = true
 					break
-		var enemy_label: String = str(enemy.get("label", enemy["type"]))
+		var enemy_label: String = str(enemy["type"])
 		if hit:
 			_take_damage(int(enemy["damage"]))
 			messages.append("%sの攻撃、%dダメージ。" % [enemy_label, int(enemy["damage"])])
