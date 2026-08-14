@@ -6,6 +6,35 @@ const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
 const MAX_ENCOUNTERS := 6
 
+# Warm vertical gradient behind the whole screen instead of a flat color,
+# so the app reads as a lit dungeon backdrop rather than a plain dark panel.
+class Backdrop:
+	extends Control
+
+	func _draw() -> void:
+		if size.x <= 0.0 or size.y <= 0.0:
+			return
+		var top_color := Color("#33264c")
+		var mid_color := Color("#241c37")
+		var bottom_color := Color("#161022")
+		var w: float = size.x
+		var h: float = size.y
+		var mid_y: float = h * 0.5
+		draw_polygon(
+			PackedVector2Array([Vector2(0, 0), Vector2(w, 0), Vector2(w, mid_y), Vector2(0, mid_y)]),
+			PackedColorArray([top_color, top_color, mid_color, mid_color])
+		)
+		draw_polygon(
+			PackedVector2Array([Vector2(0, mid_y), Vector2(w, mid_y), Vector2(w, h), Vector2(0, h)]),
+			PackedColorArray([mid_color, mid_color, bottom_color, bottom_color])
+		)
+		var glow_radius: float = max(w, h) * 0.62
+		var glow_center := Vector2(w * 0.5, h * 0.32)
+		var glow_steps := 5
+		for i in range(glow_steps, 0, -1):
+			var t: float = float(i) / float(glow_steps)
+			draw_circle(glow_center, glow_radius * t, Color(0.55, 0.42, 0.75, 0.035))
+
 class BoardView:
 	extends Control
 
@@ -236,7 +265,7 @@ class GaugeBar:
 	var max_value := 1
 	var segments := 10
 	var fill_color := Color("#4f9d72")
-	var track_color := Color("#2a3040")
+	var track_color := Color("#3d3654")
 
 	# display_value trails value: on damage it lingers high and drains down
 	# through a red "about to be lost" band; on a gain it climbs up through
@@ -334,7 +363,7 @@ class BurstEffect:
 
 var rng := RandomNumberGenerator.new()
 
-var bg_rect: ColorRect
+var bg_rect: Control
 var root_box: VBoxContainer
 var header_label: Label
 var instruction_label: Label
@@ -356,6 +385,7 @@ var log_label: Label
 var end_turn_button: Button
 var restart_button: Button
 var ui_font: Font
+var ui_font_heavy: Font
 
 var cell_buttons: Array = []
 var cell_icons: Array = []
@@ -414,7 +444,7 @@ var pending_reward_type := ""
 var pending_reward_name := ""
 
 var tile_defs := {
-	"empty": {"short": "道", "name": "道", "kind": "基本", "color": Color("#2f3442"), "pass": "", "stop": "停止: シールド+1"},
+	"empty": {"short": "道", "name": "道", "kind": "基本", "color": Color("#453a5c"), "pass": "", "stop": "停止: シールド+1"},
 	"slash": {"short": "攻", "name": "斬撃路", "kind": "攻撃", "color": Color("#a74646"), "pass": "通過: 最もHPが低い敵に2+コンボダメージ", "stop": "停止: 最もHPが低い敵に4+コンボダメージ"},
 	"guard": {"short": "守", "name": "防御路", "kind": "防御", "color": Color("#3d67a8"), "pass": "通過: シールド+1", "stop": "停止: シールド+3"},
 	"fire": {"short": "火", "name": "火走り", "kind": "攻撃", "color": Color("#bd6238"), "pass": "通過: 全敵に1+コンボダメージ", "stop": "停止: 最もHPが低い敵に3+コンボダメージ"},
@@ -429,7 +459,7 @@ var tile_defs := {
 var temp_defs := {
 	"none": {"short": "", "color": Color("#00000000"), "desc": ""},
 	"hazard": {"short": "毒", "color": Color("#58385c"), "desc": "通過: HP-2"},
-	"block": {"short": "壁", "color": Color("#171a21"), "desc": "通れない"}
+	"block": {"short": "壁", "color": Color("#161022"), "desc": "通れない"}
 }
 
 var reward_pool := [
@@ -492,7 +522,15 @@ var hero_defs := {
 func _ready() -> void:
 	rng.randomize()
 	_build_track_graph()
-	ui_font = load("res://assets/NotoSansJP.ttf")
+	var base_font: Font = load("res://assets/NotoSansJP.ttf")
+	var regular_variation := FontVariation.new()
+	regular_variation.base_font = base_font
+	regular_variation.variation_opentype = {"wght": 600.0}
+	ui_font = regular_variation
+	var heavy_variation := FontVariation.new()
+	heavy_variation.base_font = base_font
+	heavy_variation.variation_opentype = {"wght": 850.0}
+	ui_font_heavy = heavy_variation
 	_build_ui()
 	_fit_layout()
 	_show_title()
@@ -505,6 +543,7 @@ func _fit_layout() -> void:
 	if bg_rect != null:
 		bg_rect.position = Vector2.ZERO
 		bg_rect.size = get_viewport_rect().size
+		bg_rect.queue_redraw()
 	if root_box != null:
 		root_box.position = Vector2(14, 14)
 		root_box.size = get_viewport_rect().size - Vector2(28, 28)
@@ -519,8 +558,7 @@ func _fit_layout() -> void:
 		_layout_board_buttons()
 
 func _build_ui() -> void:
-	bg_rect = ColorRect.new()
-	bg_rect.color = Color("#171a21")
+	bg_rect = Backdrop.new()
 	bg_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg_rect)
 
@@ -529,9 +567,9 @@ func _build_ui() -> void:
 	root_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	add_child(root_box)
 
-	header_label = _make_label(26, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_CENTER)
+	header_label = _make_label(26, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_CENTER, true)
 	root_box.add_child(header_label)
-	instruction_label = _make_label(21, Color("#f5d86a"), HORIZONTAL_ALIGNMENT_CENTER)
+	instruction_label = _make_label(21, Color("#ffe28a"), HORIZONTAL_ALIGNMENT_CENTER, true)
 	root_box.add_child(instruction_label)
 	route_label = _make_label(16, Color("#dfe7f3"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(route_label)
@@ -645,11 +683,11 @@ func _build_ui() -> void:
 	log_label = _make_label(15, Color("#d7d2c4"), HORIZONTAL_ALIGNMENT_LEFT)
 	root_box.add_child(log_label)
 
-func _make_label(size: int, color: Color, align: HorizontalAlignment) -> Label:
+func _make_label(size: int, color: Color, align: HorizontalAlignment, heavy: bool = false) -> Label:
 	var label := Label.new()
 	label.horizontal_alignment = align
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_apply_font(label)
+	_apply_font(label, heavy)
 	label.add_theme_font_size_override("font_size", size)
 	label.add_theme_color_override("font_color", color)
 	return label
@@ -665,9 +703,9 @@ func _build_gauge_row(caption: String, caption_color: Color, fill_color: Color, 
 	bar.custom_minimum_size = Vector2(0, 11)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(bar)
-	_apply_font(value_label)
-	value_label.add_theme_font_size_override("font_size", 12)
-	value_label.add_theme_color_override("font_color", Color("#ede7d8"))
+	_apply_font(value_label, true)
+	value_label.add_theme_font_size_override("font_size", 14)
+	value_label.add_theme_color_override("font_color", Color("#fff8ec"))
 	value_label.custom_minimum_size = Vector2(54, 0)
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	row.add_child(value_label)
@@ -944,7 +982,7 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 	var prev_hp: int = int(enemy_hp_prev.get(uid, cur_hp))
 	var bar := GaugeBar.new()
 	bar.fill_color = _enemy_hp_color(float(cur_hp) / float(max_hp))
-	bar.track_color = Color("#2a3040")
+	bar.track_color = Color("#3d3654")
 	bar.value = cur_hp
 	bar.display_value = float(prev_hp)
 	bar.max_value = max_hp
@@ -958,7 +996,7 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 		tween.tween_property(bar, "display_value", float(cur_hp), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	enemy_hp_prev[uid] = cur_hp
 
-	var value_label := _make_label(11, Color("#ede7d8"), HORIZONTAL_ALIGNMENT_RIGHT)
+	var value_label := _make_label(12, Color("#fff8ec"), HORIZONTAL_ALIGNMENT_RIGHT, true)
 	value_label.text = "%d/%d" % [int(enemy["hp"]), max_hp]
 	value_label.custom_minimum_size = Vector2(44, 0)
 	row.add_child(value_label)
@@ -1410,7 +1448,7 @@ func _show_cell_info(pos: Vector2i) -> void:
 
 	var panel := Panel.new()
 	var box := StyleBoxFlat.new()
-	box.bg_color = Color("#1c2130")
+	box.bg_color = Color("#2e2645")
 	box.border_color = Color("#e3b355")
 	box.border_width_left = 2
 	box.border_width_top = 2
@@ -1928,8 +1966,8 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color) -> void:
 	var label := Label.new()
 	label.text = text
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_apply_font(label)
-	label.add_theme_font_size_override("font_size", 30)
+	_apply_font(label, true)
+	label.add_theme_font_size_override("font_size", 32)
 	label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 8)
 	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
@@ -1955,8 +1993,8 @@ func _spawn_enemy_panel_popup(text: String, color: Color) -> void:
 	var label := Label.new()
 	label.text = text
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_apply_font(label)
-	label.add_theme_font_size_override("font_size", 26)
+	_apply_font(label, true)
+	label.add_theme_font_size_override("font_size", 28)
 	label.add_theme_color_override("font_color", color)
 	label.add_theme_constant_override("outline_size", 7)
 	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
@@ -2120,32 +2158,32 @@ func _tag_name(tag: String) -> String:
 func _tag_color(tag: String) -> Color:
 	match tag:
 		"fire":
-			return Color("#8f4932")
+			return Color("#a85940")
 		"steel":
-			return Color("#455c76")
+			return Color("#55708f")
 		"heavy":
-			return Color("#68605a")
+			return Color("#7d746c")
 		"swift":
-			return Color("#3f776d")
+			return Color("#4c8f83")
 		"trick":
-			return Color("#67487b")
+			return Color("#7d5a93")
 		"lucky":
-			return Color("#80733f")
+			return Color("#998a4d")
 		"arcane":
-			return Color("#594c93")
+			return Color("#6b5cae")
 		"focus":
-			return Color("#5f7354")
-	return Color("#3d4658")
+			return Color("#728a65")
+	return Color("#4a5570")
 
 func _hero_color(key: String) -> Color:
 	match key:
 		"knight":
-			return Color("#344b6d")
+			return Color("#3f5c86")
 		"mage":
-			return Color("#50396f")
+			return Color("#634590")
 		"rogue":
-			return Color("#4f6340")
-	return Color("#303948")
+			return Color("#5f7a4e")
+	return Color("#3c4760")
 
 func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> String:
 	var lines := []
@@ -2235,6 +2273,7 @@ func _clear_children(node: Node) -> void:
 	for child in node.get_children():
 		child.queue_free()
 
-func _apply_font(control: Control) -> void:
-	if ui_font != null:
-		control.add_theme_font_override("font", ui_font)
+func _apply_font(control: Control, heavy: bool = false) -> void:
+	var font: Font = ui_font_heavy if heavy else ui_font
+	if font != null:
+		control.add_theme_font_override("font", font)
