@@ -374,6 +374,7 @@ var hp_value_label: Label
 var shield_bar: GaugeBar
 var shield_value_label: Label
 var action_pip_box: HBoxContainer
+var ledger_box: HFlowContainer
 var stats_label: Label
 var enemy_status_box: VBoxContainer
 var lookahead_box: HBoxContainer
@@ -424,10 +425,18 @@ var permanent_board: Array = []
 var temp_board: Array = []
 var enemies: Array = []
 var next_enemy_uid := 0
-# Last-drawn HP per enemy uid, so a freshly-rebuilt status row can still
-# seed its gauge's ghost-trail animation correctly (the row itself doesn't
-# persist across refreshes the way the player's own bars do).
+# The HP each bar is currently *showing*, per enemy uid — separate from the
+# enemy's real "hp", which mutates the instant a tile hits it. While
+# suppress_stat_reveal is on, this is what stays on screen; _flush_turn_ledger
+# is what lets it catch up to the real value.
 var enemy_hp_prev: Dictionary = {}
+# While true (during the player's own movement/dice resolution), tile
+# effects still mutate real state immediately but skip revealing it on the
+# HP/shield bars and enemy panel — they queue a ledger chip instead. See
+# _flush_turn_ledger, which is what turns this back off and reveals the
+# turn's net result in one animated pass.
+var suppress_stat_reveal := false
+var pending_ledger: Array = []
 var dice_bag: Array = []
 var draw_pile: Array = []
 var discard_pile: Array = []
@@ -595,6 +604,18 @@ func _build_ui() -> void:
 	action_pip_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	action_pip_box.add_theme_constant_override("separation", 6)
 	root_box.add_child(action_pip_box)
+
+	# Holds a chip per tile effect queued this turn (see _queue_ledger_entry)
+	# — this is what "moves" while the HP/shield bars stay frozen, so the
+	# player watches the tally build up instead of the bars twitching per
+	# tile. _flush_turn_ledger clears it once the bars catch up at turn end.
+	ledger_box = HFlowContainer.new()
+	ledger_box.alignment = FlowContainer.ALIGNMENT_CENTER
+	ledger_box.add_theme_constant_override("h_separation", 5)
+	ledger_box.add_theme_constant_override("v_separation", 4)
+	ledger_box.custom_minimum_size = Vector2(320, 0)
+	ledger_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	root_box.add_child(ledger_box)
 
 	stats_label = _make_label(14, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(stats_label)
@@ -868,10 +889,17 @@ func _start_player_turn(message: String = "") -> void:
 	route_power = 0
 	route_hits = 0
 	turn_visited = {}
+	pending_ledger = []
+	if ledger_box != null:
+		_clear_children(ledger_box)
 	_draw_to_hand()
 	if message != "":
 		log_label.text = message
+	suppress_stat_reveal = false
 	_refresh_all()
+	# From here until _flush_turn_ledger runs (turn end), tile effects queue
+	# into the ledger instead of moving the bars right away.
+	suppress_stat_reveal = true
 
 func _draw_to_hand() -> void:
 	while hand.size() < HAND_LIMIT:
@@ -896,18 +924,24 @@ func _refresh_header() -> void:
 	route_label.text = _route_status_text()
 	gauges_box.visible = true
 	action_pip_box.visible = true
+	ledger_box.visible = state == "player" or state == "moving"
 
 	hp_bar.max_value = max(player_max_hp, 1)
 	hp_bar.segments = clamp(player_max_hp, 1, 18)
-	hp_bar.fill_color = _hp_ratio_color(float(player_hp) / float(max(player_max_hp, 1)))
-	_animate_bar(hp_bar, player_hp)
-	hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
+	# While suppress_stat_reveal is on, the bars/numbers stay exactly as they
+	# were at the start of this turn — tile effects are still queuing up in
+	# the ledger instead. _flush_turn_ledger is what turns this back off.
+	if not suppress_stat_reveal:
+		hp_bar.fill_color = _hp_ratio_color(float(player_hp) / float(max(player_max_hp, 1)))
+		_animate_bar(hp_bar, player_hp)
+		hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
 
 	var shield_cap: int = clamp(max(player_shield, 6), 1, 14)
-	shield_bar.max_value = shield_cap
-	shield_bar.segments = shield_cap
-	_animate_bar(shield_bar, player_shield)
-	shield_value_label.text = str(player_shield)
+	if not suppress_stat_reveal:
+		shield_bar.max_value = shield_cap
+		shield_bar.segments = shield_cap
+		_animate_bar(shield_bar, player_shield)
+		shield_value_label.text = str(player_shield)
 
 	_clear_children(action_pip_box)
 	for i in range(ACTIONS_PER_TURN):
@@ -981,27 +1015,32 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 	row.add_child(name_label)
 
 	var max_hp: int = max(int(enemy["max_hp"]), 1)
-	var cur_hp: int = int(enemy["hp"])
+	var real_hp: int = int(enemy["hp"])
 	var uid: int = int(enemy.get("uid", -1))
-	var prev_hp: int = int(enemy_hp_prev.get(uid, cur_hp))
+	var prev_hp: int = int(enemy_hp_prev.get(uid, real_hp))
+	# Mid-turn (suppressed), this row keeps showing whatever it showed last
+	# turn — real_hp may already have dropped (even to 0, if this enemy
+	# died to a combo mid-move) but that only becomes visible at the flush.
+	var shown_hp: int = prev_hp if suppress_stat_reveal else real_hp
 	var bar := GaugeBar.new()
-	bar.fill_color = _enemy_hp_color(float(cur_hp) / float(max_hp))
+	bar.fill_color = _enemy_hp_color(float(shown_hp) / float(max_hp))
 	bar.track_color = Color("#3d3654")
-	bar.value = cur_hp
+	bar.value = shown_hp
 	bar.display_value = float(prev_hp)
 	bar.max_value = max_hp
 	bar.segments = clamp(max_hp, 1, 14)
 	bar.custom_minimum_size = Vector2(0, 9)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(bar)
-	if prev_hp != cur_hp:
-		var tween := create_tween()
-		tween.tween_interval(0.12)
-		tween.tween_property(bar, "display_value", float(cur_hp), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	enemy_hp_prev[uid] = cur_hp
+	if not suppress_stat_reveal:
+		if prev_hp != real_hp:
+			var tween := create_tween()
+			tween.tween_interval(0.12)
+			tween.tween_property(bar, "display_value", float(real_hp), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		enemy_hp_prev[uid] = real_hp
 
 	var value_label := _make_label(12, Color("#fff8ec"), HORIZONTAL_ALIGNMENT_RIGHT, true)
-	value_label.text = "%d/%d" % [int(enemy["hp"]), max_hp]
+	value_label.text = "%d/%d" % [shown_hp, max_hp]
 	value_label.custom_minimum_size = Vector2(44, 0)
 	row.add_child(value_label)
 
@@ -1537,32 +1576,36 @@ func _advance_player() -> void:
 		var pass_message := _resolve_pass_tile(player_pos)
 		if pass_message != "":
 			messages.append(pass_message)
-		_cleanup_dead_enemies()
 		log_label.text = " ".join(messages)
 		_refresh_all()
 		await _animate_player_step(0.16)
 
 		if player_hp <= 0:
+			await _flush_turn_ledger()
 			_show_game_over("移動中に倒れました。")
 			return
-		if enemies.is_empty():
+		if not _any_enemy_alive():
+			await _flush_turn_ledger()
 			_show_reward()
 			return
 
 	if player_hp <= 0:
+		await _flush_turn_ledger()
 		_show_game_over("移動中に倒れました。")
 		return
-	if enemies.is_empty():
+	if not _any_enemy_alive():
+		await _flush_turn_ledger()
 		_show_reward()
 		return
 
 	messages.append(_resolve_stop_tile(player_pos))
-	_cleanup_dead_enemies()
 	actions_left -= 1
 	if player_hp <= 0:
+		await _flush_turn_ledger()
 		_show_game_over("移動後に倒れました。")
 		return
-	if enemies.is_empty():
+	if not _any_enemy_alive():
+		await _flush_turn_ledger()
 		_show_reward()
 		return
 	if actions_left <= 0 or hand.is_empty():
@@ -1570,6 +1613,7 @@ func _advance_player() -> void:
 		log_label.text = " ".join(messages) + " 敵の行動。"
 		_refresh_all()
 		await get_tree().create_timer(0.25).timeout
+		await _flush_turn_ledger()
 		_enemy_turn()
 	else:
 		state = "player"
@@ -1859,6 +1903,7 @@ func _on_end_turn_pressed() -> void:
 		return
 	if state == "player":
 		log_label.text = "行動を終えました。敵の行動。"
+		await _flush_turn_ledger()
 		_enemy_turn()
 
 func _can_step_to(pos: Vector2i) -> bool:
@@ -1914,6 +1959,10 @@ func _take_damage(amount: int) -> void:
 	player_shield -= blocked
 	var hp_loss := amount - blocked
 	player_hp -= hp_loss
+	if suppress_stat_reveal:
+		if hp_loss > 0:
+			_queue_ledger_entry("self_dmg", hp_loss)
+		return
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#ff9a86"))
 		_punch_control(gauges_box, 1.08)
@@ -1924,14 +1973,21 @@ func _take_damage(amount: int) -> void:
 func _heal(amount: int) -> void:
 	var gained: int = min(player_max_hp, player_hp + amount) - player_hp
 	player_hp = min(player_max_hp, player_hp + amount)
-	if gained > 0:
-		_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
-		_punch_control(gauges_box, 1.05)
+	if gained <= 0:
+		return
+	if suppress_stat_reveal:
+		_queue_ledger_entry("heal", gained)
+		return
+	_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
+	_punch_control(gauges_box, 1.05)
 
 func _gain_shield(amount: int) -> void:
 	if amount <= 0:
 		return
 	player_shield += amount
+	if suppress_stat_reveal:
+		_queue_ledger_entry("shield", amount)
+		return
 	_spawn_floating_text(player_pos, "+%d 盾" % amount, Color("#9fc3ff"))
 	_punch_control(gauges_box, 1.04)
 
@@ -1943,8 +1999,86 @@ func _damage_enemy(enemy: Dictionary, amount: int) -> void:
 	if amount <= 0:
 		return
 	enemy["hp"] = int(enemy["hp"]) - amount
+	if suppress_stat_reveal:
+		_queue_ledger_entry("enemy_dmg", amount, int(enemy.get("uid", -1)))
+		return
 	_spawn_enemy_panel_popup("-%d" % amount, Color("#ffb199"))
 	_flash_enemy_panel()
+
+# Tile effects during the player's own move don't touch the bars right
+# away — they queue a small chip here instead, so the turn's numbers line
+# up where they happened instead of the bars twitching per tile. See
+# _flush_turn_ledger for where these get cashed in.
+func _queue_ledger_entry(kind: String, amount: int, uid: int = -1) -> void:
+	pending_ledger.append({"kind": kind, "amount": amount, "uid": uid})
+	_spawn_ledger_chip(kind, amount)
+
+func _spawn_ledger_chip(kind: String, amount: int) -> void:
+	if ledger_box == null or not is_instance_valid(ledger_box):
+		return
+	var icon_kind := "slash"
+	var color := Color("#ffb199")
+	var text := "-%d" % amount
+	match kind:
+		"enemy_dmg":
+			icon_kind = "slash"
+			color = Color("#ffb199")
+			text = "-%d" % amount
+		"self_dmg":
+			icon_kind = "skull"
+			color = Color("#ff9a86")
+			text = "-%d" % amount
+		"heal":
+			icon_kind = "heal"
+			color = Color("#9fe0b6")
+			text = "+%d" % amount
+		"shield":
+			icon_kind = "guard"
+			color = Color("#9fc3ff")
+			text = "+%d" % amount
+
+	# PanelContainer (not a plain Panel) so the chip auto-sizes to its
+	# content instead of collapsing to zero size and overlapping whatever
+	# sits next to it in the flow.
+	var chip := PanelContainer.new()
+	var box := StyleBoxFlat.new()
+	box.bg_color = color.darkened(0.6)
+	box.border_color = color
+	box.border_width_left = 1
+	box.border_width_top = 1
+	box.border_width_right = 1
+	box.border_width_bottom = 1
+	box.corner_radius_top_left = 8
+	box.corner_radius_top_right = 8
+	box.corner_radius_bottom_left = 8
+	box.corner_radius_bottom_right = 8
+	box.content_margin_left = 6.0
+	box.content_margin_right = 7.0
+	box.content_margin_top = 3.0
+	box.content_margin_bottom = 3.0
+	chip.add_theme_stylebox_override("panel", box)
+	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 3)
+	chip.add_child(row)
+
+	var icon := IconGlyph.new()
+	icon.kind = icon_kind
+	icon.glyph_color = color
+	icon.custom_minimum_size = Vector2(13, 13)
+	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(icon)
+
+	var label := _make_label(12, color, HORIZONTAL_ALIGNMENT_LEFT, true)
+	label.text = text
+	row.add_child(label)
+
+	ledger_box.add_child(chip)
+	chip.scale = Vector2(0.3, 0.3)
+	var tween := create_tween()
+	tween.tween_property(chip, "scale", Vector2(1.0, 1.0), 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 func _cleanup_dead_enemies() -> void:
 	var survivors := []
@@ -1958,6 +2092,46 @@ func _cleanup_dead_enemies() -> void:
 	if any_died:
 		_spawn_enemy_panel_popup("撃破!", Color("#f6dfa6"))
 		_spawn_death_burst_at_panel()
+
+# enemies isn't pruned of the dead until _flush_turn_ledger runs (a killed
+# enemy keeps its row, frozen at its last-shown HP, until the turn's reveal
+# plays out) — so "any enemies left" during the player's move has to mean
+# "any real hp above 0", not "array not empty".
+func _any_enemy_alive() -> bool:
+	for enemy in enemies:
+		if int(enemy["hp"]) > 0:
+			return true
+	return false
+
+# The moment a player turn actually ends: every tile effect queued this
+# turn (pending_ledger) gets revealed at once — the HP/shield bars and any
+# hit enemies' bars animate from what they were still showing to their real
+# current value, the ledger chips that prompted it clear out, and only then
+# do we prune anything that died along the way. Call this before leaving
+# the player's turn, whichever way it ends (button, actions spent, a fatal
+# or lethal tile).
+func _flush_turn_ledger() -> void:
+	suppress_stat_reveal = false
+	var had_entries: bool = not pending_ledger.is_empty()
+	pending_ledger = []
+
+	if had_entries:
+		await get_tree().create_timer(0.25).timeout
+		_punch_control(gauges_box, 1.08)
+		_flash_enemy_panel()
+		var fade_tween := create_tween()
+		fade_tween.set_parallel(true)
+		for chip in ledger_box.get_children():
+			fade_tween.tween_property(chip, "modulate:a", 0.0, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+
+	_refresh_header()
+	_refresh_board()
+
+	if had_entries:
+		await get_tree().create_timer(0.6).timeout
+
+	_clear_children(ledger_box)
+	_cleanup_dead_enemies()
 
 # A number that drifts up and fades out at a board cell — the only
 # feedback HP changes used to get was the gauge silently jumping.
