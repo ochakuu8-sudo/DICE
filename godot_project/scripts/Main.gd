@@ -1,7 +1,7 @@
 extends Control
 
-const BOARD_W := 5
-const BOARD_H := 5
+const BOARD_W := 4
+const BOARD_H := 4
 const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
 const MAX_ENCOUNTERS := 6
@@ -54,10 +54,11 @@ class BoardView:
 		var token: float = main._board_token_size()
 		var lift: Vector2 = center + Vector2(0.0, -token * 0.62 - main.player_hop)
 		var pulse: float = 0.5 + sin(glow_phase * 2.2) * 0.5
-		var glow_r: float = token * (0.46 + pulse * 0.16)
-		draw_circle(lift, glow_r, Color(0.89, 0.7, 0.33, 0.16 + pulse * 0.12))
-		draw_circle(lift, token * 0.30, Color("#1c130a"))
-		draw_circle(lift, token * 0.27, Color("#f6dfa6"))
+		var impact: float = main.player_impact
+		var glow_r: float = token * (0.46 + pulse * 0.16 + impact * 0.5)
+		draw_circle(lift, glow_r, Color(0.89, 0.7, 0.33, 0.16 + pulse * 0.12 + impact * 0.3))
+		draw_circle(lift, token * (0.30 + impact * 0.1), Color("#1c130a"))
+		draw_circle(lift, token * (0.27 + impact * 0.1), Color("#f6dfa6").lerp(Color.WHITE, impact * 0.6))
 		var blade_a: Vector2 = lift + Vector2(-0.14, 0.14) * token
 		var blade_b: Vector2 = lift + Vector2(0.14, -0.14) * token
 		draw_line(blade_a, blade_b, Color("#3a2a08"), token * 0.055, true)
@@ -353,6 +354,7 @@ var actions_left := 0
 var player_visual_pos := Vector2.ZERO
 var player_visual_ready := false
 var player_hop := 0.0
+var player_impact := 0.0
 
 # Board topology: a single one-way ring around the perimeter. Enemies live
 # off-board (see enemy_status_box) and never occupy a cell — the ring is
@@ -414,38 +416,50 @@ var hero_defs := {
 	"knight": {
 		"name": "剣士",
 		"hp": 36,
-		"desc": "斬撃路と防御路をつないで、HPの低い敵から確実に仕留める。",
+		"desc": "盤面は斬撃路と防御路で埋め尽くされている。HPの低い敵から確実に仕留める。",
 		"dice": [
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"},
 			{"name": "重撃ダイス", "faces": [3, 4, 4, 5, 6, 6], "tag": "heavy"},
 			{"name": "守りダイス", "faces": [1, 2, 2, 3, 3, 4], "tag": "steel"},
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
-		"tiles": [[2, 0, "slash"], [4, 1, "guard"], [4, 3, "slash"], [1, 4, "guard"], [0, 2, "heal"]]
+		"tiles": [
+			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"], [3, 0, "guard"],
+			[3, 1, "slash"], [3, 2, "guard"], [3, 3, "slash"], [2, 3, "guard"],
+			[1, 3, "slash"], [0, 3, "guard"], [0, 2, "slash"], [0, 1, "guard"]
+		]
 	},
 	"mage": {
 		"name": "魔導士",
 		"hp": 28,
-		"desc": "火走りと雷線で、敵全体を薄く広く削っていく。",
+		"desc": "盤面は火走りと防御路で埋め尽くされている。敵全体を薄く広く削っていく。",
 		"dice": [
 			{"name": "火花ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "fire"},
 			{"name": "揺らぎダイス", "faces": [1, 1, 3, 5, 6, 6], "tag": "arcane"},
 			{"name": "集中ダイス", "faces": [2, 2, 3, 3, 4, 4], "tag": "focus"},
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
-		"tiles": [[2, 0, "fire"], [4, 2, "fire"], [3, 4, "shock"], [0, 4, "warp"], [0, 2, "focus"]]
+		"tiles": [
+			[0, 0, "fire"], [1, 0, "guard"], [2, 0, "fire"], [3, 0, "guard"],
+			[3, 1, "fire"], [3, 2, "guard"], [3, 3, "fire"], [2, 3, "guard"],
+			[1, 3, "fire"], [0, 3, "guard"], [0, 2, "fire"], [0, 1, "guard"]
+		]
 	},
 	"rogue": {
 		"name": "盗賊",
 		"hp": 31,
-		"desc": "罠道でタフな敵を、射撃台で弱った敵を狙い分ける。",
+		"desc": "盤面は斬撃路と防御路で埋め尽くされている。報酬で罠や射撃台を仕込んで育てる。",
 		"dice": [
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
 			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"},
 			{"name": "幸運ダイス", "faces": [1, 2, 2, 4, 4, 6], "tag": "lucky"},
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"}
 		],
-		"tiles": [[1, 0, "trap"], [3, 4, "trap"], [4, 1, "bow"], [0, 3, "bow"], [0, 1, "warp"]]
+		"tiles": [
+			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"], [3, 0, "guard"],
+			[3, 1, "slash"], [3, 2, "guard"], [3, 3, "slash"], [2, 3, "guard"],
+			[1, 3, "slash"], [0, 3, "guard"], [0, 2, "slash"], [0, 1, "guard"]
+		]
 	}
 }
 
@@ -973,6 +987,14 @@ func _animate_player_step(duration: float = 0.16) -> void:
 
 	await move_tween.finished
 
+# A brief bright pulse on the player's own token when a *stop* effect
+# resolves — stronger than a pass, so stopping reads as the bigger event
+# it mechanically is, even before the popup text is parsed.
+func _flash_player_stop() -> void:
+	player_impact = 1.0
+	var tween := create_tween()
+	tween.tween_property(self, "player_impact", 0.0, 0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
 func _state_instruction() -> String:
 	match state:
 		"player":
@@ -1231,6 +1253,10 @@ func _set_dice_box_disabled(flag: bool) -> void:
 # Flickers the pressed die through a few random faces before settling on
 # the real roll, with a small punch on landing — instead of the result
 # just appearing.
+# Tumbles the die through random faces with wobble/jitter that slows down
+# as it "settles" (like a physical die losing momentum), then lands on the
+# real roll with an overshoot bounce — a flat value-swap didn't feel like
+# anything was actually being rolled.
 func _animate_dice_roll(button: Button, faces: Array, final_value: int) -> void:
 	if button == null or not is_instance_valid(button) or button.get_child_count() == 0:
 		return
@@ -1240,18 +1266,28 @@ func _animate_dice_roll(button: Button, faces: Array, final_value: int) -> void:
 	var face: DiceFace = col.get_child(0) as DiceFace
 	if face == null:
 		return
-	for i in range(6):
+	face.pivot_offset = face.size / 2.0
+	var base_pos: Vector2 = face.position
+	var delays: Array = [0.035, 0.04, 0.045, 0.055, 0.07, 0.09, 0.12]
+	for i in range(delays.size()):
 		face.value = int(faces[rng.randi_range(0, faces.size() - 1)])
+		var settle: float = float(i) / float(delays.size() - 1)
+		var wobble: float = deg_to_rad(28.0) * (1.0 - settle)
+		face.rotation = rng.randf_range(-wobble, wobble)
+		var jitter: float = 3.5 * (1.0 - settle)
+		face.position = base_pos + Vector2(rng.randf_range(-jitter, jitter), rng.randf_range(-jitter, jitter))
 		face.queue_redraw()
-		await get_tree().create_timer(0.045).timeout
+		await get_tree().create_timer(delays[i]).timeout
 		if not is_instance_valid(face):
 			return
 	face.value = final_value
+	face.position = base_pos
 	face.queue_redraw()
-	face.pivot_offset = face.size / 2.0
 	var tween := create_tween()
+	tween.set_parallel(true)
 	tween.tween_property(face, "scale", Vector2(1.4, 1.4), 0.08).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(face, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(face, "rotation", 0.0, 0.22).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+	tween.chain().tween_property(face, "scale", Vector2(1.0, 1.0), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	await tween.finished
 
 func _on_die_pressed(index: int) -> void:
@@ -1291,6 +1327,103 @@ func _on_cell_pressed(index: int) -> void:
 				_start_encounter()
 				log_label.text = "%s を配置しました。次の戦闘へ。" % pending_reward_name
 				_refresh_all()
+	elif ring_index_map.has(pos):
+		_show_cell_info(pos)
+
+var cell_info_panel: Control = null
+
+# Tooltips only show on hover, which doesn't exist on touch — this is the
+# tap equivalent: a small card with the tile's actual effect text, anchored
+# over the tapped cell for a couple of seconds.
+func _show_cell_info(pos: Vector2i) -> void:
+	if cell_info_panel != null and is_instance_valid(cell_info_panel):
+		cell_info_panel.queue_free()
+		cell_info_panel = null
+
+	var idx := _idx(pos.x, pos.y)
+	if idx < 0 or idx >= cell_buttons.size():
+		return
+	var anchor_button: Button = cell_buttons[idx]
+
+	var perm_type: String = str(permanent_board[pos.y][pos.x])
+	var temp_type: String = str(temp_board[pos.y][pos.x])
+	var tile: Dictionary = tile_defs[perm_type]
+
+	var panel := Panel.new()
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color("#1c2130")
+	box.border_color = Color("#e3b355")
+	box.border_width_left = 2
+	box.border_width_top = 2
+	box.border_width_right = 2
+	box.border_width_bottom = 2
+	box.corner_radius_top_left = 10
+	box.corner_radius_top_right = 10
+	box.corner_radius_bottom_left = 10
+	box.corner_radius_bottom_right = 10
+	box.content_margin_left = 12.0
+	box.content_margin_right = 12.0
+	box.content_margin_top = 8.0
+	box.content_margin_bottom = 8.0
+	box.shadow_color = Color(0.0, 0.0, 0.0, 0.5)
+	box.shadow_size = 8
+	panel.add_theme_stylebox_override("panel", box)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.z_index = 30
+
+	var col := VBoxContainer.new()
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_theme_constant_override("separation", 3)
+	panel.add_child(col)
+
+	var title_label := _make_label(13, Color("#f6dfa6"), HORIZONTAL_ALIGNMENT_LEFT)
+	title_label.text = tile["name"]
+	col.add_child(title_label)
+
+	if str(tile["pass"]) != "":
+		var pass_label := _make_label(11, Color("#d7d2c4"), HORIZONTAL_ALIGNMENT_LEFT)
+		pass_label.text = str(tile["pass"])
+		pass_label.custom_minimum_size = Vector2(210, 0)
+		pass_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(pass_label)
+
+	var stop_label := _make_label(11, Color("#d7d2c4"), HORIZONTAL_ALIGNMENT_LEFT)
+	stop_label.text = str(tile["stop"])
+	stop_label.custom_minimum_size = Vector2(210, 0)
+	stop_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(stop_label)
+
+	if temp_type != "none":
+		var temp_label := _make_label(11, Color("#e6a9c9"), HORIZONTAL_ALIGNMENT_LEFT)
+		temp_label.text = str(temp_defs[temp_type]["desc"])
+		col.add_child(temp_label)
+
+	if _telegraphed_cells().has(pos):
+		var danger_label := _make_label(11, Color("#ff9a7a"), HORIZONTAL_ALIGNMENT_LEFT)
+		danger_label.text = "敵の攻撃予告あり"
+		col.add_child(danger_label)
+
+	add_child(panel)
+	cell_info_panel = panel
+
+	await get_tree().process_frame
+	if not is_instance_valid(panel):
+		return
+	var target_pos: Vector2 = anchor_button.global_position + Vector2(anchor_button.size.x * 0.5 - panel.size.x * 0.5, -panel.size.y - 10.0)
+	target_pos.x = clamp(target_pos.x, 4.0, get_viewport_rect().size.x - panel.size.x - 4.0)
+	target_pos.y = max(target_pos.y, 4.0)
+	panel.position = target_pos
+
+	var tween := create_tween()
+	tween.tween_interval(2.6)
+	tween.tween_property(panel, "modulate:a", 0.0, 0.4)
+	tween.tween_callback(Callable(self, "_clear_cell_info_panel").bind(panel))
+
+func _clear_cell_info_panel(panel: Control) -> void:
+	if is_instance_valid(panel):
+		panel.queue_free()
+	if cell_info_panel == panel:
+		cell_info_panel = null
 
 func _advance_player() -> void:
 	var messages := []
@@ -1354,7 +1487,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 		if _strike_lowest(dmg):
 			messages.append("斬撃路を通過。%dダメージ。" % dmg)
 	elif tile_type == "guard":
-		player_shield += 1
+		_gain_shield(1)
 		messages.append("防御路を通過。盾+1。")
 	elif tile_type == "fire":
 		var dmg := _combo_damage(1)
@@ -1379,15 +1512,16 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 		if _strike_all(dmg):
 			messages.append("雷線を通過。全敵に%dダメージ。" % dmg)
 	elif tile_type == "focus":
-		player_shield += 1
+		_gain_shield(1)
 		route_power += 1
 		messages.append("集中路を通過。盾+1、以降の攻撃+%d。" % route_power)
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
+	_flash_player_stop()
 	var tile_type: String = str(permanent_board[pos.y][pos.x])
 	if tile_type == "empty":
-		player_shield += 1
+		_gain_shield(1)
 		return "道で停止。盾+1。"
 	if tile_type == "slash":
 		var dmg := _combo_damage(4)
@@ -1395,7 +1529,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 			return "斬撃路で停止。%dダメージ。" % dmg
 		return "斬撃路で停止。敵はいない。"
 	if tile_type == "guard":
-		player_shield += 3
+		_gain_shield(3)
 		return "防御路で停止。盾+3。"
 	if tile_type == "fire":
 		var dmg := _combo_damage(3)
@@ -1566,7 +1700,7 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	pending_reward_name = tile_name
 	state = "reward_place"
 	_clear_children(reward_box)
-	log_label.text = "%s を置くマスを選んでください。中央以外なら上書きできます。" % tile_name
+	log_label.text = "%s を置くマスを選んでください。始点以外なら上書きできます。" % tile_name
 	_refresh_all()
 
 func _show_victory() -> void:
@@ -1690,6 +1824,12 @@ func _heal(amount: int) -> void:
 	if gained > 0:
 		_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
 
+func _gain_shield(amount: int) -> void:
+	if amount <= 0:
+		return
+	player_shield += amount
+	_spawn_floating_text(player_pos, "+%d 盾" % amount, Color("#9fc3ff"))
+
 # All enemy HP loss should route through here so the hit always gets a
 # number and a punch, wherever the damage came from (route attacks, tile
 # effects, traps). Enemies live in the status panel now, not the board, so
@@ -1791,15 +1931,15 @@ func _make_empty_board(value: String) -> Array:
 		board.append(row)
 	return board
 
-# Builds the ring: 16 perimeter cells, one-way. This is the player's whole
-# board — enemies live off-board in enemy_status_box and never occupy a
-# cell themselves.
+# Builds the ring: 12 perimeter cells (a 4x4 grid), one-way. This is the
+# player's whole board — enemies live off-board in enemy_status_box and
+# never occupy a cell themselves.
 func _build_track_graph() -> void:
 	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
-		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3), Vector2i(4, 4),
-		Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4), Vector2i(0, 4),
-		Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0),
+		Vector2i(3, 1), Vector2i(3, 2), Vector2i(3, 3),
+		Vector2i(2, 3), Vector2i(1, 3), Vector2i(0, 3),
+		Vector2i(0, 2), Vector2i(0, 1),
 	]
 	ring_index_map = {}
 	ring_forward = {}
