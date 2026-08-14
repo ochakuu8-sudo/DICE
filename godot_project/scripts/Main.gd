@@ -436,7 +436,9 @@ var enemy_hp_prev: Dictionary = {}
 # _flush_turn_ledger, which is what turns this back off and reveals the
 # turn's net result in one animated pass.
 var suppress_stat_reveal := false
-var pending_ledger: Array = []
+# One running-total entry per ledger chip kind (and per enemy uid, for
+# damage dealt): key -> {"panel": Control, "label": Label, "total": int}.
+var ledger_chips: Dictionary = {}
 var dice_bag: Array = []
 var draw_pile: Array = []
 var discard_pile: Array = []
@@ -889,7 +891,7 @@ func _start_player_turn(message: String = "") -> void:
 	route_power = 0
 	route_hits = 0
 	turn_visited = {}
-	pending_ledger = []
+	ledger_chips = {}
 	if ledger_box != null:
 		_clear_children(ledger_box)
 	_draw_to_hand()
@@ -2006,36 +2008,44 @@ func _damage_enemy(enemy: Dictionary, amount: int) -> void:
 	_flash_enemy_panel()
 
 # Tile effects during the player's own move don't touch the bars right
-# away — they queue a small chip here instead, so the turn's numbers line
-# up where they happened instead of the bars twitching per tile. See
+# away — they add into a running total here instead, one chip per kind
+# (and per enemy, for damage dealt), so the turn's numbers accumulate in
+# place rather than piling up as a new chip per tile. See
 # _flush_turn_ledger for where these get cashed in.
 func _queue_ledger_entry(kind: String, amount: int, uid: int = -1) -> void:
-	pending_ledger.append({"kind": kind, "amount": amount, "uid": uid})
-	_spawn_ledger_chip(kind, amount)
+	var key: String = "%s:%d" % [kind, uid] if kind == "enemy_dmg" else kind
+	if ledger_chips.has(key):
+		var entry: Dictionary = ledger_chips[key]
+		var total: int = int(entry["total"]) + amount
+		entry["total"] = total
+		var label: Label = entry["label"]
+		label.text = _ledger_chip_text(kind, total)
+		var chip: Control = entry["panel"]
+		_punch_control(chip, 1.22, 0.05, 0.16)
+	else:
+		var made := _spawn_ledger_chip(kind, amount)
+		ledger_chips[key] = {"panel": made["panel"], "label": made["label"], "total": amount}
 
-func _spawn_ledger_chip(kind: String, amount: int) -> void:
-	if ledger_box == null or not is_instance_valid(ledger_box):
-		return
-	var icon_kind := "slash"
-	var color := Color("#ffb199")
-	var text := "-%d" % amount
+func _ledger_chip_text(kind: String, amount: int) -> String:
+	return ("+%d" % amount) if kind in ["heal", "shield"] else ("-%d" % amount)
+
+func _ledger_chip_style(kind: String) -> Dictionary:
 	match kind:
-		"enemy_dmg":
-			icon_kind = "slash"
-			color = Color("#ffb199")
-			text = "-%d" % amount
 		"self_dmg":
-			icon_kind = "skull"
-			color = Color("#ff9a86")
-			text = "-%d" % amount
+			return {"icon": "skull", "color": Color("#ff9a86")}
 		"heal":
-			icon_kind = "heal"
-			color = Color("#9fe0b6")
-			text = "+%d" % amount
+			return {"icon": "heal", "color": Color("#9fe0b6")}
 		"shield":
-			icon_kind = "guard"
-			color = Color("#9fc3ff")
-			text = "+%d" % amount
+			return {"icon": "guard", "color": Color("#9fc3ff")}
+	return {"icon": "slash", "color": Color("#ffb199")}
+
+func _spawn_ledger_chip(kind: String, amount: int) -> Dictionary:
+	if ledger_box == null or not is_instance_valid(ledger_box):
+		return {"panel": null, "label": null}
+	var style := _ledger_chip_style(kind)
+	var icon_kind: String = style["icon"]
+	var color: Color = style["color"]
+	var text := _ledger_chip_text(kind, amount)
 
 	# PanelContainer (not a plain Panel) so the chip auto-sizes to its
 	# content instead of collapsing to zero size and overlapping whatever
@@ -2079,6 +2089,7 @@ func _spawn_ledger_chip(kind: String, amount: int) -> void:
 	chip.scale = Vector2(0.3, 0.3)
 	var tween := create_tween()
 	tween.tween_property(chip, "scale", Vector2(1.0, 1.0), 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	return {"panel": chip, "label": label}
 
 func _cleanup_dead_enemies() -> void:
 	var survivors := []
@@ -2104,7 +2115,7 @@ func _any_enemy_alive() -> bool:
 	return false
 
 # The moment a player turn actually ends: every tile effect queued this
-# turn (pending_ledger) gets revealed at once — the HP/shield bars and any
+# turn (ledger_chips) gets revealed at once — the HP/shield bars and any
 # hit enemies' bars animate from what they were still showing to their real
 # current value, the ledger chips that prompted it clear out, and only then
 # do we prune anything that died along the way. Call this before leaving
@@ -2112,8 +2123,8 @@ func _any_enemy_alive() -> bool:
 # or lethal tile).
 func _flush_turn_ledger() -> void:
 	suppress_stat_reveal = false
-	var had_entries: bool = not pending_ledger.is_empty()
-	pending_ledger = []
+	var had_entries: bool = not ledger_chips.is_empty()
+	ledger_chips = {}
 
 	if had_entries:
 		await get_tree().create_timer(0.25).timeout
