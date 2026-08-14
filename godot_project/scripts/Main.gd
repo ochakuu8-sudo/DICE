@@ -238,18 +238,39 @@ class GaugeBar:
 	var fill_color := Color("#4f9d72")
 	var track_color := Color("#2a3040")
 
+	# display_value trails value: on damage it lingers high and drains down
+	# through a red "about to be lost" band; on a gain it climbs up through
+	# a bright "just gained" band. A bar that only ever snaps to the new
+	# number reads as a static readout, not something that just happened.
+	var display_value: float = 0.0:
+		set(v):
+			display_value = v
+			queue_redraw()
+
 	func _draw() -> void:
 		if segments <= 0 or size.x <= 0.0 or size.y <= 0.0:
 			return
 		var gap := 2.0
 		var seg_w: float = (size.x - gap * float(segments - 1)) / float(segments)
 		var filled := 0
+		var trail := 0
 		if max_value > 0:
 			filled = int(round(float(value) / float(max_value) * float(segments)))
+			trail = int(round(display_value / float(max_value) * float(segments)))
 		filled = clamp(filled, 0, segments)
+		trail = clamp(trail, 0, segments)
+		var lo: int = min(filled, trail)
+		var hi: int = max(filled, trail)
+		var gaining: bool = filled > trail
 		for i in range(segments):
 			var x: float = i * (seg_w + gap)
-			var col := fill_color if i < filled else track_color
+			var col: Color
+			if i < lo:
+				col = fill_color
+			elif i < hi:
+				col = Color("#f2fff5") if gaining else Color("#ff6a56")
+			else:
+				col = track_color
 			draw_rect(Rect2(Vector2(x, 0.0), Vector2(seg_w, size.y)), col, true)
 
 # A die face drawn with real pips instead of a "面 1/2/3/4/5/6" text string.
@@ -372,6 +393,11 @@ var turn_visited: Dictionary = {}
 var permanent_board: Array = []
 var temp_board: Array = []
 var enemies: Array = []
+var next_enemy_uid := 0
+# Last-drawn HP per enemy uid, so a freshly-rebuilt status row can still
+# seed its gauge's ghost-trail animation correctly (the row itself doesn't
+# persist across refreshes the way the player's own bars do).
+var enemy_hp_prev: Dictionary = {}
 var dice_bag: Array = []
 var draw_pile: Array = []
 var discard_pile: Array = []
@@ -682,6 +708,8 @@ func _start_run(key: String) -> void:
 	player_max_hp = int(hero["hp"])
 	player_hp = player_max_hp
 	player_shield = 0
+	next_enemy_uid = 0
+	enemy_hp_prev = {}
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
 	_snap_player_visual()
@@ -754,8 +782,10 @@ func _setup_encounter() -> void:
 # telegraphs (attack_offsets: ring steps ahead of the player, resolved to
 # fixed cells at telegraph time — see _generate_telegraph).
 func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, offsets: Array) -> Dictionary:
+	next_enemy_uid += 1
 	return {
 		"type": type_name,
+		"uid": next_enemy_uid,
 		"hp": hp,
 		"max_hp": hp,
 		"damage": damage,
@@ -825,18 +855,16 @@ func _refresh_header() -> void:
 	gauges_box.visible = true
 	action_pip_box.visible = true
 
-	hp_bar.value = player_hp
 	hp_bar.max_value = max(player_max_hp, 1)
 	hp_bar.segments = clamp(player_max_hp, 1, 18)
 	hp_bar.fill_color = _hp_ratio_color(float(player_hp) / float(max(player_max_hp, 1)))
-	hp_bar.queue_redraw()
+	_animate_bar(hp_bar, player_hp)
 	hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
 
 	var shield_cap: int = clamp(max(player_shield, 6), 1, 14)
-	shield_bar.value = player_shield
 	shield_bar.max_value = shield_cap
 	shield_bar.segments = shield_cap
-	shield_bar.queue_redraw()
+	_animate_bar(shield_bar, player_shield)
 	shield_value_label.text = str(player_shield)
 
 	_clear_children(action_pip_box)
@@ -849,6 +877,28 @@ func _refresh_header() -> void:
 
 	stats_label.text = "山札 %d　捨札 %d　手札 %d" % [draw_pile.size(), discard_pile.size(), hand.size()]
 	_refresh_enemy_status()
+
+# Lets a GaugeBar's fill catch up to its new value instead of snapping,
+# with a short pause first so the ghost band (see GaugeBar._draw) has a
+# beat to register before it starts closing.
+func _animate_bar(bar: GaugeBar, new_value: int) -> void:
+	if bar.value == new_value:
+		return
+	bar.value = new_value
+	var tween := create_tween()
+	tween.tween_interval(0.12)
+	tween.tween_property(bar, "display_value", float(new_value), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+# A quick scale punch, safe to use on children of Container nodes: unlike
+# position, scale/pivot aren't touched by container layout passes, so this
+# never fights the parent VBoxContainer over where the node sits.
+func _punch_control(control: Control, peak_scale: float = 1.05, out_time: float = 0.06, back_time: float = 0.14) -> void:
+	if control == null or not is_instance_valid(control):
+		return
+	control.pivot_offset = control.size / 2.0
+	var tween := create_tween()
+	tween.tween_property(control, "scale", Vector2(peak_scale, peak_scale), out_time).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(control, "scale", Vector2(1.0, 1.0), back_time).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 # Green while healthy, amber in the middle, red when in danger — the color
 # itself carries the warning, not just the fraction filled.
@@ -889,15 +939,24 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 	row.add_child(name_label)
 
 	var max_hp: int = max(int(enemy["max_hp"]), 1)
+	var cur_hp: int = int(enemy["hp"])
+	var uid: int = int(enemy.get("uid", -1))
+	var prev_hp: int = int(enemy_hp_prev.get(uid, cur_hp))
 	var bar := GaugeBar.new()
-	bar.fill_color = _enemy_hp_color(float(int(enemy["hp"])) / float(max_hp))
+	bar.fill_color = _enemy_hp_color(float(cur_hp) / float(max_hp))
 	bar.track_color = Color("#2a3040")
-	bar.value = int(enemy["hp"])
+	bar.value = cur_hp
+	bar.display_value = float(prev_hp)
 	bar.max_value = max_hp
 	bar.segments = clamp(max_hp, 1, 14)
 	bar.custom_minimum_size = Vector2(0, 9)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(bar)
+	if prev_hp != cur_hp:
+		var tween := create_tween()
+		tween.tween_interval(0.12)
+		tween.tween_property(bar, "display_value", float(cur_hp), 0.45).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	enemy_hp_prev[uid] = cur_hp
 
 	var value_label := _make_label(11, Color("#ede7d8"), HORIZONTAL_ALIGNMENT_RIGHT)
 	value_label.text = "%d/%d" % [int(enemy["hp"]), max_hp]
@@ -1815,20 +1874,24 @@ func _take_damage(amount: int) -> void:
 	player_hp -= hp_loss
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#ff9a86"))
+		_punch_control(gauges_box, 1.08)
 	elif blocked > 0:
 		_spawn_floating_text(player_pos, "防", Color("#8fb6e8"))
+		_punch_control(gauges_box, 1.04)
 
 func _heal(amount: int) -> void:
 	var gained: int = min(player_max_hp, player_hp + amount) - player_hp
 	player_hp = min(player_max_hp, player_hp + amount)
 	if gained > 0:
 		_spawn_floating_text(player_pos, "+%d" % gained, Color("#9fe0b6"))
+		_punch_control(gauges_box, 1.05)
 
 func _gain_shield(amount: int) -> void:
 	if amount <= 0:
 		return
 	player_shield += amount
 	_spawn_floating_text(player_pos, "+%d 盾" % amount, Color("#9fc3ff"))
+	_punch_control(gauges_box, 1.04)
 
 # All enemy HP loss should route through here so the hit always gets a
 # number and a punch, wherever the damage came from (route attacks, tile
@@ -1856,6 +1919,9 @@ func _cleanup_dead_enemies() -> void:
 
 # A number that drifts up and fades out at a board cell — the only
 # feedback HP changes used to get was the gauge silently jumping.
+# A number that pops in big, drifts up, and fades — deliberately louder
+# than a UI label: this is the primary way a hit or a heal registers, so
+# it has to win against everything else changing on screen at once.
 func _spawn_floating_text(pos: Vector2i, text: String, color: Color) -> void:
 	if board_grid == null or not is_instance_valid(board_grid):
 		return
@@ -1863,18 +1929,22 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color) -> void:
 	label.text = text
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_apply_font(label)
-	label.add_theme_font_size_override("font_size", 19)
+	label.add_theme_font_size_override("font_size", 30)
 	label.add_theme_color_override("font_color", color)
-	label.add_theme_constant_override("outline_size", 5)
-	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
+	label.add_theme_constant_override("outline_size", 8)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
 	var center: Vector2 = _board_cell_center(pos)
-	label.position = center + Vector2(-16, -_board_token_size() * 0.9)
-	label.z_index = 20
+	var base_pos: Vector2 = center + Vector2(-20, -_board_token_size() * 1.1)
+	label.position = base_pos
+	label.z_index = 25
+	label.scale = Vector2(0.3, 0.3)
 	board_grid.add_child(label)
+	label.pivot_offset = label.size / 2.0
 	var tween := create_tween()
 	tween.set_parallel(true)
-	tween.tween_property(label, "position:y", label.position.y - 30.0, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.7).set_delay(0.15).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.tween_property(label, "scale", Vector2(1.1, 1.1), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "position:y", base_pos.y - 46.0, 0.85).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.5).set_delay(0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.chain().tween_callback(label.queue_free)
 
 # Same idea as _spawn_floating_text, but for the enemy status panel (no
@@ -1886,17 +1956,21 @@ func _spawn_enemy_panel_popup(text: String, color: Color) -> void:
 	label.text = text
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_apply_font(label)
-	label.add_theme_font_size_override("font_size", 17)
+	label.add_theme_font_size_override("font_size", 26)
 	label.add_theme_color_override("font_color", color)
-	label.add_theme_constant_override("outline_size", 5)
-	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.75))
-	label.position = enemy_status_box.global_position + Vector2(enemy_status_box.size.x + 10.0, float(rng.randi_range(-4, 4)))
-	label.z_index = 20
+	label.add_theme_constant_override("outline_size", 7)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
+	label.z_index = 25
 	add_child(label)
+	label.pivot_offset = label.size / 2.0
+	var base_pos: Vector2 = enemy_status_box.global_position + Vector2(enemy_status_box.size.x * 0.5 - label.size.x * 0.5, -label.size.y - 6.0 + float(rng.randi_range(-3, 3)))
+	label.position = base_pos
+	label.scale = Vector2(0.3, 0.3)
 	var tween := create_tween()
 	tween.set_parallel(true)
-	tween.tween_property(label, "position:y", label.position.y - 26.0, 0.65).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.65).set_delay(0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.tween_property(label, "scale", Vector2(1.1, 1.1), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "position:y", base_pos.y - 34.0, 0.75).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.45).set_delay(0.35).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tween.chain().tween_callback(label.queue_free)
 
 # A quick scale punch on the whole panel, so a hit registers even before
