@@ -374,7 +374,9 @@ var hp_value_label: Label
 var shield_bar: GaugeBar
 var shield_value_label: Label
 var action_pip_box: HBoxContainer
+var action_pip_row: HBoxContainer
 var ledger_box: HFlowContainer
+var ledger_caption: Label
 var stats_label: Label
 var enemy_status_box: VBoxContainer
 var lookahead_box: HBoxContainer
@@ -602,11 +604,25 @@ func _build_ui() -> void:
 	shield_value_label = Label.new()
 	gauges_box.add_child(_build_gauge_row("盾", Color("#8fb6e8"), Color("#4d7fc4"), shield_bar, shield_value_label))
 
+	action_pip_row = HBoxContainer.new()
+	action_pip_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	action_pip_row.add_theme_constant_override("separation", 8)
+	root_box.add_child(action_pip_row)
+	var action_pip_caption := _make_label(11, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_RIGHT)
+	action_pip_caption.text = "残り行動"
+	action_pip_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	action_pip_row.add_child(action_pip_caption)
 	action_pip_box = HBoxContainer.new()
 	action_pip_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	action_pip_box.add_theme_constant_override("separation", 6)
-	root_box.add_child(action_pip_box)
+	action_pip_row.add_child(action_pip_box)
 
+	# A small caption so the chip row below (see _queue_ledger_entry) isn't
+	# just an unlabeled row of icons the first time someone sees it. Both
+	# are only shown once a tile has actually queued something.
+	ledger_caption = _make_label(10, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_CENTER)
+	ledger_caption.text = "このターンの結果（行動終了で反映）"
+	root_box.add_child(ledger_caption)
 	# Holds a chip per tile effect queued this turn (see _queue_ledger_entry)
 	# — this is what "moves" while the HP/shield bars stay frozen, so the
 	# player watches the tally build up instead of the bars twitching per
@@ -740,6 +756,7 @@ func _build_gauge_row(caption: String, caption_color: Color, fill_color: Color, 
 
 func _show_title() -> void:
 	state = "title"
+	_sync_root_alignment()
 	encounter = 0
 	board_grid.visible = false
 	_clear_children(dice_box)
@@ -753,7 +770,9 @@ func _show_title() -> void:
 	end_turn_button.visible = false
 	restart_button.visible = false
 	gauges_box.visible = false
-	action_pip_box.visible = false
+	action_pip_row.visible = false
+	ledger_box.visible = false
+	ledger_caption.visible = false
 	lookahead_box.visible = false
 
 	for key in hero_defs.keys():
@@ -806,7 +825,12 @@ func _start_encounter() -> void:
 	_setup_encounter()
 	_reset_dice_for_encounter()
 	_clear_children(reward_box)
-	_start_player_turn("第%d戦開始。先のコースを見て、使うダイスを選んでください。" % encounter)
+	var intro := "第%d戦開始。先のコースを見て、使うダイスを選んでください。" % encounter
+	if encounter == 1:
+		# Board cells look like buttons, so tapping one to just peek at its
+		# effect (nothing moves) needs to be said once, not discovered.
+		intro += "\nマスをタップすると効果を確認できます（移動はダイス選択のみ）。"
+	_start_player_turn(intro)
 
 func _setup_encounter() -> void:
 	if encounter == MAX_ENCOUNTERS:
@@ -839,8 +863,26 @@ func _setup_encounter() -> void:
 		if p2.x >= 0:
 			temp_board[p2.y][p2.x] = "hazard"
 
+	_assign_enemy_labels()
 	for enemy in enemies:
 		_generate_telegraph(enemy)
+
+# Two "敵" rows next to each other were indistinguishable — this numbers
+# same-typed enemies ("敵1"/"敵2") so status rows and log lines can tell
+# them apart. Left alone when a type is unique this encounter.
+func _assign_enemy_labels() -> void:
+	var type_counts: Dictionary = {}
+	for enemy in enemies:
+		var t: String = str(enemy["type"])
+		type_counts[t] = int(type_counts.get(t, 0)) + 1
+	var seen: Dictionary = {}
+	for enemy in enemies:
+		var t: String = str(enemy["type"])
+		if int(type_counts.get(t, 0)) > 1:
+			seen[t] = int(seen.get(t, 0)) + 1
+			enemy["label"] = "%s%d" % [t, int(seen[t])]
+		else:
+			enemy["label"] = t
 
 # attack_kind "guaranteed" always hits the player each turn; "positional"
 # only hits if the player's route this turn touches one of the cells it
@@ -913,7 +955,21 @@ func _draw_to_hand() -> void:
 			draw_pile.shuffle()
 		hand.append(draw_pile.pop_back())
 
+# root_box centers its children when there's slack — great for the combat
+# screen, which is tall enough to fill the viewport either way, but on the
+# sparser screens (title, reward, victory, game over) that same centering
+# split the leftover space evenly above *and* below a small block of text,
+# leaving it stranded in the middle of a mostly empty page. Those screens
+# anchor to the top instead. Called from _refresh_all and from every
+# _show_* screen transition that doesn't go through it.
+func _sync_root_alignment() -> void:
+	if root_box == null:
+		return
+	var sparse_states := ["title", "reward_select", "reward_place", "victory", "game_over"]
+	root_box.alignment = BoxContainer.ALIGNMENT_BEGIN if state in sparse_states else BoxContainer.ALIGNMENT_CENTER
+
 func _refresh_all() -> void:
+	_sync_root_alignment()
 	_refresh_header()
 	_refresh_board()
 	_refresh_dice()
@@ -925,8 +981,13 @@ func _refresh_header() -> void:
 	instruction_label.text = _state_instruction()
 	route_label.text = _route_status_text()
 	gauges_box.visible = true
-	action_pip_box.visible = true
-	ledger_box.visible = state == "player" or state == "moving"
+	action_pip_row.visible = true
+	# The ledger only earns its place once it has something to say — shown
+	# empty (with its caption) it read as an unexplained blank strip before
+	# a player had done anything yet.
+	var ledger_active: bool = (state == "player" or state == "moving") and not ledger_chips.is_empty()
+	ledger_box.visible = ledger_active
+	ledger_caption.visible = ledger_active
 
 	hp_bar.max_value = max(player_max_hp, 1)
 	hp_bar.segments = clamp(player_max_hp, 1, 18)
@@ -1001,9 +1062,13 @@ func _refresh_enemy_status() -> void:
 	for enemy in enemies:
 		enemy_status_box.add_child(_make_enemy_status_row(enemy))
 
-func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
+func _make_enemy_status_row(enemy: Dictionary) -> VBoxContainer:
+	var block := VBoxContainer.new()
+	block.add_theme_constant_override("separation", 1)
+
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 7)
+	block.add_child(row)
 
 	var icon := IconGlyph.new()
 	icon.kind = "skull"
@@ -1011,8 +1076,10 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 	icon.custom_minimum_size = Vector2(15, 15)
 	row.add_child(icon)
 
+	# "護衛1"/"護衛2" instead of two identical "護衛" rows — see
+	# _assign_enemy_labels, called once per encounter setup.
 	var name_label := _make_label(11, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_LEFT)
-	name_label.text = str(enemy["type"])
+	name_label.text = str(enemy.get("label", enemy["type"]))
 	name_label.custom_minimum_size = Vector2(46, 0)
 	row.add_child(name_label)
 
@@ -1046,12 +1113,30 @@ func _make_enemy_status_row(enemy: Dictionary) -> HBoxContainer:
 	value_label.custom_minimum_size = Vector2(44, 0)
 	row.add_child(value_label)
 
+	# A second, full-width line for the attack plan instead of squeezing it
+	# into a narrow trailing column — "2マス先 3" read as noise; spelling
+	# out "先で3ダメージ" plus a sword glyph makes the "3" unambiguous.
+	var plan_row := HBoxContainer.new()
+	plan_row.add_theme_constant_override("separation", 4)
+	block.add_child(plan_row)
+
+	var plan_spacer := Control.new()
+	plan_spacer.custom_minimum_size = Vector2(15, 0)
+	plan_row.add_child(plan_spacer)
+
+	var plan_icon := IconGlyph.new()
+	plan_icon.kind = "bolt" if str(enemy.get("attack_kind", "positional")) == "guaranteed" else "focus"
+	plan_icon.glyph_color = Color("#8d95ab")
+	plan_icon.custom_minimum_size = Vector2(11, 11)
+	plan_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	plan_row.add_child(plan_icon)
+
 	var plan_label := _make_label(10, Color("#8d95ab"), HORIZONTAL_ALIGNMENT_LEFT)
 	plan_label.text = _enemy_plan(enemy)
-	plan_label.custom_minimum_size = Vector2(88, 0)
-	row.add_child(plan_label)
+	plan_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	plan_row.add_child(plan_label)
 
-	return row
+	return block
 
 func _layout_board_buttons() -> void:
 	if board_grid == null or cell_buttons.is_empty():
@@ -1161,21 +1246,28 @@ func _route_status_text() -> String:
 			selected_die.get("name", "ダイス"), selected_roll, steps_left, route_power, route_hits
 		]
 	if state == "player":
-		return "コースは一方通行。敵の攻撃予告と効果マスを見て、ちょうどよい出目のダイスを選びましょう。"
+		# The full explanation only earns its keep once — after the first
+		# battle it was just permanent clutter at the top of every turn.
+		if encounter <= 1:
+			return "コースは一方通行。敵の攻撃予告と効果マスを見て、ちょうどよい出目のダイスを選びましょう。"
+		return "ダイスを選んで進みましょう。"
 	if state == "reward_select":
 		return "選んだマスは永続ボードに残ります。次の戦闘のルートが変わります。"
 	if state == "reward_place":
 		return "配置中: %s" % pending_reward_name
 	return ""
 
+# Spelled out instead of packed into a bare "2マス先 3" — that read as two
+# unrelated numbers with no unit, not "2 cells ahead, hits for 3".
 func _enemy_plan(enemy: Dictionary) -> String:
+	var dmg: int = int(enemy["damage"])
 	if str(enemy.get("attack_kind", "positional")) == "guaranteed":
-		return "必中%d" % int(enemy["damage"])
+		return "毎ターン確定で%dダメージ" % dmg
 	var offsets: Array = enemy.get("attack_offsets", [])
 	var parts := []
 	for o in offsets:
 		parts.append(str(o))
-	return "%sマス先 %d" % ["・".join(parts), int(enemy["damage"])]
+	return "%s先で%dダメージ" % ["・".join(parts) + "マス", dmg]
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
@@ -1360,18 +1452,27 @@ func _refresh_dice() -> void:
 		col.add_theme_constant_override("separation", 2)
 		b.add_child(col)
 
+		# This face is just a preview (the middle face, for scale) — it isn't
+		# what pressing the die will roll, so it's dimmed and tagged "?" to
+		# keep it from reading as a guaranteed result before the range text
+		# below is even noticed.
 		var face := DiceFace.new()
 		face.value = _die_display_value(faces)
+		face.modulate = Color(1, 1, 1, 0.55)
 		face.custom_minimum_size = Vector2(34, 34)
 		face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		col.add_child(face)
+
+		var random_tag := _make_label(9, Color("#f6dfa6"), HORIZONTAL_ALIGNMENT_CENTER, true)
+		random_tag.text = "？ランダム"
+		col.add_child(random_tag)
 
 		var name_label := _make_label(13, Color("#f5f1e8"), HORIZONTAL_ALIGNMENT_CENTER)
 		name_label.text = str(die["name"])
 		col.add_child(name_label)
 
-		var range_label := _make_label(10, Color("#c9c2b2"), HORIZONTAL_ALIGNMENT_CENTER)
-		range_label.text = _faces_to_text(faces)
+		var range_label := _make_label(10, Color("#c9c2b2"), HORIZONTAL_ALIGNMENT_CENTER, true)
+		range_label.text = "出目 %s" % _faces_to_text(faces)
 		col.add_child(range_label)
 
 		var tag_label := _make_label(10, Color("#f6dfa6"), HORIZONTAL_ALIGNMENT_CENTER)
@@ -1491,7 +1592,11 @@ func _show_cell_info(pos: Vector2i) -> void:
 	var temp_type: String = str(temp_board[pos.y][pos.x])
 	var tile: Dictionary = tile_defs[perm_type]
 
-	var panel := Panel.new()
+	# PanelContainer, not a plain Panel — a plain Panel never reports a size
+	# based on its child, which left panel.size at (0, 0) below and put this
+	# card's computed position (anchored off that size) right on top of the
+	# cell it's supposed to float above instead of clearing it.
+	var panel := PanelContainer.new()
 	var box := StyleBoxFlat.new()
 	box.bg_color = Color("#2e2645")
 	box.border_color = Color("#e3b355")
@@ -1578,7 +1683,7 @@ func _advance_player() -> void:
 		var pass_message := _resolve_pass_tile(player_pos)
 		if pass_message != "":
 			messages.append(pass_message)
-		log_label.text = " ".join(messages)
+		log_label.text = "\n".join(messages)
 		_refresh_all()
 		await _animate_player_step(0.16)
 
@@ -1612,14 +1717,14 @@ func _advance_player() -> void:
 		return
 	if actions_left <= 0 or hand.is_empty():
 		state = "player"
-		log_label.text = " ".join(messages) + " 敵の行動。"
+		log_label.text = "\n".join(messages) + "\n敵の行動。"
 		_refresh_all()
 		await get_tree().create_timer(0.25).timeout
 		await _flush_turn_ledger()
 		_enemy_turn()
 	else:
 		state = "player"
-		log_label.text = " ".join(messages) + " 次のダイスを選べます。"
+		log_label.text = "\n".join(messages) + "\n次のダイスを選べます。"
 		_refresh_all()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
@@ -1760,11 +1865,12 @@ func _enemy_turn() -> void:
 				if turn_visited.has(c):
 					hit = true
 					break
+		var enemy_label: String = str(enemy.get("label", enemy["type"]))
 		if hit:
 			_take_damage(int(enemy["damage"]))
-			messages.append("%sの攻撃、%dダメージ。" % [enemy["type"], int(enemy["damage"])])
+			messages.append("%sの攻撃、%dダメージ。" % [enemy_label, int(enemy["damage"])])
 		else:
-			messages.append("%sの攻撃を回避。" % enemy["type"])
+			messages.append("%sの攻撃を回避。" % enemy_label)
 
 	if encounter >= 3 and not enemies.is_empty() and rng.randi_range(0, 100) < 45:
 		var p := _random_empty_cell()
@@ -1781,10 +1887,11 @@ func _enemy_turn() -> void:
 		return
 	for enemy in enemies:
 		_generate_telegraph(enemy)
-	_start_player_turn(" ".join(messages))
+	_start_player_turn("\n".join(messages))
 
 func _show_reward() -> void:
 	state = "reward_select"
+	_sync_root_alignment()
 	board_grid.visible = true
 	_clear_children(dice_box)
 	_clear_children(reward_box)
@@ -1852,6 +1959,7 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 
 func _show_victory() -> void:
 	state = "victory"
+	_sync_root_alignment()
 	_clear_children(dice_box)
 	_clear_children(reward_box)
 	header_label.text = "踏破成功"
@@ -1867,6 +1975,7 @@ func _show_victory() -> void:
 
 func _show_game_over(reason: String) -> void:
 	state = "game_over"
+	_sync_root_alignment()
 	_clear_children(dice_box)
 	_clear_children(reward_box)
 	header_label.text = "ゲームオーバー"
@@ -2083,6 +2192,11 @@ func _spawn_ledger_chip(kind: String, amount: int) -> Dictionary:
 
 	var label := _make_label(12, color, HORIZONTAL_ALIGNMENT_LEFT, true)
 	label.text = text
+	# _make_label defaults to word-wrap, which folds a short "-7" onto two
+	# lines in a chip this narrow (the sign stranded above the digit) —
+	# this chip is exactly one line, always.
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	label.custom_minimum_size = Vector2(0, 0)
 	row.add_child(label)
 
 	ledger_box.add_child(chip)
@@ -2124,7 +2238,10 @@ func _any_enemy_alive() -> bool:
 func _flush_turn_ledger() -> void:
 	suppress_stat_reveal = false
 	var had_entries: bool = not ledger_chips.is_empty()
-	ledger_chips = {}
+	# Left populated through the fade below on purpose — _refresh_header
+	# only shows the ledger while ledger_chips is non-empty, and clearing
+	# it here would have snapped the row invisible instead of letting the
+	# chips visibly fade out.
 
 	if had_entries:
 		await get_tree().create_timer(0.25).timeout
@@ -2141,6 +2258,7 @@ func _flush_turn_ledger() -> void:
 	if had_entries:
 		await get_tree().create_timer(0.6).timeout
 
+	ledger_chips = {}
 	_clear_children(ledger_box)
 	_cleanup_dead_enemies()
 
