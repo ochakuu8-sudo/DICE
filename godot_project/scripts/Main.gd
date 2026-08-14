@@ -11,12 +11,21 @@ const MAX_ENCOUNTERS := 6
 class Backdrop:
 	extends Control
 
+	# 0 at the first fight, 1 at the last — the whole run shifts the
+	# backdrop from a cool violet toward a warmer, redder dusk as the
+	# encounters climb, so progress through a run is felt, not just read
+	# off the "第N戦" counter.
+	var tint_progress: float = 0.0:
+		set(v):
+			tint_progress = clamp(v, 0.0, 1.0)
+			queue_redraw()
+
 	func _draw() -> void:
 		if size.x <= 0.0 or size.y <= 0.0:
 			return
-		var top_color := Color("#33264c")
-		var mid_color := Color("#241c37")
-		var bottom_color := Color("#161022")
+		var top_color := Color("#33264c").lerp(Color("#4a2436"), tint_progress)
+		var mid_color := Color("#241c37").lerp(Color("#33202a"), tint_progress)
+		var bottom_color := Color("#161022").lerp(Color("#1f1219"), tint_progress)
 		var w: float = size.x
 		var h: float = size.y
 		var mid_y: float = h * 0.5
@@ -31,9 +40,10 @@ class Backdrop:
 		var glow_radius: float = max(w, h) * 0.62
 		var glow_center := Vector2(w * 0.5, h * 0.32)
 		var glow_steps := 5
+		var glow_tint: Color = Color(0.55, 0.42, 0.75).lerp(Color(0.85, 0.4, 0.35), tint_progress)
 		for i in range(glow_steps, 0, -1):
 			var t: float = float(i) / float(glow_steps)
-			draw_circle(glow_center, glow_radius * t, Color(0.55, 0.42, 0.75, 0.035))
+			draw_circle(glow_center, glow_radius * t, Color(glow_tint.r, glow_tint.g, glow_tint.b, 0.035))
 
 class BoardView:
 	extends Control
@@ -139,6 +149,14 @@ class IconGlyph:
 				_focus(c, s)
 			"skull":
 				_skull(c, s)
+			"enemy_grunt":
+				_enemy_grunt(c, s)
+			"enemy_archer":
+				_enemy_archer(c, s)
+			"enemy_heavy":
+				_enemy_heavy(c, s)
+			"enemy_boss":
+				_enemy_boss(c, s)
 			"flag_start", "flag_goal":
 				_flag(c, s)
 			"hub":
@@ -232,6 +250,54 @@ class IconGlyph:
 		draw_circle(c + Vector2(0.12, -0.08) * s, s * 0.07, eye_col)
 		draw_rect(Rect2(c + Vector2(-0.11, 0.18) * s, Vector2(0.07, 0.11) * s), glyph_color)
 		draw_rect(Rect2(c + Vector2(0.04, 0.18) * s, Vector2(0.07, 0.11) * s), glyph_color)
+
+	# Four enemy silhouettes so "who am I fighting" reads from shape alone,
+	# not just the name label — a generic skull for every type read as
+	# placeholder art rather than a designed roster.
+	func _enemy_grunt(c: Vector2, s: float) -> void:
+		var body := [
+			c + Vector2(-0.22, 0.10) * s, c + Vector2(0.22, 0.10) * s,
+			c + Vector2(0.30, 0.40) * s, c + Vector2(-0.30, 0.40) * s,
+		]
+		draw_colored_polygon(body, glyph_color)
+		draw_circle(c + Vector2(0.0, -0.14) * s, s * 0.19, glyph_color)
+		draw_colored_polygon([c + Vector2(-0.10, -0.28) * s, c + Vector2(-0.18, -0.42) * s, c + Vector2(-0.01, -0.30) * s], glyph_color)
+		draw_colored_polygon([c + Vector2(0.10, -0.28) * s, c + Vector2(0.18, -0.42) * s, c + Vector2(0.01, -0.30) * s], glyph_color)
+
+	func _enemy_archer(c: Vector2, s: float) -> void:
+		var body := [
+			c + Vector2(-0.14, 0.06) * s, c + Vector2(0.10, 0.06) * s,
+			c + Vector2(0.16, 0.40) * s, c + Vector2(-0.20, 0.40) * s,
+		]
+		draw_colored_polygon(body, glyph_color)
+		draw_circle(c + Vector2(-0.02, -0.16) * s, s * 0.15, glyph_color)
+		var bow_center := c + Vector2(0.28, 0.06) * s
+		draw_arc(bow_center, s * 0.26, deg_to_rad(-100.0), deg_to_rad(100.0), 16, glyph_color, s * 0.045, true)
+		draw_line(bow_center + Vector2(0.0, -0.24) * s, bow_center + Vector2(0.0, 0.24) * s, glyph_color, s * 0.03, true)
+
+	func _enemy_heavy(c: Vector2, s: float) -> void:
+		var body := [
+			c + Vector2(-0.34, 0.02) * s, c + Vector2(0.34, 0.02) * s,
+			c + Vector2(0.30, 0.40) * s, c + Vector2(-0.30, 0.40) * s,
+		]
+		draw_colored_polygon(body, glyph_color)
+		draw_circle(c + Vector2(0.0, -0.16) * s, s * 0.17, glyph_color)
+		draw_colored_polygon([c + Vector2(-0.34, 0.02) * s, c + Vector2(-0.48, -0.06) * s, c + Vector2(-0.22, 0.04) * s], glyph_color)
+		draw_colored_polygon([c + Vector2(0.34, 0.02) * s, c + Vector2(0.48, -0.06) * s, c + Vector2(0.22, 0.04) * s], glyph_color)
+
+	func _enemy_boss(c: Vector2, s: float) -> void:
+		var body := [
+			c + Vector2(-0.30, 0.06) * s, c + Vector2(0.30, 0.06) * s,
+			c + Vector2(0.36, 0.42) * s, c + Vector2(-0.36, 0.42) * s,
+		]
+		draw_colored_polygon(body, glyph_color)
+		draw_circle(c + Vector2(0.0, -0.14) * s, s * 0.22, glyph_color)
+		draw_colored_polygon([c + Vector2(-0.16, -0.28) * s, c + Vector2(-0.23, -0.48) * s, c + Vector2(-0.05, -0.32) * s], glyph_color)
+		draw_colored_polygon([c + Vector2(-0.05, -0.30) * s, c + Vector2(0.0, -0.54) * s, c + Vector2(0.05, -0.30) * s], glyph_color)
+		draw_colored_polygon([c + Vector2(0.16, -0.28) * s, c + Vector2(0.23, -0.48) * s, c + Vector2(0.05, -0.32) * s], glyph_color)
+		var glow := Color(1.0, 0.35, 0.25, 0.9)
+		draw_circle(c + Vector2(-0.08, -0.14) * s, s * 0.04, glow)
+		draw_circle(c + Vector2(0.08, -0.14) * s, s * 0.04, glow)
 
 	func _flag(c: Vector2, s: float) -> void:
 		var base := c + Vector2(-0.16, 0.32) * s
@@ -361,14 +427,53 @@ class BurstEffect:
 			var dir := Vector2(cos(ang), sin(ang))
 			draw_line(center + dir * token * 0.22, center + dir * ring_r, Color(1.0, 0.78, 0.5, a), token * 0.05, true)
 
+# A small reactive portrait next to the HP bar — the player used to be
+# represented only by a glowing dot on the board, nothing to actually look
+# at or identify with. Its expression follows the same displayed HP the
+# bar shows (see _refresh_header's suppress_stat_reveal gating), so it
+# doesn't wince before the ledger reveals the hit that caused it.
+class PortraitFace:
+	extends Control
+
+	var hp_ratio: float = 1.0:
+		set(v):
+			hp_ratio = v
+			queue_redraw()
+	var face_color := Color("#3f5c86")
+
+	func _draw() -> void:
+		var s: float = min(size.x, size.y)
+		var c: Vector2 = size * 0.5
+		var outline := Color("#1c1626")
+		draw_circle(c, s * 0.48, face_color)
+		draw_arc(c, s * 0.46, 0.0, TAU, 28, outline, s * 0.055, true)
+		if hp_ratio <= 0.3:
+			# Pained: angled "><" eyes instead of dots.
+			draw_line(c + Vector2(-0.24, -0.11) * s, c + Vector2(-0.11, -0.02) * s, outline, s * 0.05, true)
+			draw_line(c + Vector2(-0.24, 0.07) * s, c + Vector2(-0.11, -0.02) * s, outline, s * 0.05, true)
+			draw_line(c + Vector2(0.11, -0.02) * s, c + Vector2(0.24, -0.11) * s, outline, s * 0.05, true)
+			draw_line(c + Vector2(0.11, -0.02) * s, c + Vector2(0.24, 0.07) * s, outline, s * 0.05, true)
+		else:
+			draw_circle(c + Vector2(-0.16, -0.05) * s, s * 0.055, outline)
+			draw_circle(c + Vector2(0.16, -0.05) * s, s * 0.055, outline)
+		if hp_ratio > 0.6:
+			draw_arc(c + Vector2(0.0, 0.10) * s, s * 0.17, deg_to_rad(20.0), deg_to_rad(160.0), 12, outline, s * 0.05, false)
+		elif hp_ratio > 0.3:
+			draw_line(c + Vector2(-0.12, 0.24) * s, c + Vector2(0.12, 0.24) * s, outline, s * 0.05, true)
+		else:
+			draw_arc(c + Vector2(0.0, 0.36) * s, s * 0.17, deg_to_rad(200.0), deg_to_rad(340.0), 12, outline, s * 0.05, false)
+
 var rng := RandomNumberGenerator.new()
 
 var bg_rect: Control
+var backdrop_view: Backdrop
 var root_box: VBoxContainer
 var header_label: Label
 var instruction_label: Label
 var route_label: Label
+var stats_row: HBoxContainer
 var gauges_box: VBoxContainer
+var player_portrait: PortraitFace
 var hp_bar: GaugeBar
 var hp_value_label: Label
 var shield_bar: GaugeBar
@@ -575,7 +680,8 @@ func _fit_layout() -> void:
 		_layout_board_buttons()
 
 func _build_ui() -> void:
-	bg_rect = Backdrop.new()
+	backdrop_view = Backdrop.new()
+	bg_rect = backdrop_view
 	bg_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg_rect)
 
@@ -591,11 +697,20 @@ func _build_ui() -> void:
 	route_label = _make_label(16, Color("#dfe7f3"), HORIZONTAL_ALIGNMENT_CENTER)
 	root_box.add_child(route_label)
 
+	stats_row = HBoxContainer.new()
+	stats_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	stats_row.add_theme_constant_override("separation", 10)
+	root_box.add_child(stats_row)
+
+	player_portrait = PortraitFace.new()
+	player_portrait.custom_minimum_size = Vector2(46, 46)
+	player_portrait.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	stats_row.add_child(player_portrait)
+
 	gauges_box = VBoxContainer.new()
 	gauges_box.add_theme_constant_override("separation", 4)
 	gauges_box.custom_minimum_size = Vector2(280, 0)
-	gauges_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	root_box.add_child(gauges_box)
+	stats_row.add_child(gauges_box)
 	hp_bar = GaugeBar.new()
 	hp_value_label = Label.new()
 	gauges_box.add_child(_build_gauge_row("HP", Color("#f0b7a7"), Color("#4f9d72"), hp_bar, hp_value_label))
@@ -761,6 +876,8 @@ func _show_title() -> void:
 	state = "title"
 	_sync_root_alignment()
 	encounter = 0
+	if backdrop_view != null:
+		backdrop_view.tint_progress = 0.0
 	board_grid.visible = false
 	_clear_children(dice_box)
 	_clear_children(reward_box)
@@ -772,7 +889,7 @@ func _show_title() -> void:
 	log_label.text = "戦闘後は毎回、新しいマスを永続ボードへ配置します。育てたコースで戦いましょう。"
 	end_turn_button.visible = false
 	restart_button.visible = false
-	gauges_box.visible = false
+	stats_row.visible = false
 	action_pip_row.visible = false
 	ledger_box.visible = false
 	ledger_caption.visible = false
@@ -967,9 +1084,11 @@ func _refresh_all() -> void:
 
 func _refresh_header() -> void:
 	header_label.text = "%s / 第%d戦%s" % [hero_name, encounter, " ボス" if encounter == MAX_ENCOUNTERS else ""]
+	if backdrop_view != null:
+		backdrop_view.tint_progress = float(encounter - 1) / float(max(MAX_ENCOUNTERS - 1, 1))
 	instruction_label.text = _state_instruction()
 	route_label.text = _route_status_text()
-	gauges_box.visible = true
+	stats_row.visible = true
 	action_pip_row.visible = true
 	# The ledger only earns its place once it has something to say — shown
 	# empty (with its caption) it read as an unexplained blank strip before
@@ -987,6 +1106,8 @@ func _refresh_header() -> void:
 		hp_bar.fill_color = _hp_ratio_color(float(player_hp) / float(max(player_max_hp, 1)))
 		_animate_bar(hp_bar, player_hp)
 		hp_value_label.text = "%d / %d" % [player_hp, player_max_hp]
+		player_portrait.face_color = _hero_color(hero_key)
+		player_portrait.hp_ratio = float(player_hp) / float(max(player_max_hp, 1))
 
 	var shield_cap: int = clamp(max(player_shield, 6), 1, 14)
 	if not suppress_stat_reveal:
@@ -1054,7 +1175,7 @@ func _refresh_enemy_status() -> void:
 # There's only ever one enemy on screen at a time now, so this gets a full
 # bordered card — the same visual weight as the player's own gauges — not
 # a cramped list row sized for up to four.
-func _make_enemy_status_row(enemy: Dictionary) -> PanelContainer:
+func _make_enemy_status_row(enemy: Dictionary) -> Control:
 	var card := PanelContainer.new()
 	var box := StyleBoxFlat.new()
 	box.bg_color = Color("#2e2036")
@@ -1063,10 +1184,10 @@ func _make_enemy_status_row(enemy: Dictionary) -> PanelContainer:
 	box.border_width_top = 2
 	box.border_width_right = 2
 	box.border_width_bottom = 2
-	box.corner_radius_top_left = 12
-	box.corner_radius_top_right = 12
-	box.corner_radius_bottom_left = 12
-	box.corner_radius_bottom_right = 12
+	box.corner_radius_top_left = 0
+	box.corner_radius_top_right = 0
+	box.corner_radius_bottom_left = 0
+	box.corner_radius_bottom_right = 0
 	box.content_margin_left = 14.0
 	box.content_margin_right = 14.0
 	box.content_margin_top = 10.0
@@ -1082,9 +1203,9 @@ func _make_enemy_status_row(enemy: Dictionary) -> PanelContainer:
 	block.add_child(row)
 
 	var icon := IconGlyph.new()
-	icon.kind = "skull"
-	icon.glyph_color = Color("#f0b7a7")
-	icon.custom_minimum_size = Vector2(24, 24)
+	icon.kind = _enemy_icon_kind(str(enemy["type"]))
+	icon.glyph_color = Color("#ffd9a0") if str(enemy["type"]) == "ボス" else Color("#f0b7a7")
+	icon.custom_minimum_size = Vector2(30, 30)
 	row.add_child(icon)
 
 	var name_label := _make_label(16, Color("#f0b7a7"), HORIZONTAL_ALIGNMENT_LEFT, true)
@@ -1143,7 +1264,76 @@ func _make_enemy_status_row(enemy: Dictionary) -> PanelContainer:
 	plan_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	plan_row.add_child(plan_label)
 
-	return card
+	# card sits inside a plain (non-Container) wrapper so the intent badge
+	# below can overlap its corner freely — a PanelContainer forces every
+	# direct child to the same full rect, which is exactly the bug that hit
+	# the tap-to-inspect card and the ledger chips earlier this session.
+	var wrapper := Control.new()
+	wrapper.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wrapper.add_child(card)
+	var card_size: Vector2 = card.get_combined_minimum_size()
+
+	# The intent badge: a big icon+number instead of the small "先で3ダメ
+	# ージ" text alone — Slay the Spire-style, reads at a glance without
+	# parsing a sentence. Perches on the card's top-right corner, poking
+	# above it — the card is pushed down by that overflow (rather than the
+	# badge given a negative position) so the wrapper's own bounding box
+	# still honestly covers both, and _layout_enemy_status's centering
+	# math (which reads that box, not the individual children) lands on
+	# the middle of the whole assembly instead of just the card.
+	var badge := _make_intent_badge(enemy)
+	wrapper.add_child(badge)
+	var badge_size: Vector2 = badge.get_combined_minimum_size()
+	var badge_overflow: float = badge_size.y * 0.55
+
+	card.size = card_size
+	card.position = Vector2(0, badge_overflow)
+	badge.size = badge_size
+	badge.position = Vector2(card_size.x - badge_size.x * 0.7, 0)
+
+	wrapper.custom_minimum_size = Vector2(card_size.x, card_size.y + badge_overflow)
+	return wrapper
+
+# A big, blunt "this is what's coming" badge — a filled sword/bolt icon
+# plus the raw damage number, no sentence to parse. Solid red with a bolt
+# for a guaranteed hit, a softer violet with a target glyph for a
+# positional one (only lands if you're on one of its telegraphed cells).
+func _make_intent_badge(enemy: Dictionary) -> PanelContainer:
+	var guaranteed: bool = str(enemy.get("attack_kind", "positional")) == "guaranteed"
+	var badge := PanelContainer.new()
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color("#7a2a2a") if guaranteed else Color("#4a3868")
+	box.border_color = Color("#ff8f6b") if guaranteed else Color("#c9a2ff")
+	box.border_width_left = 2
+	box.border_width_top = 2
+	box.border_width_right = 2
+	box.border_width_bottom = 2
+	box.shadow_color = Color(0.0, 0.0, 0.0, 0.45)
+	box.shadow_size = 4
+	box.content_margin_left = 6.0
+	box.content_margin_right = 8.0
+	box.content_margin_top = 3.0
+	box.content_margin_bottom = 3.0
+	badge.add_theme_stylebox_override("panel", box)
+	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 2)
+	badge.add_child(row)
+
+	var icon := IconGlyph.new()
+	icon.kind = "bolt" if guaranteed else "focus"
+	icon.glyph_color = Color("#fff1ea")
+	icon.custom_minimum_size = Vector2(16, 16)
+	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(icon)
+
+	var num_label := _make_label(18, Color("#fff1ea"), HORIZONTAL_ALIGNMENT_LEFT, true)
+	num_label.text = str(int(enemy["damage"]))
+	num_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.add_child(num_label)
+
+	return badge
 
 func _layout_board_buttons() -> void:
 	if board_grid == null or cell_buttons.is_empty():
@@ -1281,6 +1471,16 @@ func _route_status_text() -> String:
 		return "配置中: %s" % pending_reward_name
 	return ""
 
+func _enemy_icon_kind(type_name: String) -> String:
+	match type_name:
+		"射手":
+			return "enemy_archer"
+		"重装":
+			return "enemy_heavy"
+		"ボス":
+			return "enemy_boss"
+	return "enemy_grunt"
+
 # Spelled out instead of packed into a bare "2マス先 3" — that read as two
 # unrelated numbers with no unit, not "2 cells ahead, hits for 3".
 func _enemy_plan(enemy: Dictionary) -> String:
@@ -1414,10 +1614,10 @@ func _make_lookahead_chip(pos: Vector2i) -> Control:
 	var wrap := Panel.new()
 	wrap.custom_minimum_size = Vector2(34, 34)
 	var box := StyleBoxFlat.new()
-	box.corner_radius_top_left = 10
-	box.corner_radius_top_right = 10
-	box.corner_radius_bottom_left = 10
-	box.corner_radius_bottom_right = 10
+	box.corner_radius_top_left = 0
+	box.corner_radius_top_right = 0
+	box.corner_radius_bottom_left = 0
+	box.corner_radius_bottom_right = 0
 	box.border_width_left = 1
 	box.border_width_top = 1
 	box.border_width_right = 1
@@ -1628,10 +1828,10 @@ func _show_cell_info(pos: Vector2i) -> void:
 	box.border_width_top = 2
 	box.border_width_right = 2
 	box.border_width_bottom = 2
-	box.corner_radius_top_left = 10
-	box.corner_radius_top_right = 10
-	box.corner_radius_bottom_left = 10
-	box.corner_radius_bottom_right = 10
+	box.corner_radius_top_left = 0
+	box.corner_radius_top_right = 0
+	box.corner_radius_bottom_left = 0
+	box.corner_radius_bottom_right = 0
 	box.content_margin_left = 12.0
 	box.content_margin_right = 12.0
 	box.content_margin_top = 8.0
@@ -1973,6 +2173,23 @@ func _show_reward() -> void:
 		reward_box.add_child(b)
 	_refresh_board()
 
+	# A dealt-from-the-deck reveal instead of the three options just being
+	# there: each card starts pressed flat (edge-on, like a face-down card)
+	# and flips open on a stagger, back-eased so it overshoots slightly
+	# before settling — same "something landed" beat as a card flip.
+	await get_tree().process_frame
+	var reward_idx := 0
+	for child in reward_box.get_children():
+		if not (child is Button):
+			continue
+		var reward_btn: Button = child
+		reward_btn.pivot_offset = reward_btn.size / 2.0
+		reward_btn.scale = Vector2(1.0, 0.06)
+		var reveal_tween := create_tween()
+		reveal_tween.tween_interval(reward_idx * 0.12)
+		reveal_tween.tween_property(reward_btn, "scale", Vector2(1.0, 1.0), 0.32).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		reward_idx += 1
+
 func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	pending_reward_type = tile_type
 	pending_reward_name = tile_name
@@ -2191,10 +2408,10 @@ func _spawn_ledger_chip(kind: String, amount: int) -> Dictionary:
 	box.border_width_top = 1
 	box.border_width_right = 1
 	box.border_width_bottom = 1
-	box.corner_radius_top_left = 8
-	box.corner_radius_top_right = 8
-	box.corner_radius_bottom_left = 8
-	box.corner_radius_bottom_right = 8
+	box.corner_radius_top_left = 0
+	box.corner_radius_top_right = 0
+	box.corner_radius_bottom_left = 0
+	box.corner_radius_bottom_right = 0
 	box.content_margin_left = 6.0
 	box.content_margin_right = 7.0
 	box.content_margin_top = 3.0
@@ -2537,10 +2754,10 @@ func _apply_button_color(button: Button, color: Color, border_color: Color = Col
 	_apply_font(button)
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = color
-	normal.corner_radius_top_left = 8
-	normal.corner_radius_top_right = 8
-	normal.corner_radius_bottom_left = 8
-	normal.corner_radius_bottom_right = 8
+	normal.corner_radius_top_left = 0
+	normal.corner_radius_top_right = 0
+	normal.corner_radius_bottom_left = 0
+	normal.corner_radius_bottom_right = 0
 	normal.border_width_left = border_width
 	normal.border_width_top = border_width
 	normal.border_width_right = border_width
