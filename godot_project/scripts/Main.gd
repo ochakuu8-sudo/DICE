@@ -522,14 +522,18 @@ var hero_defs := {
 func _ready() -> void:
 	rng.randomize()
 	_build_track_graph()
-	var base_font: Font = load("res://assets/NotoSansJP.ttf")
+	# DotGothic16: a dot-matrix / retro-arcade style Japanese font, blocky
+	# and bold by design rather than a thin general-purpose UI face. It's a
+	# single static weight, so the "heavy" variant is a synthetic embolden
+	# instead of a variable-font axis.
+	var base_font: Font = load("res://assets/DotGothic16.ttf")
 	var regular_variation := FontVariation.new()
 	regular_variation.base_font = base_font
-	regular_variation.variation_opentype = {"wght": 600.0}
+	regular_variation.variation_embolden = 0.15
 	ui_font = regular_variation
 	var heavy_variation := FontVariation.new()
 	heavy_variation.base_font = base_font
-	heavy_variation.variation_opentype = {"wght": 850.0}
+	heavy_variation.variation_embolden = 0.85
 	ui_font_heavy = heavy_variation
 	_build_ui()
 	_fit_layout()

@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://btalcnt8474f0"
-path="res://.godot/imported/NotoSansJP.ttf-0ea88212d656288fd4e95893b1346214.fontdata"
+uid="uid://b7vlhcafbgwbc"
+path="res://.godot/imported/DotGothic16.ttf-e0a6128a708efdbd7c5d9691cc07e92c.fontdata"
 
 [deps]
 
-source_file="res://assets/NotoSansJP.ttf"
-dest_files=["res://.godot/imported/NotoSansJP.ttf-0ea88212d656288fd4e95893b1346214.fontdata"]
+source_file="res://assets/DotGothic16.ttf"
+dest_files=["res://.godot/imported/DotGothic16.ttf-e0a6128a708efdbd7c5d9691cc07e92c.fontdata"]
 
 [params]
 
