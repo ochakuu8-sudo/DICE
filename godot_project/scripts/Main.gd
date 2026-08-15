@@ -152,6 +152,8 @@ class IconGlyph:
 				_boot(c, s, col, grow)
 			"dice":
 				_dice(c, s, col, grow)
+			"chain":
+				_chain(c, s, col, grow)
 			"pip_on":
 				_disc(c, s * 0.34, col, grow)
 			"pip_off":
@@ -361,6 +363,10 @@ class IconGlyph:
 			c + Vector2(0.06, 0.06) * s, c + Vector2(0.34, 0.16) * s,
 			c + Vector2(0.34, 0.32) * s, c + Vector2(-0.20, 0.32) * s,
 		]), col, grow)
+
+	func _chain(c: Vector2, s: float, col: Color, grow: float) -> void:
+		_ring(c + Vector2(-0.15, 0.0) * s, s * 0.20, s * 0.09, col, grow)
+		_ring(c + Vector2(0.15, 0.0) * s, s * 0.20, s * 0.09, col, grow)
 
 	func _dice(c: Vector2, s: float, col: Color, grow: float) -> void:
 		_poly(PackedVector2Array([
@@ -890,6 +896,8 @@ var hp_bar: GaugeBar
 var hp_label: Label
 var shield_chip: PanelContainer
 var shield_label: Label
+var combo_chip: PanelContainer
+var combo_label: Label
 var action_pip_box: HBoxContainer
 
 var enemy_panel: Control
@@ -978,8 +986,11 @@ var selected_roll := 0
 var selected_tag := ""
 var steps_left := 0
 var route_path: Array[Vector2i] = []
-var route_power := 0
-var route_hits := 0
+# Combo is the whole of the base system's arithmetic: it counts the dice
+# spent this turn, and attack tiles add it to their damage. The old build
+# had two separate hidden accumulators (a per-die tag bonus and a count of
+# attack tiles hit) that no part of the UI ever showed.
+var combo := 0
 var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
@@ -1022,6 +1033,9 @@ var tile_defs := {
 	"heal": {"name": "癒し道", "kind": "回復", "color": Color("#3EA95E"), "icon": "heal",
 		"trigger": "pass", "mode": "heal", "value": 1, "effect": "HP+1",
 		"detail": "少しずつしか戻らない。長い出目で何度も通り抜けるのが回復の近道。"},
+	"chain": {"name": "連鎖路", "kind": "連鎖", "color": Color("#F2C230"), "icon": "chain",
+		"trigger": "pass", "mode": "combo", "value": 1, "effect": "コンボ+1",
+		"detail": "通り抜けるとコンボが1増える。攻撃マスのダメージはコンボぶん上乗せされるので、踏んでから殴ると伸びる。"},
 	"warp": {"name": "跳躍路", "kind": "移動", "color": Color("#16A0C8"), "icon": "warp",
 		"trigger": "pass", "mode": "step", "value": 1, "effect": "1歩多く進む",
 		"detail": "出目を1つ伸ばす。止まりたいマスに足りないときの調整に使う。"},
@@ -1044,8 +1058,8 @@ var tile_defs := {
 		"trigger": "stop", "mode": "shock", "target": "all", "value": 4, "effect": "敵に4ダメージ、盾+2",
 		"detail": "攻めと守りを同時にこなす。どちらも欲しいターンの着地点に。"},
 	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
-		"trigger": "stop", "mode": "draw", "value": 1, "effect": "ダイス+1枚、攻撃+2",
-		"detail": "手札を1枚補充し、このターンの攻撃を+2する。次の一投を強くする踏み台。"}
+		"trigger": "stop", "mode": "draw", "value": 1, "effect": "ダイスを1枚引く",
+		"detail": "手札を1枚補充する。引いたダイスはその場で振られ、まだ行動が残っていればそのまま使える。"}
 }
 
 # Enemies do not build their own squares — they foul yours. A debuff sits
@@ -1065,7 +1079,8 @@ var reward_pool := [
 	{"type": "slash"}, {"type": "guard"}, {"type": "fire"},
 	{"type": "heal"}, {"type": "bow"}, {"type": "trap"},
 	{"type": "warp"}, {"type": "shock"}, {"type": "focus"},
-	{"type": "heavy"}, {"type": "fort"}, {"type": "spring"}
+	{"type": "heavy"}, {"type": "fort"}, {"type": "spring"},
+	{"type": "chain"}
 ]
 
 var hero_defs := {
@@ -1462,6 +1477,15 @@ func _build_board_zone() -> void:
 	ribbon_box.add_theme_constant_override("separation", 4)
 	ribbon_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	board_view.add_child(ribbon_box)
+
+	combo_chip = PanelContainer.new()
+	combo_chip.add_theme_stylebox_override("panel", _flat_style(COL_GOLD, COL_INK, 3, 10, 3))
+	combo_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	combo_chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	ribbon_box.add_child(combo_chip)
+	combo_label = _make_label(FS_BODY, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	combo_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	combo_chip.add_child(combo_label)
 
 	ribbon_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
 	ribbon_caption.text = "この先のマス　●通過 ■停止"
@@ -1870,6 +1894,10 @@ func _refresh_top() -> void:
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
 
+	combo_label.text = "コンボ %d" % combo
+	combo_chip.visible = state == "player" or state == "moving"
+	combo_chip.modulate = Color(1, 1, 1, 1.0 if combo > 0 else 0.5)
+
 	_clear_children(action_pip_box)
 	for i in range(ACTIONS_PER_TURN):
 		var pip := IconGlyph.new()
@@ -1954,9 +1982,11 @@ func _refresh_board() -> void:
 			var value_text := ""
 			var value_color := Color("#FFF7E6")
 
+			var boosted := false
 			match str(tile["mode"]):
 				"attack", "shock":
 					value_text = str(int(tile["value"]) + _pending_route_bonus())
+					boosted = _pending_route_bonus() > 0
 				"shield", "heal", "step":
 					value_text = "+%d" % int(tile["value"])
 				"draw":
@@ -2014,6 +2044,8 @@ func _refresh_board() -> void:
 			icon.glyph_color = Color(1.0, 0.97, 0.90, 0.45 if plain else 1.0)
 			icon.outline_color = Color(COL_INK.r, COL_INK.g, COL_INK.b, 0.45 if plain else 1.0)
 			value_label.text = value_text
+			if boosted:
+				value_color = COL_GOLD
 			value_label.add_theme_color_override("font_color", Color(value_color.r, value_color.g, value_color.b, 0.55 if plain else 1.0))
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
 			# A fouled tile darkens and takes a mark, but keeps its own
@@ -2028,10 +2060,15 @@ func _refresh_board() -> void:
 	_refresh_ribbon()
 	board_view.queue_redraw()
 
-# While a route is being walked the focus bonus can already be in play, so
-# attack tiles show what they would actually deal right now.
+# Attack tiles print what they would really deal. Mid-move that is the
+# combo as it stands; while choosing, it is what the combo will be once a
+# die is spent — which is the number the choice is actually made on.
 func _pending_route_bonus() -> int:
-	return route_power if state == "moving" else 0
+	if state == "moving":
+		return combo
+	if state == "player":
+		return combo + 1
+	return 0
 
 func _telegraph_damage() -> int:
 	for enemy in enemies:
@@ -2080,6 +2117,8 @@ func _refresh_ribbon() -> void:
 	ribbon_row.visible = ribbon_caption.visible
 	roll_readout.visible = moving
 	ribbon_box.visible = (state == "player" and dice_rolled) or moving
+	if combo_chip != null:
+		combo_chip.visible = ribbon_box.visible
 
 	if moving:
 		roll_readout.visible = steps_left > 0
@@ -2467,7 +2506,7 @@ func _show_catalog() -> void:
 	catalog_return_state = state
 	overlay.visible = true
 	overlay_title.text = "マス図鑑"
-	overlay_body.text = "○ 丸いマスは通過したときに、□ 四角いマスは止まったときに効きます。"
+	overlay_body.text = "○丸は通過で、□四角は止まって効くマス。攻撃マスのダメージには、そのターンに使ったダイスの数（コンボ）が加算されます。"
 	overlay_body.visible = true
 	_clear_children(overlay_list)
 
@@ -2742,8 +2781,7 @@ func _start_encounter() -> void:
 	selected_tag = ""
 	steps_left = 0
 	route_path = []
-	route_power = 0
-	route_hits = 0
+	combo = 0
 	temp_board = _make_empty_board("none")
 	enemies = []
 	_setup_encounter()
@@ -2830,8 +2868,7 @@ func _start_player_turn(message: String = "") -> void:
 	selected_roll = 0
 	steps_left = 0
 	route_path = []
-	route_power = 0
-	route_hits = 0
+	combo = 0
 	turn_visited = {}
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
@@ -2947,8 +2984,8 @@ func _on_die_pressed(index: int) -> void:
 	selected_roll = final_roll
 	selected_tag = str(selected_die["tag"])
 	steps_left = final_roll
-	route_power = _tag_route_bonus(selected_tag)
-	route_hits = 0
+	# Spending a die is what raises the combo.
+	combo += 1
 	route_path = [player_pos]
 	discard_pile.append(selected_die)
 	hand.remove_at(index)
@@ -3021,8 +3058,6 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 		var effect := _apply_tile_effect(tile_type)
 		if effect != "":
 			messages.append(effect)
-	if route_hits >= 3:
-		_spawn_enemy_popup("%d連鎖!" % route_hits, COL_GOLD)
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
@@ -3067,9 +3102,12 @@ func _apply_tile_effect(tile_type: String) -> String:
 			return "%s：盾+2" % name
 		"draw":
 			_draw_to_hand()
-			route_power += 2
 			_refresh_hand()
-			return "%s：ダイスを補充、攻撃+2" % name
+			return "%s：ダイスを1枚補充" % name
+		"combo":
+			combo += value
+			_spawn_floating_text(player_pos, "コンボ+%d" % value, COL_GOLD)
+			return "%s：コンボ+%d（今 %d）" % [name, value, combo]
 	return ""
 
 func _strike(target: String, amount: int) -> bool:
@@ -3081,7 +3119,7 @@ func _strike(target: String, amount: int) -> bool:
 	return _strike_lowest(amount)
 
 func _combo_damage(base: int) -> int:
-	return base + route_power + route_hits
+	return base + combo
 
 func _lowest_hp_enemy() -> Dictionary:
 	var best := {}
@@ -3108,7 +3146,6 @@ func _strike_lowest(amount: int) -> bool:
 	if target.is_empty():
 		return false
 	_damage_enemy(target, amount)
-	route_hits += 1
 	return true
 
 func _strike_highest(amount: int) -> bool:
@@ -3116,7 +3153,6 @@ func _strike_highest(amount: int) -> bool:
 	if target.is_empty():
 		return false
 	_damage_enemy(target, amount)
-	route_hits += 1
 	return true
 
 func _strike_all(amount: int) -> bool:
@@ -3125,8 +3161,6 @@ func _strike_all(amount: int) -> bool:
 		if int(enemy["hp"]) > 0:
 			_damage_enemy(enemy, amount)
 			hit_any = true
-	if hit_any:
-		route_hits += 1
 	return hit_any
 
 # --- state changes, each one visible the moment it happens --------------
@@ -3529,27 +3563,22 @@ func _inside(pos: Vector2i) -> bool:
 
 # --- lookups -----------------------------------------------------------
 
-func _tag_route_bonus(tag: String) -> int:
-	if tag == "heavy" or tag == "fire":
-		return 1
-	if tag == "lucky" and selected_roll >= 5:
-		return 1
-	return 0
-
+# Dice have no hidden bonuses: a die is the set of faces printed on it,
+# and the label only describes how those faces lean.
 func _tag_name(tag: String) -> String:
 	match tag:
 		"fire":
-			return "通過攻撃+1"
+			return "均等"
 		"steel":
-			return "小さい目で守る"
+			return "小さめ"
 		"heavy":
-			return "通過攻撃+1"
+			return "大きめ"
 		"swift":
-			return "小回り"
+			return "小さめ"
 		"trick":
 			return "ばらつく"
 		"lucky":
-			return "5以上で攻撃+1"
+			return "偏り"
 		"arcane":
 			return "両極端"
 		"focus":
