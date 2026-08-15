@@ -8,6 +8,10 @@ const REROLLS_PER_TURN := 1
 # fight ended with most of the ring poisoned and the player's own board
 # invisible underneath it.
 const MAX_DEBUFFS := 4
+# Cards on screen at once. The fractional part is deliberate: it leaves a
+# sliver of the next card showing so the row reads as scrollable.
+const HAND_VISIBLE := 4.7
+const HAND_GAP := 7.0
 const MAX_ENCOUNTERS := 6
 
 # Every size in this file is authored in these units, and the window's
@@ -917,7 +921,10 @@ var ribbon_row: HBoxContainer
 var ribbon_caption: Label
 var roll_readout: Label
 
-var hand_row: GridContainer
+var hand_row: HBoxContainer
+var hand_scroll: ScrollContainer
+var hand_left_button: Button
+var hand_right_button: Button
 var hand_slots: Array = []
 
 var end_turn_button: Button
@@ -1523,20 +1530,34 @@ func _build_board_zone() -> void:
 	banner.add_child(banner_label)
 
 func _build_hand_zone() -> void:
-	# A grid, not a fixed row of three: the hand size is a property of the
-	# run, so the slots are built to match it and the cards size themselves
-	# to whatever width that leaves.
-	hand_row = GridContainer.new()
-	hand_row.set_anchors_preset(Control.PRESET_FULL_RECT)
-	hand_row.add_theme_constant_override("h_separation", 7)
-	hand_row.add_theme_constant_override("v_separation", 7)
-	hand_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	zone_hand.add_child(hand_row)
+	# One sliding row rather than a fixed set of slots: the hand holds
+	# however many dice were drawn, cards keep a constant width, and the
+	# row scrolls when there are more than fit. The width is set so a
+	# little under five cards are on screen — the part-visible fifth is
+	# what tells the player the row keeps going.
+	hand_scroll = ScrollContainer.new()
+	hand_scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hand_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	hand_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	hand_scroll.scroll_deadzone = 12
+	hand_scroll.gui_input.connect(Callable(self, "_on_hand_scroll_input"))
+	zone_hand.add_child(hand_scroll)
 
-	# Three permanent slots. The old build re-centred a shrinking row, so
-	# spending a die slid the remaining cards sideways under the player's
-	# thumb; an empty slot holds its place instead.
-	_ensure_hand_slots()
+	hand_row = HBoxContainer.new()
+	hand_row.add_theme_constant_override("separation", HAND_GAP)
+	hand_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hand_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hand_scroll.add_child(hand_row)
+
+	# Dragging the row works, but only a real finger can do it. These
+	# appear only when the hand is longer than the screen, so a card can
+	# always be reached by tapping as well.
+	hand_left_button = _make_hand_arrow("<", -1)
+	zone_hand.add_child(hand_left_button)
+	hand_right_button = _make_hand_arrow(">", 1)
+	zone_hand.add_child(hand_right_button)
+
+	# Slots are built by _refresh_hand once the hand is known.
 
 func _build_command_zone() -> void:
 	var row := HBoxContainer.new()
@@ -2192,21 +2213,71 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 
 # --- hand --------------------------------------------------------------
 
-func _hand_columns() -> int:
-	if hand_limit <= 5:
-		return max(hand_limit, 1)
-	return int(ceil(float(hand_limit) / 2.0))
+# Card width comes from the zone, not from the hand size, so a hand of
+# three and a hand of nine draw cards the same size — only the row gets
+# longer.
+# Touch drags the row directly; a wheel is vertical on most desks, so it
+# is mapped onto the row's one axis rather than doing nothing.
+func _make_hand_arrow(label: String, direction: int) -> Button:
+	var button := Button.new()
+	button.text = label
+	button.focus_mode = Control.FOCUS_NONE
+	button.visible = false
+	button.add_theme_font_size_override("font_size", FS_HEAD)
+	_style_button(button, COL_PANEL, COL_INK, 2)
+	button.add_theme_color_override("font_color", COL_INK)
+	button.pressed.connect(Callable(self, "_scroll_hand").bind(direction))
+	return button
 
-func _ensure_hand_slots() -> void:
-	var columns := _hand_columns()
-	hand_row.columns = columns
-	if hand_slots.size() == hand_limit:
+func _scroll_hand(direction: int) -> void:
+	if hand_scroll == null:
+		return
+	var target: float = hand_scroll.scroll_horizontal + float(direction) * (_card_width() + HAND_GAP) * 2.0
+	var tween := create_tween()
+	tween.tween_property(hand_scroll, "scroll_horizontal", int(target), 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(Callable(self, "_update_hand_arrows"))
+
+func _update_hand_arrows() -> void:
+	if hand_left_button == null or hand_scroll == null or zone_hand == null:
+		return
+	var content: float = hand_row.get_combined_minimum_size().x
+	var view: float = hand_scroll.size.x
+	var overflowing: bool = content > view + 2.0
+	var arrow_w := 30.0
+	var arrow_h: float = min(zone_hand.size.y * 0.44, 60.0)
+	var top: float = (zone_hand.size.y - arrow_h) * 0.5
+	hand_left_button.position = Vector2(0.0, top)
+	hand_left_button.size = Vector2(arrow_w, arrow_h)
+	hand_right_button.position = Vector2(zone_hand.size.x - arrow_w, top)
+	hand_right_button.size = Vector2(arrow_w, arrow_h)
+	hand_left_button.visible = overflowing and hand_scroll.scroll_horizontal > 2
+	hand_right_button.visible = overflowing and hand_scroll.scroll_horizontal < int(content - view) - 2
+
+func _on_hand_scroll_input(event: InputEvent) -> void:
+	if hand_scroll == null or not (event is InputEventMouseButton):
+		return
+	var button_event := event as InputEventMouseButton
+	if not button_event.pressed:
+		return
+	var step := 70
+	match button_event.button_index:
+		MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_RIGHT:
+			hand_scroll.scroll_horizontal += step
+		MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT:
+			hand_scroll.scroll_horizontal -= step
+	_update_hand_arrows()
+
+func _card_width() -> float:
+	var available: float = zone_hand.size.x if zone_hand != null and zone_hand.size.x > 0.0 else 400.0
+	return max((available - HAND_GAP * (HAND_VISIBLE - 1.0)) / HAND_VISIBLE, 62.0)
+
+func _ensure_hand_slots(count: int) -> void:
+	if hand_slots.size() == count:
 		return
 	_clear_children(hand_row)
 	hand_slots = []
-	for i in range(hand_limit):
+	for i in range(count):
 		var slot := Control.new()
-		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		hand_row.add_child(slot)
@@ -2215,22 +2286,30 @@ func _ensure_hand_slots() -> void:
 func _refresh_hand() -> void:
 	if hand_row == null:
 		return
-	_ensure_hand_slots()
-	var columns := _hand_columns()
-	var rows: int = int(ceil(float(hand_limit) / float(columns)))
-	var slot_w: float = (zone_hand.size.x - 7.0 * float(columns - 1)) / float(max(columns, 1))
-	var slot_h: float = (zone_hand.size.y - 7.0 * float(rows - 1)) / float(max(rows, 1))
+	# One entry per die drawn this turn. A spent die leaves its place
+	# behind rather than closing the gap, so nothing slides out from under
+	# a thumb mid-turn.
+	var count: int = max(hand.size(), hand_slots.size())
+	if state == "player" and not dice_rolled:
+		count = hand.size()
+	_ensure_hand_slots(count)
+	var slot_w: float = _card_width()
+	var slot_h: float = zone_hand.size.y
 	for i in range(hand_slots.size()):
 		var slot: Control = hand_slots[i]
+		slot.custom_minimum_size = Vector2(slot_w, 0)
 		_clear_children(slot)
 		if i < hand.size():
 			slot.add_child(_make_die_card(hand[i], i, slot_w, slot_h))
 		else:
 			slot.add_child(_make_empty_slot(slot_w))
+	await get_tree().process_frame
+	_update_hand_arrows()
 
 func _make_empty_slot(slot_w: float = 120.0) -> Control:
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.custom_minimum_size = Vector2(slot_w, 0)
 	var style := _flat_style(Color(0.85, 0.78, 0.63, 0.35), Color(COL_INK.r, COL_INK.g, COL_INK.b, 0.30), 2, 6, 6)
 	panel.add_theme_stylebox_override("panel", style)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2252,6 +2331,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	var pip_size: float = clamp((slot_w - 14.0) / float(max(faces.size(), 1)) - 2.0, 6.0, 13.0)
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.custom_minimum_size = Vector2(slot_w, 0)
 	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 4 if tight else 5, 5))
 
 	var col := VBoxContainer.new()
@@ -2872,6 +2952,9 @@ func _start_player_turn(message: String = "") -> void:
 	turn_visited = {}
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
+	hand_slots = []
+	if hand_scroll != null:
+		hand_scroll.scroll_horizontal = 0
 	_draw_to_hand()
 	for die in hand:
 		die["roll"] = 0
