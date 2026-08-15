@@ -1025,6 +1025,15 @@ var tile_defs := {
 	"warp": {"name": "跳躍路", "kind": "移動", "color": Color("#16A0C8"), "icon": "warp",
 		"trigger": "pass", "mode": "step", "value": 1, "effect": "1歩多く進む",
 		"detail": "出目を1つ伸ばす。止まりたいマスに足りないときの調整に使う。"},
+	"heavy": {"name": "大斬撃", "kind": "攻撃", "color": Color("#B5302A"), "icon": "slash",
+		"trigger": "stop", "mode": "attack", "target": "lowest", "value": 7, "effect": "敵に7ダメージ",
+		"detail": "踏み込んで斬る。斬撃路の重い版で、走り抜けざまには出せない。"},
+	"fort": {"name": "砦", "kind": "防御", "color": Color("#1F5FA8"), "icon": "guard",
+		"trigger": "stop", "mode": "shield", "value": 5, "effect": "盾+5",
+		"detail": "腰を据えて構える。盾はターン開始で消えるので、殴られるターンに合わせて止まること。"},
+	"spring": {"name": "泉", "kind": "回復", "color": Color("#2E8449"), "icon": "heal",
+		"trigger": "stop", "mode": "heal", "value": 5, "effect": "HP+5",
+		"detail": "汲むには足を止めるしかない。盤上で最も大きい回復。"},
 	"bow": {"name": "射撃台", "kind": "攻撃", "color": Color("#C9971F"), "icon": "bow",
 		"trigger": "stop", "mode": "attack", "target": "lowest", "value": 6, "effect": "敵に6ダメージ",
 		"detail": "構えて撃つので、走り抜けながらでは撃てない。ぴたりと止まって初めて効く。"},
@@ -1055,7 +1064,8 @@ var temp_defs := {
 var reward_pool := [
 	{"type": "slash"}, {"type": "guard"}, {"type": "fire"},
 	{"type": "heal"}, {"type": "bow"}, {"type": "trap"},
-	{"type": "warp"}, {"type": "shock"}, {"type": "focus"}
+	{"type": "warp"}, {"type": "shock"}, {"type": "focus"},
+	{"type": "heavy"}, {"type": "fort"}, {"type": "spring"}
 ]
 
 var hero_defs := {
@@ -1064,7 +1074,7 @@ var hero_defs := {
 		"hp": 36,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
-		"desc": "斬撃路と防御路の盤面。硬く、着実に削る。",
+		"desc": "大斬撃と砦の盤面。止まる場所を選んで、堅実に削る。",
 		"dice": [
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"},
 			{"name": "重撃ダイス", "faces": [3, 4, 4, 5, 6, 6], "tag": "heavy"},
@@ -1072,9 +1082,9 @@ var hero_defs := {
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
 		"tiles": [
-			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"],
-			[3, 1, "slash"], [3, 2, "guard"], [2, 3, "guard"],
-			[1, 3, "slash"], [0, 2, "guard"]
+			[0, 0, "heavy"], [1, 0, "fort"], [2, 0, "heavy"],
+			[3, 1, "heavy"], [3, 2, "fort"], [2, 3, "fort"],
+			[1, 3, "heavy"], [0, 2, "fort"]
 		]
 	},
 	"mage": {
@@ -1082,7 +1092,7 @@ var hero_defs := {
 		"hp": 28,
 		"hand": 3,
 		"color": Color("#7C4DD6"),
-		"desc": "火走りの盤面。小さな傷を重ねて焼き削る。",
+		"desc": "雷線と泉の盤面。止まって大きく撃ち、泉で保たせる。",
 		"dice": [
 			{"name": "火花ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "fire"},
 			{"name": "揺らぎダイス", "faces": [1, 1, 3, 5, 6, 6], "tag": "arcane"},
@@ -1090,9 +1100,9 @@ var hero_defs := {
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
 		"tiles": [
-			[0, 0, "fire"], [1, 0, "fire"], [2, 0, "guard"],
-			[3, 1, "fire"], [3, 2, "shock"], [2, 3, "fire"],
-			[1, 3, "guard"], [0, 2, "fire"]
+			[0, 0, "shock"], [1, 0, "spring"], [2, 0, "shock"],
+			[3, 1, "shock"], [3, 2, "focus"], [2, 3, "shock"],
+			[1, 3, "focus"], [0, 2, "spring"]
 		]
 	},
 	"rogue": {
@@ -1100,7 +1110,7 @@ var hero_defs := {
 		"hp": 31,
 		"hand": 4,
 		"color": Color("#5B8C2A"),
-		"desc": "手札が4枚。小さい出目を並べて、止まる場所を選び抜く。",
+		"desc": "手札が4枚。射撃台と罠道に、狙って止まる。",
 		"dice": [
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
 			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"},
@@ -1109,9 +1119,9 @@ var hero_defs := {
 			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"}
 		],
 		"tiles": [
-			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "bow"],
-			[3, 1, "slash"], [3, 2, "guard"], [2, 3, "trap"],
-			[1, 3, "slash"], [0, 2, "guard"]
+			[0, 0, "bow"], [1, 0, "fort"], [2, 0, "trap"],
+			[3, 1, "bow"], [3, 2, "fort"], [2, 3, "trap"],
+			[1, 3, "bow"], [0, 2, "focus"]
 		]
 	}
 }
