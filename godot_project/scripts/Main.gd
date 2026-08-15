@@ -445,10 +445,16 @@ class DiceFace:
 	var value := 1
 	var dot_color := Color("#2A2320")
 	var face_color := Color("#FFF7E6")
+	# An unthrown die: the frame is drawn but the pips are not, so the "?"
+	# laid over the card sits on a blank face instead of on top of a number
+	# the die has not actually rolled yet.
+	var query := false
 
 	func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), face_color, true)
 		draw_rect(Rect2(Vector2.ZERO, size), dot_color, false, max(2.0, size.x * 0.06))
+		if query:
+			return
 		var dot_r: float = min(size.x, size.y) * 0.10
 		for p in _pip_positions(value):
 			draw_circle(Vector2(p.x * size.x, p.y * size.y), dot_r, dot_color)
@@ -728,7 +734,7 @@ class BoardView:
 			seen[cell] = ring_index + 1
 			var p: Vector2 = main._board_cell_center(cell)
 			var radius: float = token * 0.5 + 7.0 + float(ring_index) * 6.0
-			var col: Color = main._tag_color(str(die["tag"]))
+			var col: Color = main._die_color(die)
 			draw_arc(p, radius, 0.0, TAU, 30, Color("#2A2320"), 6.0, true)
 			draw_arc(p, radius, 0.0, TAU, 30, col, 4.0, true)
 
@@ -989,7 +995,7 @@ var hand: Array = []
 
 var selected_die := {}
 var selected_roll := 0
-var selected_tag := ""
+var selected_power := ""
 var steps_left := 0
 var route_path: Array[Vector2i] = []
 # Combo is the whole of the base system's arithmetic: it counts the dice
@@ -1081,6 +1087,53 @@ var temp_defs := {
 	"block": {"name": "壁", "color": Color("#4A4038"), "desc": "通れない"}
 }
 
+# A die is two things at once: the faces say how far this action reaches,
+# and the power says what the action is *for*. A power lasts exactly as
+# long as the move it was spent on, so a die is a small build decision
+# every time it comes up rather than a permanent stat.
+#
+# Powers multiply the board's own numbers instead of adding flat bonuses.
+# That is deliberate: a die is worth more on a board built to suit it, so
+# the tile-build and the dice-build pull on each other rather than being
+# two separate piles of upgrades. 標準 is the honest baseline — no power,
+# widest faces — and the run is about replacing it with something sharper.
+var dice_defs := {
+	"normal": {"name": "標準", "faces": [1, 2, 3, 4, 5, 6], "power": "none",
+		"color": Color("#54687F"), "short": "均等", "effect": "効果なし",
+		"detail": "1から6まで素直に出る、なんの仕掛けもないダイス。効果はない代わりに出目の幅が最も広く、止まれる場所の選択肢を一番多くくれる。"},
+	"heavy": {"name": "重撃", "faces": [3, 4, 4, 5, 6, 6], "power": "none",
+		"color": Color("#B5502A"), "short": "大きめ", "effect": "効果なし・大きい目",
+		"detail": "小さい目が出ない。遠くまで一息に運ぶので、通過型マスを何枚も踏み抜きたいターンに強い。"},
+	"blade": {"name": "攻撃", "faces": [1, 2, 3, 3, 4, 5], "power": "attack_x2",
+		"color": Color("#E4453A"), "short": "攻撃2倍", "effect": "停止型の攻撃マスのダメージが2倍",
+		"detail": "止まった先が大斬撃・射撃台・罠道・雷線なら、コンボ込みのダメージがまるごと2倍になる。狙って止まれた時の見返りが最も大きいダイス。"},
+	"rush": {"name": "疾走", "faces": [3, 4, 5, 5, 6, 6], "power": "pass_x2",
+		"color": Color("#2AA1A8"), "short": "通過2倍", "effect": "通過型マスの効果が2倍",
+		"detail": "走り抜けざまに踏んだマスの効果が全部2倍になる。斬撃路や防御路を敷いた盤面ほど伸びる、攻撃ダイスとは正反対の使い方。"},
+	"bulwark": {"name": "守勢", "faces": [1, 2, 2, 3, 3, 4], "power": "shield_x2",
+		"color": Color("#2E7BD6"), "short": "盾2倍", "effect": "得られる盾が2倍",
+		"detail": "砦に止まれば盾+10。盾はターン開始で消えるので、殴られると分かっているターンにだけ価値が跳ね上がる。"},
+	"mend": {"name": "治癒", "faces": [1, 2, 2, 3, 3, 4], "power": "heal_x2",
+		"color": Color("#3EA95E"), "short": "回復2倍", "effect": "回復量が2倍",
+		"detail": "泉に止まればHP+10。戦闘間にHPは戻らないので、盤面に回復を仕込んでいるほど効く。"},
+	"chainb": {"name": "連撃", "faces": [1, 1, 2, 2, 3, 3], "power": "combo2",
+		"color": Color("#F2C230"), "short": "コンボ+2", "effect": "使うとコンボが2増える（通常は1）",
+		"detail": "出目は小さいが、このダイスを先に使っておくと、そのターンの以降の攻撃が全部1ダメージぶん重くなる。刻んで積むための一本。"},
+	"delve": {"name": "発掘", "faces": [2, 2, 3, 3, 4, 4], "power": "draw1",
+		"color": Color("#5B8C2A"), "short": "1枚補充", "effect": "使うとダイスを1枚引く",
+		"detail": "使っても手札が減らない。出目は中くらいに固まっていて安定するが、そのぶん止まれる場所の幅は狭い。"},
+	"nimble": {"name": "軽業", "faces": [1, 1, 2, 2, 3, 4], "power": "pierce",
+		"color": Color("#9BC53D"), "short": "毒無効", "effect": "毒のマスを踏んでもダメージを受けない",
+		"detail": "毒だらけになった盤面を平気で渡り歩ける。敵が毒を撒き始める第3戦以降で価値が上がる。"},
+	"augur": {"name": "予知", "faces": [1, 1, 3, 5, 6, 6], "power": "reroll",
+		"color": Color("#7C4DD6"), "short": "振り直し+1", "effect": "使うと振り直しが1回戻る",
+		"detail": "両極端な出目で当たり外れが激しいが、1手目に使えば残りの手札を振り直して2手目を選び直せる。事故を自分で拾いにいくダイス。"}
+}
+
+# Dice the player can pick up as a reward. 標準 is deliberately absent —
+# it is what you start with, not something you would ever choose.
+var die_reward_pool := ["blade", "rush", "bulwark", "mend", "chainb", "delve", "nimble", "augur", "heavy"]
+
 var reward_pool := [
 	{"type": "slash"}, {"type": "guard"}, {"type": "fire"},
 	{"type": "heal"}, {"type": "bow"}, {"type": "trap"},
@@ -1096,12 +1149,9 @@ var hero_defs := {
 		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "大斬撃と砦の盤面。止まる場所を選んで、堅実に削る。",
-		"dice": [
-			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"},
-			{"name": "重撃ダイス", "faces": [3, 4, 4, 5, 6, 6], "tag": "heavy"},
-			{"name": "守りダイス", "faces": [1, 2, 2, 3, 3, 4], "tag": "steel"},
-			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
-		],
+		# Two 標準 and two with a point of view: the starting deck is mostly
+		# blank on purpose, so the dice rewards have something to replace.
+		"dice": ["normal", "normal", "heavy", "blade"],
 		"tiles": [
 			[0, 0, "heavy"], [1, 0, "fort"], [2, 0, "heavy"],
 			[3, 1, "heavy"], [3, 2, "fort"], [2, 3, "fort"],
@@ -1114,12 +1164,7 @@ var hero_defs := {
 		"hand": 3,
 		"color": Color("#7C4DD6"),
 		"desc": "雷線と泉の盤面。止まって大きく撃ち、泉で保たせる。",
-		"dice": [
-			{"name": "火花ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "fire"},
-			{"name": "揺らぎダイス", "faces": [1, 1, 3, 5, 6, 6], "tag": "arcane"},
-			{"name": "集中ダイス", "faces": [2, 2, 3, 3, 4, 4], "tag": "focus"},
-			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
-		],
+		"dice": ["normal", "normal", "augur", "delve"],
 		"tiles": [
 			[0, 0, "shock"], [1, 0, "spring"], [2, 0, "shock"],
 			[3, 1, "shock"], [3, 2, "focus"], [2, 3, "shock"],
@@ -1132,13 +1177,7 @@ var hero_defs := {
 		"hand": 4,
 		"color": Color("#5B8C2A"),
 		"desc": "手札が4枚。射撃台と罠道に、狙って止まる。",
-		"dice": [
-			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
-			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"},
-			{"name": "幸運ダイス", "faces": [1, 2, 2, 4, 4, 6], "tag": "lucky"},
-			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
-			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"}
-		],
+		"dice": ["normal", "normal", "nimble", "chainb", "blade"],
 		"tiles": [
 			[0, 0, "bow"], [1, 0, "fort"], [2, 0, "trap"],
 			[3, 1, "bow"], [3, 2, "fort"], [2, 3, "trap"],
@@ -1776,6 +1815,9 @@ func _layout_ribbon() -> void:
 func _is_stop_cell(pos: Vector2i) -> bool:
 	if not ring_index_map.has(pos):
 		return false
+	# The first layout pass runs from _ready, before any board exists.
+	if permanent_board.size() <= pos.y or (permanent_board[pos.y] as Array).size() <= pos.x:
+		return false
 	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) == "stop"
 
 func _board_token_size() -> float:
@@ -2322,7 +2364,6 @@ func _make_empty_slot(slot_w: float = 120.0) -> Control:
 # as one hit target. The six faces are drawn as pips instead of printed as
 # "1/2/3/4/5/6", so a loaded die looks loaded at a glance.
 func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: float = 140.0) -> Control:
-	var tag := str(die["tag"])
 	var faces: Array = die["faces"]
 	var roll := int(die.get("roll", 0))
 	var tight: bool = slot_w < 92.0
@@ -2331,7 +2372,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.custom_minimum_size = Vector2(slot_w, 0)
-	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 4 if tight else 5, 5))
+	panel.add_theme_stylebox_override("panel", _flat_style(_die_color(die), COL_INK, 3, 4 if tight else 5, 5))
 
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -2340,7 +2381,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	panel.add_child(col)
 
 	var name_label := _make_label(FS_SMALL - (2 if tight else 0), COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	name_label.text = str(die["name"]).replace("ダイス", "")
+	name_label.text = str(die["name"])
 	name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	name_label.clip_text = true
 	col.add_child(name_label)
@@ -2397,13 +2438,15 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 		pip.modulate = Color(1, 1, 1, 0.55 if int(face_value) != roll else 1.0)
 		faces_row.add_child(pip)
 
-	# The trait line is the first thing to go when the cards get narrow —
-	# the result and the range are what a choice is actually made on.
-	if not tight:
-		var tag_label := _make_label(FS_SMALL - 1, Color(1, 1, 1, 0.9), HORIZONTAL_ALIGNMENT_CENTER)
-		tag_label.text = _tag_name(tag)
-		tag_label.clip_text = true
-		col.add_child(tag_label)
+	# What this die *does* when spent. This is the line the choice is now
+	# actually made on, so unlike the old trait label it stays on the card
+	# even when the cards get narrow — a power the player cannot see is a
+	# power they will not plan around.
+	var power_label := _make_label(FS_SMALL - (2 if tight else 1), Color(1, 1, 1, 0.95), HORIZONTAL_ALIGNMENT_CENTER, true)
+	power_label.text = str(die.get("short", ""))
+	power_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	power_label.clip_text = true
+	col.add_child(power_label)
 
 	var hit := Button.new()
 	hit.flat = true
@@ -2584,8 +2627,8 @@ func _add_overlay_option(title: String, subtitle: String, color: Color, icon_kin
 func _show_catalog() -> void:
 	catalog_return_state = state
 	overlay.visible = true
-	overlay_title.text = "マス図鑑"
-	overlay_body.text = "○丸は通過で、□四角は止まって効くマス。攻撃マスのダメージには、そのターンに使ったダイスの数（コンボ）が加算されます。"
+	overlay_title.text = "図鑑"
+	overlay_body.text = "○丸は通過で、□四角は止まって効くマス。攻撃マスのダメージには、そのターンに使ったダイスの数（コンボ）が加算されます。ダイスは出目に加えて、使った行動のあいだだけ効果を発揮します。"
 	overlay_body.visible = true
 	_clear_children(overlay_list)
 
@@ -2614,6 +2657,16 @@ func _show_catalog() -> void:
 	debuff_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 	column.add_child(debuff_heading)
 	column.add_child(_make_catalog_row(temp_defs["hazard"]))
+
+	var dice_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	dice_heading.text = "⚄ ダイス — 使った行動のあいだだけ効果が続く"
+	dice_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
+	column.add_child(dice_heading)
+	var owned := {}
+	for die in dice_bag:
+		owned[str(die.get("id", ""))] = int(owned.get(str(die.get("id", "")), 0)) + 1
+	for die_id in dice_defs.keys():
+		column.add_child(_make_die_catalog_row(str(die_id), int(owned.get(str(die_id), 0))))
 
 	if catalog_return_state != "title":
 		var quit_row := Button.new()
@@ -2691,6 +2744,59 @@ func _make_catalog_row(tile: Dictionary) -> Control:
 	col.add_child(detail)
 	return row
 
+# Same row shape as a tile, but the swatch is a real die face showing the
+# highest number this die can roll, and the header carries how many of it
+# the run currently holds — the one number a build decision needs.
+func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
+	var die_def: Dictionary = dice_defs[die_id]
+	var faces: Array = die_def["faces"]
+	var row := PanelContainer.new()
+	row.add_theme_stylebox_override("panel", _flat_style(COL_PANEL_SUNK, COL_INK, 2, 8, 7))
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 9)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(line)
+
+	var swatch := Panel.new()
+	swatch.custom_minimum_size = Vector2(38, 38)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	swatch.add_theme_stylebox_override("panel", _flat_style(Color(die_def["color"]), COL_INK, 3, 0, 0))
+	line.add_child(swatch)
+	var pip := DiceFace.new()
+	pip.value = int(faces.max())
+	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pip.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pip.offset_left = 6
+	pip.offset_top = 6
+	pip.offset_right = -6
+	pip.offset_bottom = -6
+	swatch.add_child(pip)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	line.add_child(col)
+
+	var head := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	head.text = "%sダイス　%s" % [str(die_def["name"]), str(die_def["effect"])]
+	if owned_count > 0:
+		head.text += "　（所持 %d）" % owned_count
+	col.add_child(head)
+
+	var faces_label := _make_label(FS_SMALL, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT)
+	faces_label.text = "出目: %s" % _faces_text(faces)
+	col.add_child(faces_label)
+
+	var detail := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
+	detail.text = str(die_def["detail"])
+	col.add_child(detail)
+	return row
+
 func _close_catalog() -> void:
 	if catalog_return_state == "title":
 		_show_title()
@@ -2711,17 +2817,14 @@ func _show_title() -> void:
 	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全6戦。")
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
-		var dice_names := []
-		for die in hero["dice"]:
-			dice_names.append(str(die["name"]).replace("ダイス", ""))
 		_add_overlay_option(
 			"%s   HP %d   手札%d" % [str(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3))],
-			"%s\nダイス: %s" % [str(hero["desc"]), "・".join(dice_names)],
+			"%s\nダイス: %s" % [str(hero["desc"]), _hero_dice_names(hero)],
 			Color(hero["color"]),
 			"slash" if key == "knight" else ("fire" if key == "mage" else "trap"),
 			Callable(self, "_start_run").bind(key)
 		)
-	_add_overlay_option("マス図鑑", "どのマスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
+	_add_overlay_option("図鑑", "マスとダイスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
 	_layout_overlay()
 
 func _show_reward() -> void:
@@ -2731,19 +2834,46 @@ func _show_reward() -> void:
 		return
 	sfx.emit("reward")
 	_refresh_all()
-	_open_overlay("戦闘に勝利", "マスを1つ選んで、次の戦いに持ち越すコースに置きます。")
-	var options := reward_pool.duplicate(true)
-	options.shuffle()
-	for i in range(3):
-		var reward_type := str(options[i]["type"])
-		var tile: Dictionary = tile_defs[reward_type]
-		_add_overlay_option(
-			"%s［%s］" % [str(tile["name"]), str(tile["kind"])],
-			"%s　%s" % [_trigger_label(str(tile["trigger"])), str(tile["effect"])],
-			Color(tile["color"]),
-			str(tile["icon"]),
-			Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % str(tile["name"]))
-		)
+	_open_overlay("戦闘に勝利", "マスかダイスを1つ選びます。マスはコースに置いて残り、ダイスは手札に加わります。")
+
+	# One tile and one die are always on offer, so neither build axis can be
+	# shut off by a bad shuffle; the third slot goes either way and is what
+	# makes a given run lean one direction.
+	var tiles := reward_pool.duplicate(true)
+	tiles.shuffle()
+	var dice_ids := die_reward_pool.duplicate()
+	dice_ids.shuffle()
+	var slots := [
+		{"kind": "tile", "id": str(tiles[0]["type"])},
+		{"kind": "die", "id": str(dice_ids[0])},
+	]
+	if rng.randi_range(0, 1) == 0:
+		slots.append({"kind": "tile", "id": str(tiles[1]["type"])})
+	else:
+		slots.append({"kind": "die", "id": str(dice_ids[1])})
+	slots.shuffle()
+
+	for slot in slots:
+		if str(slot["kind"]) == "tile":
+			var reward_type := str(slot["id"])
+			var tile: Dictionary = tile_defs[reward_type]
+			_add_overlay_option(
+				"%s［%s］" % [str(tile["name"]), str(tile["kind"])],
+				"%s　%s" % [_trigger_label(str(tile["trigger"])), str(tile["effect"])],
+				Color(tile["color"]),
+				str(tile["icon"]),
+				Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % str(tile["name"]))
+			)
+		else:
+			var die_id := str(slot["id"])
+			var die_def: Dictionary = dice_defs[die_id]
+			_add_overlay_option(
+				"%sダイス［出目 %s］" % [str(die_def["name"]), _faces_text(die_def["faces"])],
+				str(die_def["effect"]),
+				Color(die_def["color"]),
+				"dice",
+				Callable(self, "_on_die_reward_selected").bind(die_id)
+			)
 	_layout_overlay()
 
 # "通過型" / "停止型" — the one word that says when a tile pays out.
@@ -2842,8 +2972,8 @@ func _start_run(key: String) -> void:
 	for entry in hero["tiles"]:
 		permanent_board[int(entry[1])][int(entry[0])] = str(entry[2])
 	dice_bag = []
-	for die in hero["dice"]:
-		dice_bag.append(die.duplicate(true))
+	for die_id in hero["dice"]:
+		dice_bag.append(_make_die(str(die_id)))
 	hp_bar.display_value = float(player_hp)
 	_start_encounter()
 	_snap_player_visual()
@@ -2857,7 +2987,7 @@ func _start_encounter() -> void:
 	actions_left = ACTIONS_PER_TURN
 	selected_die = {}
 	selected_roll = 0
-	selected_tag = ""
+	selected_power = ""
 	steps_left = 0
 	route_path = []
 	combo = 0
@@ -3090,15 +3220,27 @@ func _on_die_pressed(index: int) -> void:
 	state = "moving"
 	selected_die = die.duplicate(true)
 	selected_roll = final_roll
-	selected_tag = str(selected_die["tag"])
+	selected_power = str(selected_die.get("power", "none"))
 	steps_left = final_roll
-	# Spending a die is what raises the combo.
-	combo += 1
+	# Spending a die is what raises the combo, and 連撃 raises it further.
+	combo += _die_combo_gain(selected_die)
 	route_path = [player_pos]
 	discard_pile.append(selected_die)
 	hand.remove_at(index)
 	sfx.emit("hit")
-	_set_log("%s：出目 %d" % [str(selected_die["name"]), final_roll])
+
+	# Powers that fire the moment the die is spent, before the piece moves.
+	var spend_note := ""
+	match selected_power:
+		"draw1":
+			_draw_to_hand()
+			spend_note = "　発掘：ダイスを1枚補充"
+		"reroll":
+			rerolls_left += 1
+			spend_note = "　予知：振り直し+1"
+		"combo2":
+			spend_note = "　連撃：コンボ+2"
+	_set_log("%sダイス：出目 %d%s" % [str(selected_die["name"]), final_roll, spend_note])
 	_refresh_all()
 	await get_tree().create_timer(0.2).timeout
 	await _advance_player()
@@ -3158,8 +3300,11 @@ func _finish_encounter() -> void:
 func _resolve_pass_tile(pos: Vector2i) -> String:
 	var messages := []
 	if str(temp_board[pos.y][pos.x]) == "hazard":
-		_take_damage(2)
-		messages.append("毒のマス：HP-2")
+		if _active_power() == "pierce":
+			messages.append("軽業：毒を無効化")
+		else:
+			_take_damage(2)
+			messages.append("毒のマス：HP-2")
 	var tile_type: String = str(permanent_board[pos.y][pos.x])
 	if str(tile_defs[tile_type]["trigger"]) == "pass":
 		var effect := _apply_tile_effect(tile_type)
@@ -3185,36 +3330,45 @@ func _apply_tile_effect(tile_type: String) -> String:
 	var tile: Dictionary = tile_defs[tile_type]
 	var name: String = str(tile["name"])
 	var value := int(tile["value"])
+	# The die being walked can multiply what this tile pays out. Damage is
+	# multiplied after the combo is added, because "2倍" has to mean the
+	# number the player actually sees doubles.
+	var trigger: String = str(tile["trigger"])
 	match str(tile["mode"]):
 		"attack":
-			var dmg := _combo_damage(value)
+			var dmg := _combo_damage(value) * _die_multiplier(trigger, "attack")
 			if _strike(str(tile.get("target", "lowest")), dmg):
 				return "%s：%dダメージ" % [name, dmg]
 			return ""
 		"shield":
-			_gain_shield(value)
-			return "%s：盾+%d" % [name, value]
+			var gain := value * _die_multiplier(trigger, "shield")
+			_gain_shield(gain)
+			return "%s：盾+%d" % [name, gain]
 		"heal":
-			_heal(value)
-			return "%s：HP+%d" % [name, value]
+			var mend := value * _die_multiplier(trigger, "heal")
+			_heal(mend)
+			return "%s：HP+%d" % [name, mend]
 		"step":
-			steps_left += value
-			return "%s：%d歩追加" % [name, value]
+			var extra := value * _die_multiplier(trigger, "other")
+			steps_left += extra
+			return "%s：%d歩追加" % [name, extra]
 		"shock":
-			var shock_damage := _combo_damage(value)
+			var shock_damage := _combo_damage(value) * _die_multiplier(trigger, "attack")
 			var landed := _strike(str(tile.get("target", "all")), shock_damage)
-			_gain_shield(2)
+			var shock_shield := 2 * _die_multiplier(trigger, "shield")
+			_gain_shield(shock_shield)
 			if landed:
-				return "%s：%dダメージ、盾+2" % [name, shock_damage]
-			return "%s：盾+2" % name
+				return "%s：%dダメージ、盾+%d" % [name, shock_damage, shock_shield]
+			return "%s：盾+%d" % [name, shock_shield]
 		"draw":
 			_draw_to_hand()
 			_refresh_hand()
 			return "%s：ダイスを1枚補充" % name
 		"combo":
-			combo += value
-			_spawn_floating_text(player_pos, "コンボ+%d" % value, COL_GOLD)
-			return "%s：コンボ+%d（今 %d）" % [name, value, combo]
+			var gained := value * _die_multiplier(trigger, "other")
+			combo += gained
+			_spawn_floating_text(player_pos, "コンボ+%d" % gained, COL_GOLD)
+			return "%s：コンボ+%d（今 %d）" % [name, gained, combo]
 	return ""
 
 func _strike(target: String, amount: int) -> bool:
@@ -3426,6 +3580,21 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	_set_banner("%s を置くマスをタップ" % tile_name)
 	_set_log("始点以外のどのマスにも置けます。置いたマスは次の戦いにも残ります。")
 	_refresh_all()
+
+# A die reward needs no board placement, so it resolves straight into the
+# next encounter. It joins the bag rather than the hand: the new die has to
+# be shuffled for and drawn like everything else, which is the cost of
+# adding to a deck this small.
+func _on_die_reward_selected(die_id: String) -> void:
+	var die_def: Dictionary = dice_defs[die_id]
+	dice_bag.append(_make_die(die_id))
+	preview_place_pos = Vector2i(-1, -1)
+	_close_overlay()
+	_hide_banner()
+	sfx.emit("reward")
+	_start_encounter()
+	_set_log("%sダイスを手に入れた（%s）。手札は全%d個から引かれます。" % [
+		str(die_def["name"]), str(die_def["effect"]), dice_bag.size()])
 
 func _can_place_reward(pos: Vector2i) -> bool:
 	if not _inside(pos):
@@ -3671,47 +3840,63 @@ func _inside(pos: Vector2i) -> bool:
 
 # --- lookups -----------------------------------------------------------
 
-# Dice have no hidden bonuses: a die is the set of faces printed on it,
-# and the label only describes how those faces lean.
-func _tag_name(tag: String) -> String:
-	match tag:
-		"fire":
-			return "均等"
-		"steel":
-			return "小さめ"
-		"heavy":
-			return "大きめ"
-		"swift":
-			return "小さめ"
-		"trick":
-			return "ばらつく"
-		"lucky":
-			return "偏り"
-		"arcane":
-			return "両極端"
-		"focus":
-			return "中くらい"
-	return "均等"
+# A playable copy of a die out of the catalogue. "roll" is the only field
+# that changes during play; everything else is the die's printed identity.
+func _make_die(die_id: String) -> Dictionary:
+	var def: Dictionary = dice_defs[die_id]
+	return {
+		"id": die_id,
+		"name": str(def["name"]),
+		"faces": (def["faces"] as Array).duplicate(),
+		"power": str(def["power"]),
+		"color": Color(def["color"]),
+		"short": str(def["short"]),
+		"roll": 0,
+	}
 
-func _tag_color(tag: String) -> Color:
-	match tag:
-		"fire":
-			return Color("#F2762B")
-		"steel":
-			return Color("#2E7BD6")
-		"heavy":
-			return Color("#B5502A")
-		"swift":
-			return Color("#2AA1A8")
-		"trick":
-			return Color("#C2457E")
-		"lucky":
-			return Color("#C9971F")
-		"arcane":
-			return Color("#7C4DD6")
-		"focus":
-			return Color("#5B8C2A")
-	return Color("#54687F")
+func _die_color(die: Dictionary) -> Color:
+	return Color(die.get("color", Color("#54687F")))
+
+func _active_power() -> String:
+	if selected_die.is_empty():
+		return "none"
+	return str(selected_die.get("power", "none"))
+
+# The multiplier the die currently being walked applies to one tile effect.
+# Split by trigger as well as kind so the two damage powers stay opposites:
+# 攻撃 pays off for landing exactly right, 疾走 for sweeping a lot of road.
+func _die_multiplier(trigger: String, kind: String) -> int:
+	match _active_power():
+		"attack_x2":
+			if kind == "attack" and trigger == "stop":
+				return 2
+		"pass_x2":
+			if trigger == "pass":
+				return 2
+		"shield_x2":
+			if kind == "shield":
+				return 2
+		"heal_x2":
+			if kind == "heal":
+				return 2
+	return 1
+
+func _die_combo_gain(die: Dictionary) -> int:
+	return 2 if str(die.get("power", "none")) == "combo2" else 1
+
+func _faces_text(faces: Array) -> String:
+	var sorted_faces: Array = faces.duplicate()
+	sorted_faces.sort()
+	var parts := []
+	for f in sorted_faces:
+		parts.append(str(int(f)))
+	return "・".join(parts)
+
+func _hero_dice_names(hero: Dictionary) -> String:
+	var names := []
+	for die_id in hero["dice"]:
+		names.append(str(dice_defs[str(die_id)]["name"]))
+	return "・".join(names)
 
 func _enemy_icon_kind(type_name: String) -> String:
 	match type_name:
