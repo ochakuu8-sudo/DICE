@@ -1454,7 +1454,7 @@ func _build_board_zone() -> void:
 	board_view.add_child(ribbon_box)
 
 	ribbon_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
-	ribbon_caption.text = "この先のマス"
+	ribbon_caption.text = "この先のマス　●通過 ■停止"
 	ribbon_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
 	ribbon_box.add_child(ribbon_caption)
 
@@ -1695,8 +1695,12 @@ func _layout_board_buttons() -> void:
 			var index := _idx(x, y)
 			var button: Button = cell_buttons[index]
 			var center := _board_cell_center(Vector2i(x, y))
-			button.position = center - Vector2(token, token) * 0.5
-			button.size = Vector2(token, token)
+			# Pass tiles are small round beads threaded onto the road; stop
+			# tiles are full-size plates raised off it. Corner radius alone
+			# was too quiet a difference to carry a rule this important.
+			var span: float = token if _is_stop_cell(Vector2i(x, y)) else token * 0.84
+			button.position = center - Vector2(span, span) * 0.5
+			button.size = Vector2(span, span)
 	_layout_ribbon()
 	if token_view != null:
 		token_view.queue_redraw()
@@ -1714,6 +1718,11 @@ func _layout_ribbon() -> void:
 	var step := _board_spacing()
 	var center := _board_origin() + Vector2(1.5, 1.5) * step
 	ribbon_box.position = (center - wanted * 0.5).floor()
+
+func _is_stop_cell(pos: Vector2i) -> bool:
+	if not ring_index_map.has(pos):
+		return false
+	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) == "stop"
 
 func _board_token_size() -> float:
 	var step := _board_spacing()
@@ -1991,10 +2000,11 @@ func _refresh_board() -> void:
 				dim = true
 
 			icon.set_kind(icon_kind)
-			icon.glyph_color = Color("#FFF7E6")
-			icon.outline_color = COL_INK
+			var plain: bool = perm_type == "empty" and temp_type == "none"
+			icon.glyph_color = Color(1.0, 0.97, 0.90, 0.45 if plain else 1.0)
+			icon.outline_color = Color(COL_INK.r, COL_INK.g, COL_INK.b, 0.45 if plain else 1.0)
 			value_label.text = value_text
-			value_label.add_theme_color_override("font_color", value_color)
+			value_label.add_theme_color_override("font_color", Color(value_color.r, value_color.g, value_color.b, 0.55 if plain else 1.0))
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
 			# A fouled tile darkens and takes a mark, but keeps its own
 			# shape and icon: the board a player built stays legible under
@@ -2024,7 +2034,7 @@ func _apply_cell_style(button: Button, color: Color, border_color: Color, border
 	# Round tiles fire when you run through them, square tiles when you
 	# land on them. Shape says it without spending any of the tile's space
 	# on a word.
-	var radius: int = 7 if squared else int(max(20.0, _board_token_size() * 0.5))
+	var radius: int = 6 if squared else int(max(20.0, _board_token_size() * 0.5))
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = fill
 	normal.corner_radius_top_left = radius
@@ -2036,9 +2046,11 @@ func _apply_cell_style(button: Button, color: Color, border_color: Color, border
 	normal.border_width_right = border_width
 	normal.border_width_bottom = border_width
 	normal.border_color = border_color
-	normal.shadow_color = Color(0.16, 0.12, 0.08, 0.22)
-	normal.shadow_size = 0
-	normal.shadow_offset = Vector2(0, 3)
+	# A stop tile casts a shadow because it stands above the road. A pass
+	# tile does not, because it is part of it.
+	normal.shadow_color = Color(0.16, 0.12, 0.08, 0.30)
+	normal.shadow_size = 5 if squared else 0
+	normal.shadow_offset = Vector2(0, 4)
 	button.add_theme_stylebox_override("normal", normal)
 	var hover := normal.duplicate()
 	hover.bg_color = fill.lightened(0.12)
@@ -2087,16 +2099,21 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	col.add_theme_constant_override("separation", 1)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+	var stop_chip: bool = str(tile["trigger"]) == "stop"
 	var box := Panel.new()
-	box.custom_minimum_size = Vector2(chip, chip)
+	box.custom_minimum_size = Vector2(chip, chip) if stop_chip else Vector2(chip * 0.84, chip * 0.84)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	var style := _flat_style(color, COL_INK, 2, 0, 0)
-	var round_chip: bool = str(tile["trigger"]) == "pass"
-	var chip_radius: int = int(chip * 0.5) if round_chip else 3
+	var chip_radius: int = 3 if stop_chip else int(chip * 0.5)
 	style.corner_radius_top_left = chip_radius
 	style.corner_radius_top_right = chip_radius
 	style.corner_radius_bottom_left = chip_radius
 	style.corner_radius_bottom_right = chip_radius
+	if stop_chip:
+		style.shadow_color = Color(0.16, 0.12, 0.08, 0.30)
+		style.shadow_size = 3
+		style.shadow_offset = Vector2(0, 2)
 	if danger_cells.has(pos):
 		style.border_color = COL_DANGER
 		style.border_width_left = 3
