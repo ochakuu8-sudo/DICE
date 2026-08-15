@@ -41,6 +41,15 @@ const FS_SMALL := 13
 const FS_NUM_BIG := 38
 const FS_NUM := 22
 
+# Pacing. The turn used to resolve in well under a second: six hops, every
+# tile effect, the enemy's attack and the next hand all landed in one blur.
+# A step is only worth pausing on when something actually happened, so an
+# empty stretch of road stays quick and a hit gets a beat to be read.
+const STEP_TIME := 0.24
+const BEAT_EFFECT := 0.45
+const BEAT_STOP := 0.55
+const BEAT_PHASE := 0.6
+
 # Backdrop: a warm lit ground that reddens as the run climbs toward the
 # boss. Same "the run has a temperature" idea as before, moved into the
 # light half of the value range so the pieces on top can be the dark ones.
@@ -1573,7 +1582,7 @@ func _layout_board_buttons() -> void:
 	if banner != null and zone_board != null:
 		var wanted: Vector2 = banner.get_combined_minimum_size()
 		banner.size = wanted
-		banner.position = Vector2((zone_board.size.x - wanted.x) * 0.5, 0.0)
+		banner.position = ((zone_board.size - wanted) * 0.5).floor()
 	board_view.queue_redraw()
 
 func _layout_ribbon() -> void:
@@ -1765,8 +1774,8 @@ func _refresh_enemy() -> void:
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
 	zone_cmd.visible = state != "title"
-	zone_hand.visible = state == "player" or state == "moving"
-	end_turn_button.visible = playing or state == "moving"
+	zone_hand.visible = state == "player" or state == "moving" or state == "enemy"
+	end_turn_button.visible = playing or state == "moving" or state == "enemy"
 	end_turn_button.disabled = not playing
 	restart_button.visible = state != "title"
 
@@ -1922,6 +1931,7 @@ func _refresh_ribbon() -> void:
 	ribbon_box.visible = state == "player" or moving
 
 	if moving:
+		roll_readout.visible = steps_left > 0
 		roll_readout.text = "あと%d" % steps_left
 		_clear_children(ribbon_row)
 		_layout_ribbon()
@@ -2079,8 +2089,8 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color, big: bool =
 	var tween := create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(label, "scale", Vector2(1.1, 1.1), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "position:y", base_y - 44.0, 0.8).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.45).set_delay(0.35)
+	tween.tween_property(label, "position:y", base_y - 40.0, 1.15).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.4).set_delay(0.75)
 	tween.chain().tween_callback(label.queue_free)
 
 func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
@@ -2104,9 +2114,18 @@ func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
 	var tween := create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(label, "scale", Vector2(1.15, 1.15), 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "position:y", base_y - 36.0, 0.7).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.4).set_delay(0.3)
+	tween.tween_property(label, "position:y", base_y - 34.0, 1.05).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.4).set_delay(0.65)
 	tween.chain().tween_callback(label.queue_free)
+
+func _lunge_enemy() -> void:
+	if enemy_figure == null or not is_instance_valid(enemy_figure):
+		return
+	var base: Vector2 = enemy_figure.position
+	var tween := create_tween()
+	tween.tween_property(enemy_figure, "position", base + Vector2(0, 12), 0.10).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(enemy_figure, "position", base, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	await tween.finished
 
 func _flash_enemy() -> void:
 	if enemy_figure == null:
@@ -2527,7 +2546,7 @@ func _animate_roll(faces: Array, final_value: int) -> void:
 	roll_readout.text = str(final_value)
 	_layout_ribbon()
 	_punch(roll_readout, 1.45)
-	await get_tree().create_timer(0.16).timeout
+	await get_tree().create_timer(0.5).timeout
 
 func _advance_player() -> void:
 	while steps_left > 0:
@@ -2538,11 +2557,13 @@ func _advance_player() -> void:
 		steps_left -= 1
 		sfx.emit("step")
 		_refresh_board()
-		await _animate_player_step(0.15)
+		await _animate_player_step(STEP_TIME)
 		var pass_message := _resolve_pass_tile(player_pos)
 		if pass_message != "":
 			_set_log(pass_message)
 		_refresh_all()
+		if pass_message != "":
+			await get_tree().create_timer(BEAT_EFFECT).timeout
 		if player_hp <= 0:
 			_show_game_over("移動の途中で倒れました。")
 			return
@@ -2555,6 +2576,7 @@ func _advance_player() -> void:
 		_set_log(stop_message)
 	actions_left -= 1
 	_refresh_all()
+	await get_tree().create_timer(BEAT_STOP).timeout
 	if player_hp <= 0:
 		_show_game_over("止まったマスで倒れました。")
 		return
@@ -2564,15 +2586,19 @@ func _advance_player() -> void:
 	if actions_left <= 0 or hand.is_empty():
 		state = "player"
 		_refresh_all()
-		await get_tree().create_timer(0.3).timeout
-		_enemy_turn()
+		await get_tree().create_timer(BEAT_PHASE).timeout
+		await _enemy_turn()
 	else:
 		state = "player"
 		_refresh_all()
 
 func _finish_encounter() -> void:
 	_cleanup_dead_enemies()
-	await get_tree().create_timer(0.5).timeout
+	_hide_banner()
+	_set_log("敵を倒した。")
+	# Long enough to watch the enemy actually die before the reward card
+	# covers the board.
+	await get_tree().create_timer(1.2).timeout
 	_show_reward()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
@@ -2715,7 +2741,7 @@ func _strike_all(amount: int) -> bool:
 
 # --- state changes, each one visible the moment it happens --------------
 
-func _take_damage(amount: int) -> void:
+func _take_damage(amount: int) -> int:
 	var blocked: int = min(player_shield, amount)
 	player_shield -= blocked
 	var hp_loss := amount - blocked
@@ -2726,9 +2752,10 @@ func _take_damage(amount: int) -> void:
 		_shake(zone_board, 5.0)
 		_punch(hero_portrait, 1.18)
 	elif blocked > 0:
-		_spawn_floating_text(player_pos, "防いだ", COL_SHIELD)
+		_spawn_floating_text(player_pos, "盾で防いだ", COL_SHIELD)
 		sfx.emit("shield")
 	_refresh_top()
+	return hp_loss
 
 func _heal(amount: int) -> void:
 	var gained: int = min(player_max_hp, player_hp + amount) - player_hp
@@ -2784,6 +2811,8 @@ func _any_enemy_alive() -> bool:
 func _enemy_turn() -> void:
 	state = "enemy"
 	_refresh_all()
+	_set_banner("敵のターン")
+	await get_tree().create_timer(BEAT_PHASE).timeout
 	var messages := []
 	for enemy in enemies:
 		if int(enemy["hp"]) <= 0:
@@ -2798,17 +2827,30 @@ func _enemy_turn() -> void:
 					break
 		var enemy_label: String = str(enemy["type"])
 		if hit:
-			_take_damage(int(enemy["damage"]))
-			messages.append("%sの攻撃。%dダメージ" % [enemy_label, int(enemy["damage"])])
+			await _lunge_enemy()
+			var taken := _take_damage(int(enemy["damage"]))
+			if taken > 0:
+				messages.append("%sの攻撃。%dダメージ" % [enemy_label, taken])
+			else:
+				messages.append("%sの攻撃を盾で防いだ" % enemy_label)
 		else:
+			_spawn_enemy_popup("MISS", COL_TEXT_SOFT)
 			messages.append("%sの攻撃を回避" % enemy_label)
+		_set_log(messages[messages.size() - 1])
+		await get_tree().create_timer(BEAT_PHASE).timeout
 
 	if encounter >= 3 and not enemies.is_empty() and rng.randi_range(0, 100) < 45:
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
 			messages.append("毒沼が広がった")
+			_set_log("毒沼が広がった")
+			_refresh_board()
+			_spawn_floating_text(p, "毒", Color("#5B7A0F"))
+			sfx.emit("hurt")
+			await get_tree().create_timer(BEAT_EFFECT).timeout
 
+	_hide_banner()
 	_cleanup_dead_enemies()
 	if player_hp <= 0:
 		_show_game_over("敵の攻撃で倒れました。")
