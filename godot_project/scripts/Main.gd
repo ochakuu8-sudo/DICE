@@ -877,6 +877,7 @@ var hand_slots: Array = []
 
 var end_turn_button: Button
 var restart_button: Button
+var catalog_button: Button
 var log_label: Label
 var banner: PanelContainer
 var banner_label: Label
@@ -942,31 +943,52 @@ var route_hits := 0
 var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
+var catalog_return_state := "title"
 
 # Tile colors are assigned by what the effect *does to whom*: warm for
 # "this hurts the enemy", cool for "this helps me", and one sickly green
 # reserved for the only thing that hurts the player.
+# Each tile fires on exactly one trigger: "pass" tiles pay out every time
+# the piece runs through them, "stop" tiles only when it lands exactly on
+# them. Splitting the two halves the amount a player has to read off a
+# tile, and it gives the dice a real question to answer — do I want to
+# sweep through a lot of road, or land on one particular square?
+#
+# Because a pass tile fires several times per roll and a stop tile fires
+# once per action, pass values are small and stop values are large.
+# Shape carries the trigger on the board: pass tiles are drawn round like
+# a stretch of road, stop tiles square like a place you can stand.
 var tile_defs := {
 	"empty": {"name": "道", "kind": "基本", "color": Color("#CBB68F"), "icon": "boot",
-		"pass": "", "stop": "停止: 盾+1", "pass_value": 0, "stop_value": 1, "mode": "shield"},
+		"trigger": "stop", "mode": "shield", "value": 1, "effect": "盾+1",
+		"detail": "何も置いていないただの道。止まれば盾が1つだけ手に入る。"},
 	"slash": {"name": "斬撃路", "kind": "攻撃", "color": Color("#E4453A"), "icon": "slash",
-		"pass": "通過: 敵に2ダメージ", "stop": "停止: 敵に4ダメージ", "pass_value": 2, "stop_value": 4, "mode": "attack"},
+		"trigger": "pass", "mode": "attack", "target": "lowest", "value": 3, "effect": "敵に3ダメージ",
+		"detail": "通り抜けざまに斬る。大きい出目で何枚も踏み抜くほど伸びる、攻めの基本。"},
 	"fire": {"name": "火走り", "kind": "攻撃", "color": Color("#F2762B"), "icon": "fire",
-		"pass": "通過: 敵に1ダメージ", "stop": "停止: 敵に3ダメージ", "pass_value": 1, "stop_value": 3, "mode": "attack"},
-	"bow": {"name": "射撃台", "kind": "遠隔", "color": Color("#C9971F"), "icon": "bow",
-		"pass": "通過: 敵に1ダメージ", "stop": "停止: 敵に3ダメージ", "pass_value": 1, "stop_value": 3, "mode": "attack"},
-	"trap": {"name": "罠道", "kind": "牽制", "color": Color("#C2457E"), "icon": "trap",
-		"pass": "通過: 敵に2ダメージ", "stop": "停止: 敵に4ダメージ", "pass_value": 2, "stop_value": 4, "mode": "attack"},
-	"shock": {"name": "雷線", "kind": "全体", "color": Color("#7C4DD6"), "icon": "shock",
-		"pass": "通過: 敵に1ダメージ", "stop": "停止: 敵に2ダメージ", "pass_value": 1, "stop_value": 2, "mode": "attack"},
+		"trigger": "pass", "mode": "attack", "target": "all", "value": 2, "effect": "敵に2ダメージ",
+		"detail": "走った跡が燃える。1枚あたりは軽いが、連鎖ボーナスを稼ぎやすい。"},
 	"guard": {"name": "防御路", "kind": "防御", "color": Color("#2E7BD6"), "icon": "guard",
-		"pass": "通過: 盾+1", "stop": "停止: 盾+3", "pass_value": 1, "stop_value": 3, "mode": "shield"},
-	"warp": {"name": "跳躍路", "kind": "移動", "color": Color("#16A0C8"), "icon": "warp",
-		"pass": "通過: 1歩多く進む", "stop": "停止: 行動+1", "pass_value": 1, "stop_value": 1, "mode": "move"},
-	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
-		"pass": "通過: 盾+1、以降の攻撃+1", "stop": "停止: ダイスを1枚引く", "pass_value": 1, "stop_value": 1, "mode": "support"},
+		"trigger": "pass", "mode": "shield", "value": 2, "effect": "盾+2",
+		"detail": "通るたびに盾を拾う。盾はターン開始で消えるので、殴られる前に集めること。"},
 	"heal": {"name": "癒し道", "kind": "回復", "color": Color("#3EA95E"), "icon": "heal",
-		"pass": "通過: HP+1", "stop": "停止: HP+3", "pass_value": 1, "stop_value": 3, "mode": "heal"}
+		"trigger": "pass", "mode": "heal", "value": 1, "effect": "HP+1",
+		"detail": "少しずつしか戻らない。長い出目で何度も通り抜けるのが回復の近道。"},
+	"warp": {"name": "跳躍路", "kind": "移動", "color": Color("#16A0C8"), "icon": "warp",
+		"trigger": "pass", "mode": "step", "value": 1, "effect": "1歩多く進む",
+		"detail": "出目を1つ伸ばす。止まりたいマスに足りないときの調整に使う。"},
+	"bow": {"name": "射撃台", "kind": "攻撃", "color": Color("#C9971F"), "icon": "bow",
+		"trigger": "stop", "mode": "attack", "target": "lowest", "value": 6, "effect": "敵に6ダメージ",
+		"detail": "構えて撃つので、走り抜けながらでは撃てない。ぴたりと止まって初めて効く。"},
+	"trap": {"name": "罠道", "kind": "攻撃", "color": Color("#C2457E"), "icon": "trap",
+		"trigger": "stop", "mode": "attack", "target": "highest", "value": 8, "effect": "敵に8ダメージ",
+		"detail": "仕掛けて起動するまで時間がいる。盤上で最も大きい一撃。"},
+	"shock": {"name": "雷線", "kind": "複合", "color": Color("#7C4DD6"), "icon": "shock",
+		"trigger": "stop", "mode": "shock", "target": "all", "value": 4, "effect": "敵に4ダメージ、盾+2",
+		"detail": "攻めと守りを同時にこなす。どちらも欲しいターンの着地点に。"},
+	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
+		"trigger": "stop", "mode": "draw", "value": 1, "effect": "ダイス+1枚、攻撃+2",
+		"detail": "手札を1枚補充し、このターンの攻撃を+2する。次の一投を強くする踏み台。"}
 }
 
 var temp_defs := {
@@ -994,9 +1016,9 @@ var hero_defs := {
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
 		"tiles": [
-			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"], [3, 0, "guard"],
-			[3, 1, "slash"], [3, 2, "guard"], [3, 3, "slash"], [2, 3, "guard"],
-			[1, 3, "slash"], [0, 3, "guard"], [0, 2, "slash"], [0, 1, "guard"]
+			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"],
+			[3, 1, "slash"], [3, 2, "guard"], [2, 3, "guard"],
+			[1, 3, "slash"], [0, 2, "guard"]
 		]
 	},
 	"mage": {
@@ -1011,9 +1033,9 @@ var hero_defs := {
 			{"name": "標準ダイス", "faces": [1, 2, 3, 4, 5, 6], "tag": "normal"}
 		],
 		"tiles": [
-			[0, 0, "fire"], [1, 0, "guard"], [2, 0, "fire"], [3, 0, "guard"],
-			[3, 1, "fire"], [3, 2, "guard"], [3, 3, "fire"], [2, 3, "guard"],
-			[1, 3, "fire"], [0, 3, "guard"], [0, 2, "fire"], [0, 1, "guard"]
+			[0, 0, "fire"], [1, 0, "fire"], [2, 0, "guard"],
+			[3, 1, "fire"], [3, 2, "shock"], [2, 3, "fire"],
+			[1, 3, "guard"], [0, 2, "fire"]
 		]
 	},
 	"rogue": {
@@ -1028,9 +1050,9 @@ var hero_defs := {
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"}
 		],
 		"tiles": [
-			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "slash"], [3, 0, "guard"],
-			[3, 1, "slash"], [3, 2, "guard"], [3, 3, "slash"], [2, 3, "guard"],
-			[1, 3, "slash"], [0, 3, "guard"], [0, 2, "slash"], [0, 1, "guard"]
+			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "bow"],
+			[3, 1, "slash"], [3, 2, "guard"], [2, 3, "trap"],
+			[1, 3, "slash"], [0, 2, "guard"]
 		]
 	}
 }
@@ -1420,6 +1442,16 @@ func _build_command_zone() -> void:
 	end_turn_button.pressed.connect(Callable(self, "_on_end_turn_pressed"))
 	row.add_child(end_turn_button)
 
+	catalog_button = Button.new()
+	catalog_button.text = "図鑑"
+	catalog_button.focus_mode = Control.FOCUS_NONE
+	catalog_button.custom_minimum_size = Vector2(74, 0)
+	catalog_button.add_theme_font_size_override("font_size", FS_SMALL)
+	_style_button(catalog_button, COL_PANEL_SUNK, COL_INK)
+	catalog_button.add_theme_color_override("font_color", COL_INK)
+	catalog_button.pressed.connect(Callable(self, "_show_catalog"))
+	row.add_child(catalog_button)
+
 	restart_button = Button.new()
 	restart_button.text = "最初から"
 	restart_button.focus_mode = Control.FOCUS_NONE
@@ -1778,6 +1810,7 @@ func _refresh_command() -> void:
 	end_turn_button.visible = playing or state == "moving" or state == "enemy"
 	end_turn_button.disabled = not playing
 	restart_button.visible = state != "title"
+	catalog_button.visible = state != "title"
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
@@ -1808,17 +1841,13 @@ func _refresh_board() -> void:
 			var value_text := ""
 			var value_color := Color("#FFF7E6")
 
-			if perm_type != "empty":
-				var stop_value := int(tile["stop_value"])
-				match str(tile["mode"]):
-					"attack":
-						value_text = str(stop_value + _pending_route_bonus())
-					"shield":
-						value_text = "+%d" % stop_value
-					"heal":
-						value_text = "+%d" % stop_value
-					_:
-						value_text = ""
+			match str(tile["mode"]):
+				"attack", "shock":
+					value_text = str(int(tile["value"]) + _pending_route_bonus())
+				"shield", "heal", "step":
+					value_text = "+%d" % int(tile["value"])
+				"draw":
+					value_text = "引"
 			if temp_type == "hazard":
 				color = temp_defs["hazard"]["color"]
 				icon_kind = "poison"
@@ -1878,7 +1907,8 @@ func _refresh_board() -> void:
 			value_label.text = value_text
 			value_label.add_theme_color_override("font_color", value_color)
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
-			_apply_cell_style(button, color, border_color, border_width, dim)
+			var squared: bool = str(tile["trigger"]) == "stop" and temp_type != "hazard"
+			_apply_cell_style(button, color, border_color, border_width, dim, squared)
 	_refresh_ribbon()
 	board_view.queue_redraw()
 
@@ -1893,9 +1923,12 @@ func _telegraph_damage() -> int:
 			return int(enemy["damage"])
 	return 0
 
-func _apply_cell_style(button: Button, color: Color, border_color: Color, border_width: int, dim: bool) -> void:
+func _apply_cell_style(button: Button, color: Color, border_color: Color, border_width: int, dim: bool, squared: bool = false) -> void:
 	var fill: Color = color if not dim else color.lerp(COL_PANEL_SUNK, 0.55)
-	var radius: int = int(max(20.0, _board_token_size() * 0.5))
+	# Round tiles fire when you run through them, square tiles when you
+	# land on them. Shape says it without spending any of the tile's space
+	# on a word.
+	var radius: int = 7 if squared else int(max(20.0, _board_token_size() * 0.5))
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = fill
 	normal.corner_radius_top_left = radius
@@ -1963,6 +1996,12 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	box.custom_minimum_size = Vector2(chip, chip)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := _flat_style(color, COL_INK, 2, 0, 0)
+	var round_chip: bool = temp_type == "hazard" or str(tile["trigger"]) == "pass"
+	var chip_radius: int = int(chip * 0.5) if round_chip else 3
+	style.corner_radius_top_left = chip_radius
+	style.corner_radius_top_right = chip_radius
+	style.corner_radius_bottom_left = chip_radius
+	style.corner_radius_bottom_right = chip_radius
 	if danger_cells.has(pos):
 		style.border_color = COL_DANGER
 		style.border_width_left = 3
@@ -2229,6 +2268,108 @@ func _add_overlay_option(title: String, subtitle: String, color: Color, icon_kin
 
 	overlay_list.add_child(panel)
 
+# A catalogue of every tile, grouped by when it fires. Reachable from the
+# title and from inside a turn, because the question "what does that one
+# do again" turns up mid-run, not before it.
+func _show_catalog() -> void:
+	catalog_return_state = state
+	overlay.visible = true
+	overlay_title.text = "マス図鑑"
+	overlay_body.text = "○ 丸いマスは通過したときに、□ 四角いマスは止まったときに効きます。"
+	overlay_body.visible = true
+	_clear_children(overlay_list)
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(0, min(get_viewport_rect().size.y * 0.52, 380.0))
+	overlay_list.add_child(scroll)
+
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 6)
+	scroll.add_child(column)
+
+	for trigger in ["pass", "stop"]:
+		var heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+		heading.text = "○ 通過型 — 走り抜けるたびに効く" if trigger == "pass" else "□ 停止型 — ぴたりと止まったときだけ効く"
+		heading.autowrap_mode = TextServer.AUTOWRAP_OFF
+		column.add_child(heading)
+		for key in tile_defs.keys():
+			var tile: Dictionary = tile_defs[key]
+			if str(tile["trigger"]) != trigger:
+				continue
+			column.add_child(_make_catalog_row(tile))
+	column.add_child(_make_catalog_row(temp_defs["hazard"]))
+
+	var close_button := Button.new()
+	close_button.text = "閉じる"
+	close_button.focus_mode = Control.FOCUS_NONE
+	close_button.custom_minimum_size = Vector2(0, 44)
+	close_button.add_theme_font_size_override("font_size", FS_BODY)
+	_style_button(close_button, COL_GOLD, COL_INK)
+	close_button.add_theme_color_override("font_color", COL_INK)
+	close_button.pressed.connect(Callable(self, "_close_catalog"))
+	overlay_list.add_child(close_button)
+	_layout_overlay()
+
+func _make_catalog_row(tile: Dictionary) -> Control:
+	var row := PanelContainer.new()
+	row.add_theme_stylebox_override("panel", _flat_style(COL_PANEL_SUNK, COL_INK, 2, 8, 7))
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 9)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(line)
+
+	# The swatch repeats the board's shape language, so the catalogue reads
+	# as the same object the player is looking at on the board.
+	var swatch := Panel.new()
+	swatch.custom_minimum_size = Vector2(38, 38)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := _flat_style(Color(tile["color"]), COL_INK, 3, 0, 0)
+	var radius: int = 19 if str(tile.get("trigger", "pass")) == "pass" else 5
+	style.corner_radius_top_left = radius
+	style.corner_radius_top_right = radius
+	style.corner_radius_bottom_left = radius
+	style.corner_radius_bottom_right = radius
+	swatch.add_theme_stylebox_override("panel", style)
+	line.add_child(swatch)
+	var icon := IconGlyph.new()
+	icon.kind = str(tile["icon"])
+	icon.glyph_color = COL_TEXT_ON_DARK
+	icon.outline_color = COL_INK
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	icon.offset_left = 5
+	icon.offset_top = 5
+	icon.offset_right = -5
+	icon.offset_bottom = -5
+	swatch.add_child(icon)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	line.add_child(col)
+
+	var head := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	head.text = "%s　%s" % [str(tile["name"]), str(tile["effect"])]
+	col.add_child(head)
+
+	var detail := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
+	detail.text = str(tile["detail"])
+	col.add_child(detail)
+	return row
+
+func _close_catalog() -> void:
+	if catalog_return_state == "title":
+		_show_title()
+		return
+	_close_overlay()
+
 func _show_title() -> void:
 	state = "title"
 	encounter = 0
@@ -2253,6 +2394,7 @@ func _show_title() -> void:
 			"slash" if key == "knight" else ("fire" if key == "mage" else "trap"),
 			Callable(self, "_start_run").bind(key)
 		)
+	_add_overlay_option("マス図鑑", "どのマスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
 	_layout_overlay()
 
 func _show_reward() -> void:
@@ -2268,27 +2410,18 @@ func _show_reward() -> void:
 	for i in range(3):
 		var reward_type := str(options[i]["type"])
 		var tile: Dictionary = tile_defs[reward_type]
-		var mode := str(tile["mode"])
-		var headline := ""
-		match mode:
-			"attack":
-				headline = "通過 %d ダメージ ／ 停止 %d ダメージ" % [int(tile["pass_value"]), int(tile["stop_value"])]
-			"shield":
-				headline = "通過 盾+%d ／ 停止 盾+%d" % [int(tile["pass_value"]), int(tile["stop_value"])]
-			"heal":
-				headline = "通過 HP+%d ／ 停止 HP+%d" % [int(tile["pass_value"]), int(tile["stop_value"])]
-			"move":
-				headline = "通過 1歩多く進む ／ 停止 行動+1"
-			_:
-				headline = "通過 盾+1と攻撃+1 ／ 停止 ダイスを1枚引く"
 		_add_overlay_option(
 			"%s［%s］" % [str(tile["name"]), str(tile["kind"])],
-			headline,
+			"%s　%s" % [_trigger_label(str(tile["trigger"])), str(tile["effect"])],
 			Color(tile["color"]),
 			str(tile["icon"]),
 			Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % str(tile["name"]))
 		)
 	_layout_overlay()
+
+# "通過型" / "停止型" — the one word that says when a tile pays out.
+func _trigger_label(trigger: String) -> String:
+	return "○通過型" if trigger == "pass" else "□停止型"
 
 func _show_victory() -> void:
 	state = "victory"
@@ -2409,7 +2542,7 @@ func _start_encounter() -> void:
 	_snap_player_visual()
 	var intro := "第%d戦。ダイスを選んで進みましょう。" % encounter
 	if encounter == 1:
-		intro = "マスをタップすると効果を確認できます。ダイスを選ぶと進みます。"
+		intro = "○丸は通過で、□四角は止まって効くマス。図鑑で一覧が見られます。"
 	_start_player_turn(intro)
 
 func _setup_encounter() -> void:
@@ -2602,45 +2735,15 @@ func _finish_encounter() -> void:
 	_show_reward()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
-	var tile_type: String = str(permanent_board[pos.y][pos.x])
-	var temp_type: String = str(temp_board[pos.y][pos.x])
 	var messages := []
-	if temp_type == "hazard":
+	if str(temp_board[pos.y][pos.x]) == "hazard":
 		_take_damage(2)
 		messages.append("毒沼を踏んだ。HP-2")
-	if tile_type == "slash":
-		var dmg := _combo_damage(2)
-		if _strike_lowest(dmg):
-			messages.append("斬撃路を通過。%dダメージ" % dmg)
-	elif tile_type == "guard":
-		_gain_shield(1)
-		messages.append("防御路を通過。盾+1")
-	elif tile_type == "fire":
-		var dmg := _combo_damage(1)
-		if _strike_all(dmg):
-			messages.append("火走りを通過。%dダメージ" % dmg)
-	elif tile_type == "heal":
-		_heal(1)
-		messages.append("癒し道を通過。HP+1")
-	elif tile_type == "bow":
-		var dmg := _combo_damage(1)
-		if _strike_lowest(dmg):
-			messages.append("射撃台を通過。%dダメージ" % dmg)
-	elif tile_type == "trap":
-		var dmg := _combo_damage(2)
-		if _strike_highest(dmg):
-			messages.append("罠道を通過。%dダメージ" % dmg)
-	elif tile_type == "warp":
-		steps_left += 1
-		messages.append("跳躍路を通過。1歩追加")
-	elif tile_type == "shock":
-		var dmg := _combo_damage(1)
-		if _strike_all(dmg):
-			messages.append("雷線を通過。%dダメージ" % dmg)
-	elif tile_type == "focus":
-		_gain_shield(1)
-		route_power += 1
-		messages.append("集中路を通過。盾+1、攻撃+%d" % route_power)
+	var tile_type: String = str(permanent_board[pos.y][pos.x])
+	if str(tile_defs[tile_type]["trigger"]) == "pass":
+		var effect := _apply_tile_effect(tile_type)
+		if effect != "":
+			messages.append(effect)
 	if route_hits >= 3:
 		_spawn_enemy_popup("%d連鎖!" % route_hits, COL_GOLD)
 	return " ".join(messages)
@@ -2648,47 +2751,57 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 func _resolve_stop_tile(pos: Vector2i) -> String:
 	_flash_player_stop()
 	var tile_type: String = str(permanent_board[pos.y][pos.x])
-	if tile_type == "empty":
-		_gain_shield(1)
-		return "道で停止。盾+1"
-	if tile_type == "slash":
-		var dmg := _combo_damage(4)
-		if _strike_lowest(dmg):
-			return "斬撃路で停止。%dダメージ" % dmg
-		return "斬撃路で停止。"
-	if tile_type == "guard":
-		_gain_shield(3)
-		return "防御路で停止。盾+3"
-	if tile_type == "fire":
-		var dmg := _combo_damage(3)
-		if _strike_lowest(dmg):
-			return "火走りで停止。%dダメージ" % dmg
-		return "火走りで停止。"
-	if tile_type == "heal":
-		_heal(3)
-		return "癒し道で停止。HP+3"
-	if tile_type == "bow":
-		var dmg := _combo_damage(3)
-		if _strike_lowest(dmg):
-			return "射撃台で停止。%dダメージ" % dmg
-		return "射撃台で停止。"
-	if tile_type == "trap":
-		var dmg := _combo_damage(4)
-		if _strike_highest(dmg):
-			return "罠道で停止。%dダメージ" % dmg
-		return "罠道で停止。"
-	if tile_type == "warp":
-		actions_left += 1
-		return "跳躍路で停止。行動+1"
-	if tile_type == "shock":
-		var dmg := _combo_damage(2)
-		if _strike_all(dmg):
-			return "雷線で停止。%dダメージ" % dmg
-		return "雷線で停止。"
-	if tile_type == "focus":
-		_draw_to_hand()
-		return "集中路で停止。ダイスを補充"
+	var tile: Dictionary = tile_defs[tile_type]
+	if str(tile["trigger"]) != "stop":
+		# Landing on a pass tile is not a punishment, but it is a wasted
+		# stop — say so plainly rather than leaving the player wondering
+		# whether something fired.
+		return "%sに停止。通過型なので効果なし" % str(tile["name"])
+	return _apply_tile_effect(tile_type)
+
+# One place where a tile's effect actually happens, driven by the table
+# above — so a tile's rules, its board readout and its catalog entry can
+# never drift apart.
+func _apply_tile_effect(tile_type: String) -> String:
+	var tile: Dictionary = tile_defs[tile_type]
+	var name: String = str(tile["name"])
+	var value := int(tile["value"])
+	match str(tile["mode"]):
+		"attack":
+			var dmg := _combo_damage(value)
+			if _strike(str(tile.get("target", "lowest")), dmg):
+				return "%s：%dダメージ" % [name, dmg]
+			return ""
+		"shield":
+			_gain_shield(value)
+			return "%s：盾+%d" % [name, value]
+		"heal":
+			_heal(value)
+			return "%s：HP+%d" % [name, value]
+		"step":
+			steps_left += value
+			return "%s：%d歩追加" % [name, value]
+		"shock":
+			var shock_damage := _combo_damage(value)
+			var landed := _strike(str(tile.get("target", "all")), shock_damage)
+			_gain_shield(2)
+			if landed:
+				return "%s：%dダメージ、盾+2" % [name, shock_damage]
+			return "%s：盾+2" % name
+		"draw":
+			_draw_to_hand()
+			route_power += 2
+			_refresh_hand()
+			return "%s：ダイスを補充、攻撃+2" % name
 	return ""
+
+func _strike(target: String, amount: int) -> bool:
+	match target:
+		"highest":
+			return _strike_highest(amount)
+		"all":
+			return _strike_all(amount)
+	return _strike_lowest(amount)
 
 func _combo_damage(base: int) -> int:
 	return base + route_power + route_hits
@@ -2939,10 +3052,8 @@ func _show_cell_info(pos: Vector2i) -> void:
 	var ahead := _steps_ahead(pos)
 	if ahead > 0:
 		parts.append("%dマス先" % ahead)
-	parts.append(str(tile["name"]))
-	if str(tile["pass"]) != "":
-		parts.append(str(tile["pass"]).replace("通過: ", "通過"))
-	parts.append(str(tile["stop"]).replace("停止: ", "停止"))
+	parts.append("%s %s" % [str(tile["name"]), _trigger_label(str(tile["trigger"]))])
+	parts.append(str(tile["effect"]))
 	if temp_type == "hazard":
 		parts.append(str(temp_defs["hazard"]["desc"]))
 	if danger_cells.has(pos):
@@ -2961,7 +3072,7 @@ func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> Strin
 	if temp_type != "none":
 		lines.append(str(temp_defs[temp_type]["desc"]))
 	var tile: Dictionary = tile_defs[perm_type]
-	lines.append("%s: %s / %s" % [str(tile["name"]), str(tile["pass"]), str(tile["stop"])])
+	lines.append("%s %s: %s" % [str(tile["name"]), _trigger_label(str(tile["trigger"])), str(tile["effect"])])
 	return "\n".join(lines)
 
 # --- token motion ------------------------------------------------------
