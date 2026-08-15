@@ -12,7 +12,7 @@ const MAX_DEBUFFS := 4
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
 const HAND_GAP := 7.0
-const MAX_ENCOUNTERS := 6
+const MAX_ENCOUNTERS := 7
 
 # Every size in this file is authored in these units, and the window's
 # content scale is pinned to them at startup (see _apply_content_scale), so
@@ -995,7 +995,7 @@ var hand: Array = []
 
 var selected_die := {}
 var selected_roll := 0
-var selected_power := ""
+var move_dir := 1
 var steps_left := 0
 var route_path: Array[Vector2i] = []
 # Combo is the whole of the base system's arithmetic: it counts the dice
@@ -1016,62 +1016,207 @@ var last_cleanse_count := 0
 var dice_rolled := false
 var rerolls_left := 0
 
-# Tile colors are assigned by what the effect *does to whom*: warm for
-# "this hurts the enemy", cool for "this helps me", and one sickly green
-# reserved for the only thing that hurts the player.
-# Each tile fires on exactly one trigger: "pass" tiles pay out every time
-# the piece runs through them, "stop" tiles only when it lands exactly on
-# them. Splitting the two halves the amount a player has to read off a
-# tile, and it gives the dice a real question to answer — do I want to
-# sweep through a lot of road, or land on one particular square?
+# --- counters the effect system can read and scale against ---------------
+# Each of these is the spine of one build concept rather than a rule that
+# applies to everything. combo is deliberately NOT added to every attack any
+# more: it only pays out through content that names it, the same as charge,
+# lap and poison. That is what makes "a combo build" a choice instead of a
+# tax everyone pays.
+var charge := 0             # survives the whole encounter; cash it in
+var lap_count := 0          # laps completed this encounter
+var action_index := 0       # 1st or 2nd action of this turn
+var crossed_this_action := 0
+
+# --- the effect system -------------------------------------------------
+# The whole base system is: a die fires its effects, and the squares it
+# runs over fire theirs. Nothing else is hardcoded. Every tile and every
+# die is a list of effects, and an effect is:
 #
-# Because a pass tile fires several times per roll and a stop tile fires
-# once per action, pass values are small and stop values are large.
-# Shape carries the trigger on the board: pass tiles are drawn round like
-# a stretch of road, stop tiles square like a place you can stand.
+#   {"on": when, "op": what, "amount": n, "scale": counter, "cond": {...}}
+#
+#   on     "pass"  every square entered, including the one landed on
+#          "stop"  only the square the action ended on
+#          "spend" the moment the die is chosen (dice only)
+#          "lap"   when the piece crosses the start square
+#   op     what actually changes — see _apply_op
+#   scale  multiply amount by a counter (combo / charge / lap / shield /
+#          roll / crossed / poison). This is how a build "cashes in".
+#   cond   optional gate on the player's own state — never on anything the
+#          player cannot control, or a board can lock itself out.
+#
+# Adding content means adding rows here, not branches in code. Anything
+# expressible as (when × what × how much × scaled by × gated on) needs no
+# new GDScript at all.
+#
+# Shape on the board still carries when a tile pays: round = pass,
+# square = stop, and the cut-corner shape = both.
 var tile_defs := {
+	# --- 基本 ---
 	"empty": {"name": "道", "kind": "基本", "color": Color("#CBB68F"), "icon": "boot",
-		"trigger": "stop", "mode": "shield", "value": 1, "effect": "盾+1",
+		"trigger": "stop", "effect": "盾+1",
+		"effects": [{"on": "stop", "op": "shield", "amount": 1}],
 		"detail": "何も置いていないただの道。止まれば盾が1つだけ手に入る。"},
-	"slash": {"name": "斬撃路", "kind": "攻撃", "color": Color("#E4453A"), "icon": "slash",
-		"trigger": "pass", "mode": "attack", "target": "lowest", "value": 3, "effect": "敵に3ダメージ",
+
+	# --- 疾走: 通過型。1マスあたりは軽いが、長い出目で何枚も踏むほど伸びる ---
+	"slash": {"name": "斬撃路", "kind": "疾走", "color": Color("#E4453A"), "icon": "slash",
+		"trigger": "pass", "effect": "通過ごとに3ダメージ",
+		"effects": [{"on": "pass", "op": "attack", "amount": 3}],
 		"detail": "通り抜けざまに斬る。大きい出目で何枚も踏み抜くほど伸びる、攻めの基本。"},
-	"fire": {"name": "火走り", "kind": "攻撃", "color": Color("#F2762B"), "icon": "fire",
-		"trigger": "pass", "mode": "attack", "target": "all", "value": 2, "effect": "敵に2ダメージ",
-		"detail": "走った跡が燃える。1枚あたりは軽いが、連鎖ボーナスを稼ぎやすい。"},
-	"guard": {"name": "防御路", "kind": "防御", "color": Color("#2E7BD6"), "icon": "guard",
-		"trigger": "pass", "mode": "shield", "value": 2, "effect": "盾+2",
+	"fire": {"name": "火走り", "kind": "疾走", "color": Color("#F2762B"), "icon": "fire",
+		"trigger": "pass", "effect": "通過ごとに2ダメージ、毒+1",
+		"effects": [{"on": "pass", "op": "attack", "amount": 2},
+			{"on": "pass", "op": "poison", "amount": 1}],
+		"detail": "走った跡が燃える。1枚あたりは軽いが、通るたびに敵を焼き続ける毒を残す。"},
+	"guard": {"name": "防御路", "kind": "疾走", "color": Color("#2E7BD6"), "icon": "guard",
+		"trigger": "pass", "effect": "通過ごとに盾+2",
+		"effects": [{"on": "pass", "op": "shield", "amount": 2}],
 		"detail": "通るたびに盾を拾う。盾はターン開始で消えるので、殴られる前に集めること。"},
-	"heal": {"name": "癒し道", "kind": "回復", "color": Color("#3EA95E"), "icon": "heal",
-		"trigger": "pass", "mode": "heal", "value": 1, "effect": "HP+1",
+	"heal": {"name": "癒し道", "kind": "疾走", "color": Color("#3EA95E"), "icon": "heal",
+		"trigger": "pass", "effect": "通過ごとにHP+1",
+		"effects": [{"on": "pass", "op": "heal", "amount": 1}],
 		"detail": "少しずつしか戻らない。長い出目で何度も通り抜けるのが回復の近道。"},
-	"chain": {"name": "連鎖路", "kind": "連鎖", "color": Color("#F2C230"), "icon": "chain",
-		"trigger": "pass", "mode": "combo", "value": 1, "effect": "コンボ+1",
-		"detail": "通り抜けるとコンボが1増える。攻撃マスのダメージはコンボぶん上乗せされるので、踏んでから殴ると伸びる。"},
+	"gale": {"name": "疾風路", "kind": "疾走", "color": Color("#C2453A"), "icon": "slash",
+		"trigger": "stop", "effect": "この行動で進んだマス数ぶんダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 1, "scale": "crossed"}],
+		"detail": "遠くから走り込むほど重い。小さい出目で止まっても意味がなく、大きい出目の着地点にして初めて活きる。"},
+	"tailwind": {"name": "追い風", "kind": "疾走", "color": Color("#2AA1A8"), "icon": "warp",
+		"trigger": "stop", "effect": "進んだマス数ぶん盾",
+		"effects": [{"on": "stop", "op": "shield", "amount": 1, "scale": "crossed"}],
+		"detail": "駆け抜けた勢いをそのまま構えに変える。長距離を走ったターンの着地点に。"},
 	"warp": {"name": "跳躍路", "kind": "移動", "color": Color("#16A0C8"), "icon": "warp",
-		"trigger": "pass", "mode": "step", "value": 1, "effect": "1歩多く進む",
+		"trigger": "pass", "effect": "1歩多く進む",
+		"effects": [{"on": "pass", "op": "step", "amount": 1}],
 		"detail": "出目を1つ伸ばす。止まりたいマスに足りないときの調整に使う。"},
-	"heavy": {"name": "大斬撃", "kind": "攻撃", "color": Color("#B5302A"), "icon": "slash",
-		"trigger": "stop", "mode": "attack", "target": "lowest", "value": 7, "effect": "敵に7ダメージ",
-		"detail": "踏み込んで斬る。斬撃路の重い版で、走り抜けざまには出せない。"},
-	"fort": {"name": "砦", "kind": "防御", "color": Color("#1F5FA8"), "icon": "guard",
-		"trigger": "stop", "mode": "shield", "value": 5, "effect": "盾+5",
+
+	# --- 連鎖: コンボを積み、コンボを参照するマスで清算する ---
+	"chain": {"name": "連鎖路", "kind": "連鎖", "color": Color("#F2C230"), "icon": "chain",
+		"trigger": "pass", "effect": "通過ごとにコンボ+1",
+		"effects": [{"on": "pass", "op": "combo", "amount": 1}],
+		"detail": "通り抜けるとコンボが1増える。コンボ自体は何もしないが、コンボを参照するマスとダイスが一気に重くなる。"},
+	"volley": {"name": "連撃台", "kind": "連鎖", "color": Color("#D98A1F"), "icon": "slash",
+		"trigger": "stop", "effect": "コンボ×3ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "combo"}],
+		"detail": "積んだコンボをそのまま打点に変える。連鎖路を踏んでから着地するのが基本の形。"},
+	"resonance": {"name": "共鳴盤", "kind": "連鎖", "color": Color("#B8862B"), "icon": "shock",
+		"trigger": "stop", "effect": "コンボ3以上なら14ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 14, "cond": {"min_combo": 3}}],
+		"detail": "条件を満たせば盤上最大級。満たせなければ完全な空振りで、コンボを積む算段とセットで置くマス。"},
+	"spiral": {"name": "螺旋路", "kind": "連鎖", "color": Color("#E0A32B"), "icon": "chain",
+		"trigger": "both", "effect": "通過でコンボ+1／停止でコンボ×2ダメージ",
+		"effects": [{"on": "pass", "op": "combo", "amount": 1},
+			{"on": "stop", "op": "attack", "amount": 2, "scale": "combo"}],
+		"detail": "自分で積んで自分で清算する一枚完結型。通過と停止の両方で働く。"},
+
+	# --- 狙撃: チャージを溜め、撃ち切る ---
+	"battery": {"name": "蓄積砲台", "kind": "狙撃", "color": Color("#7C4DD6"), "icon": "focus",
+		"trigger": "both", "effect": "通過でチャージ+1／停止でチャージ×4ダメージ（消費）",
+		"effects": [{"on": "pass", "op": "charge", "amount": 1},
+			{"on": "stop", "op": "attack", "amount": 4, "scale": "charge"},
+			{"on": "stop", "op": "spend_charge", "amount": 0}],
+		"detail": "踏むたびに溜まり、止まった瞬間に全部吐き出す。チャージは戦闘中ずっと残るので、いつ撃つかが判断になる。"},
+	"aim": {"name": "照準台", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "focus",
+		"trigger": "stop", "effect": "チャージ+3",
+		"effects": [{"on": "stop", "op": "charge", "amount": 3}],
+		"detail": "撃たずに溜めるだけのマス。単体では何も起きないが、チャージを参照するマスの威力を跳ね上げる。"},
+	"lance": {"name": "貫通砲", "kind": "狙撃", "color": Color("#5B3AA8"), "icon": "bow",
+		"trigger": "stop", "effect": "チャージ×3ダメージ（消費しない）",
+		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "charge"}],
+		"detail": "溜めを消費せずに撃てる代わりに倍率が低い。何度も撃ちたいならこちら。"},
+	"heavy": {"name": "大斬撃", "kind": "狙撃", "color": Color("#B5302A"), "icon": "slash",
+		"trigger": "stop", "effect": "7ダメージ＋出目ぶん",
+		"effects": [{"on": "stop", "op": "attack", "amount": 7},
+			{"on": "stop", "op": "attack", "amount": 1, "scale": "roll"}],
+		"detail": "踏み込みが深いほど重い。大きい出目のダイスをここに当てるのが剣士の基本。"},
+	"bow": {"name": "射撃台", "kind": "狙撃", "color": Color("#C9971F"), "icon": "bow",
+		"trigger": "stop", "effect": "出目×2ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 2, "scale": "roll"}],
+		"detail": "威力が完全に出目任せ。6で止まれば12だが、1なら2しか出ない。大きい目のダイスと組む。"},
+	"trap": {"name": "罠道", "kind": "狙撃", "color": Color("#C2457E"), "icon": "trap",
+		"trigger": "stop", "effect": "HP3を払って16ダメージ",
+		"effects": [{"on": "stop", "op": "self_damage", "amount": 3},
+			{"on": "stop", "op": "attack", "amount": 16}],
+		"detail": "盤上で最も重い一撃だが、自分のHPを削って撃つ。押し切れる場面かどうかの判断を迫るマス。"},
+	"snipe": {"name": "狙撃点", "kind": "狙撃", "color": Color("#A8791F"), "icon": "bow",
+		"trigger": "stop", "effect": "2回目の行動なら12ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 12, "cond": {"action": 2}}],
+		"detail": "そのターンの2手目で止まった時だけ火を噴く。行動の順番そのものが条件になる一枚。"},
+
+	# --- 要塞: 盾を溜め、盾で殴る ---
+	"fort": {"name": "砦", "kind": "要塞", "color": Color("#1F5FA8"), "icon": "guard",
+		"trigger": "stop", "effect": "盾+6",
+		"effects": [{"on": "stop", "op": "shield", "amount": 6}],
 		"detail": "腰を据えて構える。盾はターン開始で消えるので、殴られるターンに合わせて止まること。"},
-	"spring": {"name": "泉", "kind": "回復", "color": Color("#2E8449"), "icon": "heal",
-		"trigger": "stop", "mode": "heal", "value": 5, "effect": "HP+5",
-		"detail": "汲むには足を止めるしかない。盤上で最も大きい回復。"},
-	"bow": {"name": "射撃台", "kind": "攻撃", "color": Color("#C9971F"), "icon": "bow",
-		"trigger": "stop", "mode": "attack", "target": "lowest", "value": 6, "effect": "敵に6ダメージ",
-		"detail": "構えて撃つので、走り抜けながらでは撃てない。ぴたりと止まって初めて効く。"},
-	"trap": {"name": "罠道", "kind": "攻撃", "color": Color("#C2457E"), "icon": "trap",
-		"trigger": "stop", "mode": "attack", "target": "highest", "value": 8, "effect": "敵に8ダメージ",
-		"detail": "仕掛けて起動するまで時間がいる。盤上で最も大きい一撃。"},
-	"shock": {"name": "雷線", "kind": "複合", "color": Color("#7C4DD6"), "icon": "shock",
-		"trigger": "stop", "mode": "shock", "target": "all", "value": 4, "effect": "敵に4ダメージ、盾+2",
-		"detail": "攻めと守りを同時にこなす。どちらも欲しいターンの着地点に。"},
+	"thorns": {"name": "棘壁", "kind": "要塞", "color": Color("#2E5FA8"), "icon": "shock",
+		"trigger": "stop", "effect": "今ある盾ぶんダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 1, "scale": "shield"}],
+		"detail": "守りをそのまま刃に変える。先に盾を集めてから止まらないと、ただの空振りになる。"},
+	"bastion": {"name": "鉄壁", "kind": "要塞", "color": Color("#16457C"), "icon": "guard",
+		"trigger": "stop", "effect": "HP半分以下なら盾+12",
+		"effects": [{"on": "stop", "op": "shield", "amount": 12, "cond": {"hp_below": 0.5}}],
+		"detail": "追い詰められてから初めて働く。余裕のあるうちは死にマスで、劣勢でこそ盤面を支える。"},
+	"reflect": {"name": "反射盤", "kind": "要塞", "color": Color("#3A72C2"), "icon": "guard",
+		"trigger": "both", "effect": "通過で盾+1／停止で盾の2倍ダメージ",
+		"effects": [{"on": "pass", "op": "shield", "amount": 1},
+			{"on": "stop", "op": "attack", "amount": 2, "scale": "shield"}],
+		"detail": "自分で盾を集めながら走り、最後に叩きつける。要塞ビルドの一枚完結型。"},
+
+	# --- 毒: 継続ダメージを盛り、時間を味方にする ---
+	"venom": {"name": "毒沼", "kind": "毒", "color": Color("#6F9C1F"), "icon": "poison",
+		"trigger": "stop", "effect": "敵に毒+4",
+		"effects": [{"on": "stop", "op": "poison", "amount": 4}],
+		"detail": "毒は敵のターン終わりに毒の数だけダメージを与え、1減る。長い戦いほど総ダメージが伸びる。"},
+	"rot": {"name": "腐食路", "kind": "毒", "color": Color("#8FB53A"), "icon": "poison",
+		"trigger": "pass", "effect": "通過ごとに毒+1",
+		"effects": [{"on": "pass", "op": "poison", "amount": 1}],
+		"detail": "走り抜けるだけで毒が積み上がる。大きい出目と組むと一気に盛れる。"},
+	"blight": {"name": "蝕み台", "kind": "毒", "color": Color("#4F7A16"), "icon": "trap",
+		"trigger": "stop", "effect": "毒×3ダメージ（毒は残る）",
+		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "poison"}],
+		"detail": "盛った毒を即座に打点へ変換する。毒を撒く手段とセットで初めて意味を持つ。"},
+
+	# --- 周回: リングを何周したかを資源にする ---
+	"milestone": {"name": "里程標", "kind": "周回", "color": Color("#C25A2B"), "icon": "flag_start",
+		"trigger": "pass", "effect": "通過ごとに周回数×2ダメージ",
+		"effects": [{"on": "pass", "op": "attack", "amount": 2, "scale": "lap"}],
+		"detail": "1周もしていないうちは無力。走り続けて周回を重ねるほど、通過するたびの打点が上がる。"},
+	"beacon": {"name": "狼煙台", "kind": "周回", "color": Color("#D6812B"), "icon": "fire",
+		"trigger": "stop", "effect": "周回数×4ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 4, "scale": "lap"}],
+		"detail": "周回を打点に変える決算マス。序盤は弱く、長期戦で化ける。"},
+	"pilgrim": {"name": "巡礼路", "kind": "周回", "color": Color("#2E8449"), "icon": "heal",
+		"trigger": "stop", "effect": "周回数×3回復",
+		"effects": [{"on": "stop", "op": "heal", "amount": 3, "scale": "lap"}],
+		"detail": "走り続けた距離が回復になる。戦闘間にHPが戻らないこのゲームでの、数少ない立て直し手段。"},
+
+	# --- 補助: 手札と行動そのものを増やす ---
 	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
-		"trigger": "stop", "mode": "draw", "value": 1, "effect": "ダイスを1枚引く",
-		"detail": "手札を1枚補充する。引いたダイスはその場で振られ、まだ行動が残っていればそのまま使える。"}
+		"trigger": "stop", "effect": "ダイスを1枚引く",
+		"effects": [{"on": "stop", "op": "draw", "amount": 1}],
+		"detail": "手札を1枚補充する。引いたダイスはその場で振られ、まだ行動が残っていればそのまま使える。"},
+	"spring": {"name": "泉", "kind": "補助", "color": Color("#2E8449"), "icon": "heal",
+		"trigger": "stop", "effect": "HP+6",
+		"effects": [{"on": "stop", "op": "heal", "amount": 6}],
+		"detail": "汲むには足を止めるしかない。倍率も条件もない、素直な回復。"},
+	"shock": {"name": "雷線", "kind": "補助", "color": Color("#7C4DD6"), "icon": "shock",
+		"trigger": "stop", "effect": "5ダメージ、盾+3",
+		"effects": [{"on": "stop", "op": "attack", "amount": 5},
+			{"on": "stop", "op": "shield", "amount": 3}],
+		"detail": "攻めと守りを同時にこなす。尖ってはいないが、どちらも欲しいターンの着地点に。"},
+	"relay": {"name": "転換炉", "kind": "補助", "color": Color("#4F8C8A"), "icon": "warp",
+		"trigger": "stop", "effect": "ダイス1枚、振り直し+1",
+		"effects": [{"on": "stop", "op": "draw", "amount": 1},
+			{"on": "stop", "op": "reroll", "amount": 1}],
+		"detail": "打点は一切ないが、手札と選択肢を回復する。事故ったターンを立て直すためのマス。"},
+	"windfall": {"name": "好機", "kind": "補助", "color": Color("#C9A227"), "icon": "dice",
+		"trigger": "stop", "effect": "出目5以上で止まると行動+1",
+		"effects": [{"on": "stop", "op": "action", "amount": 1, "cond": {"min_roll": 5}}],
+		"detail": "大きい出目で踏み込めば、そのターンにもう一度動ける。条件を満たせない出目では何も起きない。"},
+	"altar": {"name": "供物台", "kind": "補助", "color": Color("#9C3A6B"), "icon": "skull",
+		"trigger": "stop", "effect": "HP4を払ってコンボ+3、チャージ+3",
+		"effects": [{"on": "stop", "op": "self_damage", "amount": 4},
+			{"on": "stop", "op": "combo", "amount": 3},
+			{"on": "stop", "op": "charge", "amount": 3}],
+		"detail": "HPを資源に変える。連鎖と狙撃のどちらのビルドにも刺さるが、払うものは自分の命。"}
 }
 
 # Enemies do not build their own squares — they foul yours. A debuff sits
@@ -1087,59 +1232,130 @@ var temp_defs := {
 	"block": {"name": "壁", "color": Color("#4A4038"), "desc": "通れない"}
 }
 
-# A die is two things at once: the faces say how far this action reaches,
-# and the power says what the action is *for*. A power lasts exactly as
-# long as the move it was spent on, so a die is a small build decision
-# every time it comes up rather than a permanent stat.
+# A die is three things: the faces say how far this action reaches,
+# "effects" fire the moment it is spent, and "mods" multiply what the
+# squares it runs over pay out. All three use the same effect vocabulary as
+# tile_defs, so a new die is data, not code.
 #
-# Powers multiply the board's own numbers instead of adding flat bonuses.
-# That is deliberate: a die is worth more on a board built to suit it, so
-# the tile-build and the dice-build pull on each other rather than being
-# two separate piles of upgrades. 標準 is the honest baseline — no power,
-# widest faces — and the run is about replacing it with something sharper.
+# A mod is {"op": which operation, "on": "pass"/"stop" (optional), "x": n}
+# and applies only for the action that die was spent on. Multiplying the
+# board's own numbers rather than adding flat ones is deliberate: a die is
+# worth more on a board built to suit it, so the tile-build and the
+# dice-build pull on each other instead of being two separate piles.
+#
+# "dir" of -1 makes the piece walk backwards — the one thing that changes
+# the shape of movement itself rather than what movement pays.
 var dice_defs := {
-	"normal": {"name": "標準", "faces": [1, 2, 3, 4, 5, 6], "power": "none",
+	# --- 基本 ---
+	"normal": {"name": "標準", "faces": [1, 2, 3, 4, 5, 6],
 		"color": Color("#54687F"), "short": "均等", "effect": "効果なし",
 		"detail": "1から6まで素直に出る、なんの仕掛けもないダイス。効果はない代わりに出目の幅が最も広く、止まれる場所の選択肢を一番多くくれる。"},
-	"heavy": {"name": "重撃", "faces": [3, 4, 4, 5, 6, 6], "power": "none",
+	"heavydie": {"name": "重撃", "faces": [3, 4, 4, 5, 6, 6],
 		"color": Color("#B5502A"), "short": "大きめ", "effect": "効果なし・大きい目",
-		"detail": "小さい目が出ない。遠くまで一息に運ぶので、通過型マスを何枚も踏み抜きたいターンに強い。"},
-	"blade": {"name": "攻撃", "faces": [1, 2, 3, 3, 4, 5], "power": "attack_x2",
-		"color": Color("#E4453A"), "short": "攻撃2倍", "effect": "停止型の攻撃マスのダメージが2倍",
-		"detail": "止まった先が大斬撃・射撃台・罠道・雷線なら、コンボ込みのダメージがまるごと2倍になる。狙って止まれた時の見返りが最も大きいダイス。"},
-	"rush": {"name": "疾走", "faces": [3, 4, 5, 5, 6, 6], "power": "pass_x2",
+		"detail": "小さい目が出ない。遠くまで一息に運ぶので、通過型マスを何枚も踏み抜きたいときや、出目を参照するマスと相性が良い。"},
+	"precise": {"name": "精密", "faces": [3, 3, 4, 4, 5, 5],
+		"color": Color("#4F8C8A"), "short": "安定", "effect": "効果なし・ばらつかない",
+		"detail": "3から5しか出ない。着地点の予測が立てやすい代わりに、選べる場所の幅は狭い。"},
+	"gamble": {"name": "賭博", "faces": [1, 1, 1, 6, 6, 6],
+		"color": Color("#C2457E"), "short": "両極端", "effect": "効果なし・1か6",
+		"detail": "1か6しか出ない。手札に複数あると着地候補が両極に散り、どちらかは必ず遠くへ届く。"},
+
+	# --- 倍率系: 盤面の数字を掛け算する ---
+	"blade": {"name": "攻撃", "faces": [1, 2, 3, 3, 4, 5],
+		"color": Color("#E4453A"), "short": "停止攻撃2倍", "effect": "停止型マスのダメージが2倍",
+		"mods": [{"op": "attack", "on": "stop", "x": 2}],
+		"detail": "止まった先の攻撃がまるごと2倍になる。狙って止まれた時の見返りが最も大きい。"},
+	"rush": {"name": "疾走", "faces": [3, 4, 5, 5, 6, 6],
 		"color": Color("#2AA1A8"), "short": "通過2倍", "effect": "通過型マスの効果が2倍",
-		"detail": "走り抜けざまに踏んだマスの効果が全部2倍になる。斬撃路や防御路を敷いた盤面ほど伸びる、攻撃ダイスとは正反対の使い方。"},
-	"bulwark": {"name": "守勢", "faces": [1, 2, 2, 3, 3, 4], "power": "shield_x2",
+		"mods": [{"on": "pass", "x": 2}],
+		"detail": "走り抜けざまに踏んだマスの効果が全部2倍。斬撃路や腐食路を敷いた盤面ほど伸びる、攻撃ダイスとは正反対の使い方。"},
+	"bulwark": {"name": "守勢", "faces": [1, 2, 2, 3, 3, 4],
 		"color": Color("#2E7BD6"), "short": "盾2倍", "effect": "得られる盾が2倍",
-		"detail": "砦に止まれば盾+10。盾はターン開始で消えるので、殴られると分かっているターンにだけ価値が跳ね上がる。"},
-	"mend": {"name": "治癒", "faces": [1, 2, 2, 3, 3, 4], "power": "heal_x2",
+		"mods": [{"op": "shield", "x": 2}],
+		"detail": "砦に止まれば盾+12。盾を打点に変える棘壁や反射盤と組むと、守りがそのまま火力になる。"},
+	"mend": {"name": "治癒", "faces": [1, 2, 2, 3, 3, 4],
 		"color": Color("#3EA95E"), "short": "回復2倍", "effect": "回復量が2倍",
-		"detail": "泉に止まればHP+10。戦闘間にHPは戻らないので、盤面に回復を仕込んでいるほど効く。"},
-	"chainb": {"name": "連撃", "faces": [1, 1, 2, 2, 3, 3], "power": "combo2",
-		"color": Color("#F2C230"), "short": "コンボ+2", "effect": "使うとコンボが2増える（通常は1）",
-		"detail": "出目は小さいが、このダイスを先に使っておくと、そのターンの以降の攻撃が全部1ダメージぶん重くなる。刻んで積むための一本。"},
-	"delve": {"name": "発掘", "faces": [2, 2, 3, 3, 4, 4], "power": "draw1",
+		"mods": [{"op": "heal", "x": 2}],
+		"detail": "戦闘間にHPは戻らないので、盤面に回復を仕込んでいるほど効く。"},
+	"toxin": {"name": "猛毒", "faces": [1, 2, 2, 3, 3, 4],
+		"color": Color("#6F9C1F"), "short": "毒2倍", "effect": "与える毒が2倍",
+		"mods": [{"op": "poison", "x": 2}],
+		"detail": "腐食路を走れば一度に大量の毒が乗る。毒は敵のターンごとに効くので、長引くほど得をする。"},
+	"dynamo": {"name": "蓄電", "faces": [2, 2, 3, 3, 4, 4],
+		"color": Color("#7C4DD6"), "short": "チャージ2倍", "effect": "得られるチャージが2倍",
+		"mods": [{"op": "charge", "x": 2}],
+		"detail": "溜める速度が倍になる。蓄積砲台や貫通砲を撃つターンではなく、その前のターンに使うダイス。"},
+	"tempest": {"name": "嵐撃", "faces": [4, 5, 5, 6, 6, 6],
+		"color": Color("#B5302A"), "short": "通過攻撃3倍", "effect": "通過型マスのダメージが3倍",
+		"mods": [{"op": "attack", "on": "pass", "x": 3}],
+		"detail": "通過ダメージだけを極端に伸ばす。斬撃路を並べた盤面での決め手になるが、盾も回復も伸びない。"},
+
+	# --- 使用時効果系: 選んだ瞬間に発動する ---
+	"chainb": {"name": "連撃", "faces": [1, 1, 2, 2, 3, 3],
+		"color": Color("#F2C230"), "short": "コンボ+2", "effect": "使うとコンボ+2",
+		"effects": [{"on": "spend", "op": "combo", "amount": 2}],
+		"detail": "出目は小さいが、先に使えばそのターンのコンボ参照マスが一気に重くなる。刻んで積むための一本。"},
+	"delve": {"name": "発掘", "faces": [2, 2, 3, 3, 4, 4],
 		"color": Color("#5B8C2A"), "short": "1枚補充", "effect": "使うとダイスを1枚引く",
-		"detail": "使っても手札が減らない。出目は中くらいに固まっていて安定するが、そのぶん止まれる場所の幅は狭い。"},
-	"nimble": {"name": "軽業", "faces": [1, 1, 2, 2, 3, 4], "power": "pierce",
+		"effects": [{"on": "spend", "op": "draw", "amount": 1}],
+		"detail": "使っても手札が減らない。行動回数は増えないが、選択肢の幅を保てる。"},
+	"augur": {"name": "予知", "faces": [1, 1, 3, 5, 6, 6],
+		"color": Color("#8E6BD6"), "short": "振り直し+1", "effect": "使うと振り直しが1回戻る",
+		"effects": [{"on": "spend", "op": "reroll", "amount": 1}],
+		"detail": "両極端な出目で当たり外れが激しいが、1手目に使えば残りの手札を振り直して2手目を選び直せる。"},
+	"charger": {"name": "充填", "faces": [1, 1, 2, 2, 3, 3],
+		"color": Color("#5B3AA8"), "short": "チャージ+3", "effect": "使うとチャージ+3",
+		"effects": [{"on": "spend", "op": "charge", "amount": 3}],
+		"detail": "盤面に頼らずチャージを積める。狙撃ビルドの立ち上がりを早くする一本。"},
+	"ember": {"name": "火種", "faces": [1, 2, 3, 4, 5, 6],
+		"color": Color("#8FB53A"), "short": "毒+3", "effect": "使うと敵に毒+3",
+		"effects": [{"on": "spend", "op": "poison", "amount": 3}],
+		"detail": "毒マスが一枚も無くても毒ビルドを始められる。出目は標準と同じで扱いやすい。"},
+	"rally": {"name": "号令", "faces": [1, 2, 3, 4, 5, 6],
+		"color": Color("#1F5FA8"), "short": "盾+4", "effect": "使うと盾+4",
+		"effects": [{"on": "spend", "op": "shield", "amount": 4}],
+		"detail": "着地点に関係なく盾が手に入る。棘壁や反射盤の前準備としても使える。"},
+	"devote": {"name": "献身", "faces": [4, 5, 5, 6, 6, 6],
+		"color": Color("#9C3A6B"), "short": "HP2でコンボ+3", "effect": "使うとHP-2、コンボ+3",
+		"effects": [{"on": "spend", "op": "self_damage", "amount": 2},
+			{"on": "spend", "op": "combo", "amount": 3}],
+		"detail": "HPを払ってコンボを買う。出目も大きく、連鎖ビルドの主力になるが、払い続けると保たない。"},
+	"nimble": {"name": "軽業", "faces": [1, 1, 2, 2, 3, 4],
 		"color": Color("#9BC53D"), "short": "毒無効", "effect": "毒のマスを踏んでもダメージを受けない",
-		"detail": "毒だらけになった盤面を平気で渡り歩ける。敵が毒を撒き始める第3戦以降で価値が上がる。"},
-	"augur": {"name": "予知", "faces": [1, 1, 3, 5, 6, 6], "power": "reroll",
-		"color": Color("#7C4DD6"), "short": "振り直し+1", "effect": "使うと振り直しが1回戻る",
-		"detail": "両極端な出目で当たり外れが激しいが、1手目に使えば残りの手札を振り直して2手目を選び直せる。事故を自分で拾いにいくダイス。"}
+		"pierce": true,
+		"detail": "毒だらけになった盤面を平気で渡り歩ける。敵が毒を撒き始める中盤以降で価値が上がる。"},
+
+	# --- 移動そのものを変える ---
+	"reverse": {"name": "逆走", "faces": [1, 2, 3, 4, 5, 6],
+		"color": Color("#C25A2B"), "short": "逆向きに進む", "effect": "リングを逆向きに進む",
+		"dir": -1,
+		"detail": "唯一まっすぐ戻れるダイス。前進だけでは届かない手前のマスに止まれるので、着地点の選択肢が別物になる。ただし周回は進まない。"},
+	"vault": {"name": "跳躍", "faces": [2, 2, 3, 3, 4, 4],
+		"color": Color("#16A0C8"), "short": "+2歩", "effect": "使うと2歩多く進む",
+		"effects": [{"on": "spend", "op": "step", "amount": 2}],
+		"detail": "実質4から6の移動になる。通過型マスを多く踏みたいときや、周回を稼ぎたいときに。"}
 }
 
-# Dice the player can pick up as a reward. 標準 is deliberately absent —
-# it is what you start with, not something you would ever choose.
-var die_reward_pool := ["blade", "rush", "bulwark", "mend", "chainb", "delve", "nimble", "augur", "heavy"]
+# Everything except the plain road and the two 標準-tier dice is on offer,
+# so a run can actually reach any of the build concepts from any hero.
+var die_reward_pool := [
+	"heavydie", "precise", "gamble",
+	"blade", "rush", "bulwark", "mend", "toxin", "dynamo", "tempest",
+	"chainb", "delve", "augur", "charger", "ember", "rally", "devote", "nimble",
+	"reverse", "vault"
+]
 
 var reward_pool := [
-	{"type": "slash"}, {"type": "guard"}, {"type": "fire"},
-	{"type": "heal"}, {"type": "bow"}, {"type": "trap"},
-	{"type": "warp"}, {"type": "shock"}, {"type": "focus"},
-	{"type": "heavy"}, {"type": "fort"}, {"type": "spring"},
-	{"type": "chain"}
+	{"type": "slash"}, {"type": "fire"}, {"type": "guard"}, {"type": "heal"},
+	{"type": "gale"}, {"type": "tailwind"}, {"type": "warp"},
+	{"type": "chain"}, {"type": "volley"}, {"type": "resonance"}, {"type": "spiral"},
+	{"type": "battery"}, {"type": "aim"}, {"type": "lance"},
+	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
+	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
+	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
+	{"type": "milestone"}, {"type": "beacon"}, {"type": "pilgrim"},
+	{"type": "focus"}, {"type": "spring"}, {"type": "shock"},
+	{"type": "relay"}, {"type": "windfall"}, {"type": "altar"}
 ]
 
 var hero_defs := {
@@ -1148,14 +1364,12 @@ var hero_defs := {
 		"hp": 36,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
-		"desc": "大斬撃と砦の盤面。止まる場所を選んで、堅実に削る。",
-		# Two 標準 and two with a point of view: the starting deck is mostly
-		# blank on purpose, so the dice rewards have something to replace.
-		"dice": ["normal", "normal", "heavy", "blade"],
+		"desc": "狙って止まり、重く殴る。大斬撃と砦の芯だけを持って始まる。",
+		# The starting board is deliberately almost empty: the player should
+		# be the author of the ring, not the editor of someone else's.
+		"dice": ["normal", "normal", "heavydie", "blade"],
 		"tiles": [
-			[0, 0, "heavy"], [1, 0, "fort"], [2, 0, "heavy"],
-			[3, 1, "heavy"], [3, 2, "fort"], [2, 3, "fort"],
-			[1, 3, "heavy"], [0, 2, "fort"]
+			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
 		]
 	},
 	"mage": {
@@ -1163,12 +1377,10 @@ var hero_defs := {
 		"hp": 28,
 		"hand": 3,
 		"color": Color("#7C4DD6"),
-		"desc": "雷線と泉の盤面。止まって大きく撃ち、泉で保たせる。",
-		"dice": ["normal", "normal", "augur", "delve"],
+		"desc": "溜めて撃ち抜く。チャージの芯と、手札を回すダイスを持つ。",
+		"dice": ["normal", "normal", "augur", "charger"],
 		"tiles": [
-			[0, 0, "shock"], [1, 0, "spring"], [2, 0, "shock"],
-			[3, 1, "shock"], [3, 2, "focus"], [2, 3, "shock"],
-			[1, 3, "focus"], [0, 2, "spring"]
+			[2, 0, "battery"], [3, 2, "aim"], [1, 3, "spring"]
 		]
 	},
 	"rogue": {
@@ -1176,12 +1388,10 @@ var hero_defs := {
 		"hp": 31,
 		"hand": 4,
 		"color": Color("#5B8C2A"),
-		"desc": "手札が4枚。射撃台と罠道に、狙って止まる。",
-		"dice": ["normal", "normal", "nimble", "chainb", "blade"],
+		"desc": "手札が4枚。刻んで積み、通過で削る手数のキャラ。",
+		"dice": ["normal", "normal", "nimble", "chainb", "delve"],
 		"tiles": [
-			[0, 0, "bow"], [1, 0, "fort"], [2, 0, "trap"],
-			[3, 1, "bow"], [3, 2, "fort"], [2, 3, "trap"],
-			[1, 3, "bow"], [0, 2, "focus"]
+			[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]
 		]
 	}
 }
@@ -1818,7 +2028,7 @@ func _is_stop_cell(pos: Vector2i) -> bool:
 	# The first layout pass runs from _ready, before any board exists.
 	if permanent_board.size() <= pos.y or (permanent_board[pos.y] as Array).size() <= pos.x:
 		return false
-	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) == "stop"
+	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) != "pass"
 
 func _board_token_size() -> float:
 	var step := _board_spacing()
@@ -1994,12 +2204,17 @@ func _refresh_enemy() -> void:
 	enemy_hp_bar.value = max(int(enemy["hp"]), 0)
 	_animate_gauge(enemy_hp_bar)
 	enemy_hp_label.text = "%d/%d" % [max(int(enemy["hp"]), 0), int(enemy["max_hp"])]
+	if int(enemy.get("poison", 0)) > 0:
+		enemy_hp_label.text += "　毒%d" % int(enemy["poison"])
 
 	var guaranteed: bool = str(enemy.get("attack_kind", "cell")) == "guaranteed"
 	intent_icon.set_kind("slash" if guaranteed else "focus")
 	intent_label.text = str(int(enemy["damage"]))
 	intent_panel.add_theme_stylebox_override("panel", _flat_style(COL_ENEMY if guaranteed else COL_DANGER, COL_INK, 3, 8, 3))
 	intent_note.text = "毎ターン必ず当たる" if guaranteed else "行動を終えた時に光ったマスにいると当たる"
+	var traits := _enemy_trait_text(enemy)
+	if traits != "":
+		intent_note.text = traits
 
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
@@ -2044,15 +2259,9 @@ func _refresh_board() -> void:
 			var value_text := ""
 			var value_color := Color("#FFF7E6")
 
-			var boosted := false
-			match str(tile["mode"]):
-				"attack", "shock":
-					value_text = str(int(tile["value"]) + _pending_route_bonus())
-					boosted = _pending_route_bonus() > 0
-				"shield", "heal", "step":
-					value_text = "+%d" % int(tile["value"])
-				"draw":
-					value_text = "引"
+			var readout := _tile_readout(tile)
+			value_text = str(readout["text"])
+			var boosted: bool = bool(readout["scaled"])
 			if temp_type == "block":
 				color = temp_defs["block"]["color"]
 				icon_kind = ""
@@ -2117,20 +2326,45 @@ func _refresh_board() -> void:
 			if temp_type == "hazard":
 				color = color.lerp(Color("#6F7A2A"), 0.32)
 				debuff_label.text = "毒"
-			var squared: bool = str(tile["trigger"]) == "stop"
-			_apply_cell_style(button, color, border_color, border_width, dim, squared)
+			_apply_cell_style(button, color, border_color, border_width, dim, str(tile["trigger"]))
 	_refresh_ribbon()
 	board_view.queue_redraw()
 
-# Attack tiles print what they would really deal. Mid-move that is the
-# combo as it stands; while choosing, it is what the combo will be once a
-# die is spent — which is the number the choice is actually made on.
-func _pending_route_bonus() -> int:
-	if state == "moving":
-		return combo
-	if state == "player":
-		return combo + 1
-	return 0
+# The number printed on a square, derived from its effects rather than a
+# separate hand-maintained field, so a tile can never show one thing and do
+# another. A scaled effect prints what it would pay *right now* and is
+# highlighted, because that value moves as the run's counters move.
+const OP_GLYPHS := {
+	"attack": "", "shield": "+", "heal": "+", "poison": "毒",
+	"charge": "電", "combo": "連", "step": "歩", "draw": "引",
+	"reroll": "振", "action": "行", "self_damage": "-",
+}
+
+func _tile_readout(tile: Dictionary) -> Dictionary:
+	var best_amount := -1
+	var best_text := ""
+	var scaled := false
+	for raw in tile.get("effects", []):
+		var eff: Dictionary = raw
+		var op := str(eff["op"])
+		if not OP_GLYPHS.has(op) or op == "self_damage":
+			continue
+		var amount := int(eff.get("amount", 0))
+		var scale := str(eff.get("scale", ""))
+		if scale != "":
+			amount *= _scale_value(scale)
+		if amount <= best_amount:
+			continue
+		best_amount = amount
+		scaled = scale != ""
+		var glyph := str(OP_GLYPHS[op])
+		if op == "draw" or op == "reroll" or op == "action":
+			best_text = glyph
+		elif op == "attack":
+			best_text = str(amount)
+		else:
+			best_text = "%s%d" % [glyph, amount]
+	return {"text": best_text, "scaled": scaled}
 
 func _telegraph_damage() -> int:
 	for enemy in enemies:
@@ -2138,12 +2372,16 @@ func _telegraph_damage() -> int:
 			return int(enemy["damage"])
 	return 0
 
-func _apply_cell_style(button: Button, color: Color, border_color: Color, border_width: int, dim: bool, squared: bool = false) -> void:
+func _apply_cell_style(button: Button, color: Color, border_color: Color, border_width: int, dim: bool, trigger: String = "pass") -> void:
 	var fill: Color = color if not dim else color.lerp(COL_PANEL_SUNK, 0.55)
-	# Round tiles fire when you run through them, square tiles when you
-	# land on them. Shape says it without spending any of the tile's space
-	# on a word.
-	var radius: int = 6 if squared else int(max(20.0, _board_token_size() * 0.5))
+	# Round tiles fire when you run through them, square tiles when you land
+	# on them, and the rounded-square in between does both. Shape says it
+	# without spending any of the tile's space on a word.
+	var radius: int = int(max(20.0, _board_token_size() * 0.5))
+	if trigger == "stop":
+		radius = 6
+	elif trigger == "both":
+		radius = 14
 	var normal := StyleBoxFlat.new()
 	normal.bg_color = fill
 	normal.corner_radius_top_left = radius
@@ -2158,7 +2396,7 @@ func _apply_cell_style(button: Button, color: Color, border_color: Color, border
 	# A stop tile casts a shadow because it stands above the road. A pass
 	# tile does not, because it is part of it.
 	normal.shadow_color = Color(0.16, 0.12, 0.08, 0.30)
-	normal.shadow_size = 5 if squared else 0
+	normal.shadow_size = 5 if trigger == "stop" else (3 if trigger == "both" else 0)
 	normal.shadow_offset = Vector2(0, 4)
 	button.add_theme_stylebox_override("normal", normal)
 	var hover := normal.duplicate()
@@ -2210,7 +2448,7 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	col.add_theme_constant_override("separation", 1)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var stop_chip: bool = str(tile["trigger"]) == "stop"
+	var stop_chip: bool = str(tile["trigger"]) != "pass"
 	var box := Panel.new()
 	box.custom_minimum_size = Vector2(chip, chip) if stop_chip else Vector2(chip * 0.84, chip * 0.84)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2621,6 +2859,21 @@ func _add_overlay_option(title: String, subtitle: String, color: Color, icon_kin
 
 	overlay_list.add_child(panel)
 
+# The build concepts, in the order the catalogue lists them. Each one is a
+# counter plus the content that feeds and spends it; a tile's "kind" is the
+# claim that it belongs to that build.
+const TILE_KINDS := [
+	["基本", "どの盤面にもある土台"],
+	["疾走", "通過型。長い出目で何枚も踏み抜く"],
+	["連鎖", "コンボを積み、コンボを参照するマスで清算する"],
+	["狙撃", "チャージを溜め、止まって撃ち切る"],
+	["要塞", "盾を集め、盾そのものを打点に変える"],
+	["毒", "毒を盛り、敵のターンごとに削る"],
+	["周回", "リングを何周したかを資源にする"],
+	["移動", "移動そのものを変える"],
+	["補助", "手札・行動・立て直し"],
+]
+
 # A catalogue of every tile, grouped by when it fires. Reachable from the
 # title and from inside a turn, because the question "what does that one
 # do again" turns up mid-run, not before it.
@@ -2642,14 +2895,16 @@ func _show_catalog() -> void:
 	column.add_theme_constant_override("separation", 6)
 	scroll.add_child(column)
 
-	for trigger in ["pass", "stop"]:
+	# Grouped by build concept rather than by trigger: with this many tiles,
+	# "which build is this for" is the question a player actually has.
+	for kind in TILE_KINDS:
 		var heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
-		heading.text = "○ 通過型 — 走り抜けるたびに効く" if trigger == "pass" else "□ 停止型 — ぴたりと止まったときだけ効く"
+		heading.text = "%s — %s" % [str(kind[0]), str(kind[1])]
 		heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 		column.add_child(heading)
 		for key in tile_defs.keys():
 			var tile: Dictionary = tile_defs[key]
-			if str(tile["trigger"]) != trigger:
+			if str(tile["kind"]) != str(kind[0]):
 				continue
 			column.add_child(_make_catalog_row(tile))
 	var debuff_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
@@ -2878,7 +3133,12 @@ func _show_reward() -> void:
 
 # "通過型" / "停止型" — the one word that says when a tile pays out.
 func _trigger_label(trigger: String) -> String:
-	return "○通過型" if trigger == "pass" else "□停止型"
+	match trigger:
+		"pass":
+			return "○通過型"
+		"both":
+			return "◎複合型"
+	return "□停止型"
 
 func _show_victory() -> void:
 	state = "victory"
@@ -2987,10 +3247,13 @@ func _start_encounter() -> void:
 	actions_left = ACTIONS_PER_TURN
 	selected_die = {}
 	selected_roll = 0
-	selected_power = ""
+	move_dir = 1
 	steps_left = 0
 	route_path = []
 	combo = 0
+	charge = 0
+	lap_count = 0
+	move_dir = 1
 	temp_board = _make_empty_board("none")
 	enemies = []
 	_setup_encounter()
@@ -3011,49 +3274,63 @@ func _start_encounter() -> void:
 # "fixed", a set of squares on the physical board that never moves. The
 # two patterns are what give same-kind enemies a different feel: a
 # relative enemy is punishing a distance, a fixed one is punishing a place.
+# Enemies are a table too. A trait is what makes a fight ask a different
+# question of the build rather than just a bigger number: 装甲 blanks small
+# repeated hits, 再生 outpaces slow poison, 棘 punishes hitting often. Each
+# one makes some build wrong for that fight, which is what stops a single
+# board from being the answer to the whole run.
+const ENEMY_TRAIT_TEXT := {
+	"armor": "装甲%d：受けるダメージが1回ごとに%d減る",
+	"regen": "再生%d：毎ターンHPが%d回復する",
+	"thorns": "棘%d：攻撃するたびこちらが%dダメージ受ける",
+}
+
+var enemy_defs := [
+	{"name": "はぐれ兵", "hp": 20, "damage": 5, "kind": "cell",
+		"mode": "relative", "cells": [2]},
+	{"name": "斥候", "hp": 28, "damage": 6, "kind": "cell",
+		"mode": "relative", "cells": [2, 5]},
+	{"name": "射手", "hp": 36, "damage": 7, "kind": "guaranteed",
+		"mode": "relative", "cells": [], "armor": 2},
+	{"name": "重装", "hp": 44, "damage": 8, "kind": "cell",
+		"mode": "fixed", "cells": [2, 6, 10], "armor": 3},
+	{"name": "疫病持ち", "hp": 46, "damage": 8, "kind": "cell",
+		"mode": "relative", "cells": [1, 2, 3], "regen": 4},
+	{"name": "隊長", "hp": 52, "damage": 9, "kind": "cell",
+		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2},
+	{"name": "ボス", "hp": 62, "damage": 10, "kind": "guaranteed",
+		"mode": "relative", "cells": [], "armor": 2, "regen": 3},
+]
+
 func _setup_encounter() -> void:
-	if encounter == MAX_ENCOUNTERS:
-		enemies.append(_make_enemy("ボス", 58, 10, "guaranteed", "relative", []))
-	else:
-		var type_name := "はぐれ兵"
-		var hp := 12 + encounter * 8
-		var damage := 4 + encounter
-		var attack_kind := "cell"
-		var telegraph_mode := "relative"
-		var cell_spec: Array = [2]
-		match encounter:
-			1:
-				# One square, a fixed distance ahead: the simplest possible
-				# read, to teach the rule before complicating it.
-				cell_spec = [2]
-			2:
-				type_name = "斥候"
-				cell_spec = [2, 5]
-			3:
-				type_name = "射手"
-				attack_kind = "guaranteed"
-				cell_spec = []
-			4:
-				type_name = "重装"
-				# 重装 does not care where the player currently stands — it
-				# has already staked out three squares of the board itself,
-				# so the danger this fight is about place, not distance.
-				telegraph_mode = "fixed"
-				cell_spec = [2, 6, 10]
-			_:
-				type_name = "隊長"
-				# A four-square band instead of scattered points: the safe
-				# landings this fight are "barely move" or "commit past it".
-				cell_spec = [2, 3, 4, 5]
-		enemies.append(_make_enemy(type_name, hp, damage, attack_kind, telegraph_mode, cell_spec))
+	# The last slot is always the boss; the fights before it walk the table
+	# in order, so adding an enemy row lengthens the run's variety without
+	# touching any code here.
+	var index: int = enemy_defs.size() - 1 if encounter >= MAX_ENCOUNTERS else min(encounter - 1, enemy_defs.size() - 2)
+	var def: Dictionary = enemy_defs[index]
+	var enemy := _make_enemy(
+		str(def["name"]), int(def["hp"]), int(def["damage"]),
+		str(def["kind"]), str(def["mode"]), def["cells"])
+	for trait_key in ["armor", "regen", "thorns"]:
+		if def.has(trait_key):
+			enemy[trait_key] = int(def[trait_key])
+	enemies.append(enemy)
 
 	for n in range(clamp(encounter - 1, 0, MAX_DEBUFFS - 1)):
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
 
-	for enemy in enemies:
-		_generate_telegraph(enemy)
+	for e in enemies:
+		_generate_telegraph(e)
+
+func _enemy_trait_text(enemy: Dictionary) -> String:
+	var parts := []
+	for trait_key in ["armor", "regen", "thorns"]:
+		var amount := int(enemy.get(trait_key, 0))
+		if amount > 0:
+			parts.append(str(ENEMY_TRAIT_TEXT[trait_key]) % [amount, amount])
+	return " / ".join(parts)
 
 func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, telegraph_mode: String, cell_spec: Array) -> Dictionary:
 	next_enemy_uid += 1
@@ -3064,6 +3341,10 @@ func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, t
 		"max_hp": hp,
 		"damage": damage,
 		"attack_kind": attack_kind,
+		"poison": 0,
+		"armor": 0,
+		"regen": 0,
+		"thorns": 0,
 		"telegraph_mode": telegraph_mode,
 		# Only one of these is ever read, picked by telegraph_mode — kept
 		# as two named fields instead of one ambiguous "offsets" so a
@@ -3105,6 +3386,9 @@ func _start_player_turn(message: String = "") -> void:
 	steps_left = 0
 	route_path = []
 	combo = 0
+	action_index = 0
+	crossed_this_action = 0
+	move_dir = 1
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
 	hand_slots = []
@@ -3220,37 +3504,38 @@ func _on_die_pressed(index: int) -> void:
 	state = "moving"
 	selected_die = die.duplicate(true)
 	selected_roll = final_roll
-	selected_power = str(selected_die.get("power", "none"))
 	steps_left = final_roll
-	# Spending a die is what raises the combo, and 連撃 raises it further.
-	combo += _die_combo_gain(selected_die)
+	move_dir = int(selected_die.get("dir", 1))
+	action_index += 1
+	crossed_this_action = 0
 	route_path = [player_pos]
 	discard_pile.append(selected_die)
 	hand.remove_at(index)
 	sfx.emit("hit")
 
-	# Powers that fire the moment the die is spent, before the piece moves.
-	var spend_note := ""
-	match selected_power:
-		"draw1":
-			_draw_to_hand()
-			spend_note = "　発掘：ダイスを1枚補充"
-		"reroll":
-			rerolls_left += 1
-			spend_note = "　予知：振り直し+1"
-		"combo2":
-			spend_note = "　連撃：コンボ+2"
-	_set_log("%sダイス：出目 %d%s" % [str(selected_die["name"]), final_roll, spend_note])
+	# The die's own effects fire before the piece moves, so a die that pays
+	# combo or charge has already paid it by the time the squares are read.
+	var spend_note := _run_effects(selected_die.get("effects", []), "spend", str(selected_die["name"]))
+	_set_log("%sダイス：出目 %d%s" % [
+		str(selected_die["name"]), final_roll, ("　" + spend_note) if spend_note != "" else ""])
 	_refresh_all()
 	await get_tree().create_timer(0.2).timeout
 	await _advance_player()
 
 func _advance_player() -> void:
 	while steps_left > 0:
-		player_step = _normalize_step(player_step + 1)
+		var previous := player_step
+		player_step = _normalize_step(player_step + move_dir)
 		player_pos = _pos_for_step(player_step)
 		route_path.append(player_pos)
 		steps_left -= 1
+		crossed_this_action += 1
+		# Crossing the start square forwards completes a lap. Walking
+		# backwards over it does not — laps are distance covered, not a
+		# square you can tap back and forth across.
+		if move_dir > 0 and player_step == _track_index(_start_pos()) and previous != player_step:
+			lap_count += 1
+			_spawn_floating_text(player_pos, "%d周" % lap_count, COL_GOLD)
 		sfx.emit("step")
 		_refresh_board()
 		await _animate_player_step(STEP_TIME)
@@ -3300,129 +3585,227 @@ func _finish_encounter() -> void:
 func _resolve_pass_tile(pos: Vector2i) -> String:
 	var messages := []
 	if str(temp_board[pos.y][pos.x]) == "hazard":
-		if _active_power() == "pierce":
-			messages.append("軽業：毒を無効化")
+		if bool(selected_die.get("pierce", false)):
+			messages.append("%s：毒を無効化" % str(selected_die.get("name", "")))
 		else:
 			_take_damage(2)
 			messages.append("毒のマス：HP-2")
-	var tile_type: String = str(permanent_board[pos.y][pos.x])
-	if str(tile_defs[tile_type]["trigger"]) == "pass":
-		var effect := _apply_tile_effect(tile_type)
-		if effect != "":
-			messages.append(effect)
+	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
+	var effect := _run_effects(tile.get("effects", []), "pass", str(tile["name"]))
+	if effect != "":
+		messages.append(effect)
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
 	_flash_player_stop()
-	var tile_type: String = str(permanent_board[pos.y][pos.x])
-	var tile: Dictionary = tile_defs[tile_type]
-	if str(tile["trigger"]) != "stop":
-		# Landing on a pass tile is not a punishment, but it is a wasted
-		# stop — say so plainly rather than leaving the player wondering
-		# whether something fired.
-		return "%sに停止。通過型なので効果なし" % str(tile["name"])
-	return _apply_tile_effect(tile_type)
+	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
+	var effect := _run_effects(tile.get("effects", []), "stop", str(tile["name"]))
+	if effect != "":
+		return effect
+	# A square with nothing to say on landing is not a punishment, but the
+	# player still needs to know the stop was spent for nothing.
+	if not _tile_has_timing(tile, "stop"):
+		return "%sに停止。通過型なので停止効果なし" % str(tile["name"])
+	return "%sに停止。条件を満たさず不発" % str(tile["name"])
 
-# One place where a tile's effect actually happens, driven by the table
-# above — so a tile's rules, its board readout and its catalog entry can
-# never drift apart.
-func _apply_tile_effect(tile_type: String) -> String:
-	var tile: Dictionary = tile_defs[tile_type]
-	var name: String = str(tile["name"])
-	var value := int(tile["value"])
-	# The die being walked can multiply what this tile pays out. Damage is
-	# multiplied after the combo is added, because "2倍" has to mean the
-	# number the player actually sees doubles.
-	var trigger: String = str(tile["trigger"])
-	match str(tile["mode"]):
+func _tile_has_timing(tile: Dictionary, timing: String) -> bool:
+	for raw in tile.get("effects", []):
+		if str((raw as Dictionary).get("on", "stop")) == timing:
+			return true
+	return false
+
+# --- the effect engine -------------------------------------------------
+# Everything a tile or a die does goes through here. No tile type and no
+# die power is named anywhere in this code: adding content means adding a
+# row to tile_defs or dice_defs, never a branch below.
+
+# A counter an effect can scale its amount by. These are the spines of the
+# build concepts — content that names one is content that belongs to that
+# build.
+func _scale_value(scale: String) -> int:
+	match scale:
+		"combo":
+			return combo
+		"charge":
+			return charge
+		"lap":
+			return lap_count
+		"shield":
+			return player_shield
+		"roll":
+			return selected_roll
+		"crossed":
+			return crossed_this_action
+		"poison":
+			return _enemy_poison()
+	return 1
+
+# Conditions may only read the player's own state. Gating on something the
+# player cannot influence is how a board locks itself out of ever dealing
+# damage, so there is deliberately no "enemy is at range" condition here.
+func _cond_ok(cond: Dictionary) -> bool:
+	if cond.is_empty():
+		return true
+	if cond.has("min_roll") and selected_roll < int(cond["min_roll"]):
+		return false
+	if cond.has("max_roll") and selected_roll > int(cond["max_roll"]):
+		return false
+	if cond.has("min_combo") and combo < int(cond["min_combo"]):
+		return false
+	if cond.has("min_charge") and charge < int(cond["min_charge"]):
+		return false
+	if cond.has("min_lap") and lap_count < int(cond["min_lap"]):
+		return false
+	if cond.has("min_poison") and _enemy_poison() < int(cond["min_poison"]):
+		return false
+	if cond.has("action") and action_index != int(cond["action"]):
+		return false
+	if cond.has("has_shield") and player_shield <= 0:
+		return false
+	if cond.has("hp_below"):
+		var ratio := float(player_hp) / float(max(player_max_hp, 1))
+		if ratio > float(cond["hp_below"]):
+			return false
+	return true
+
+# The die currently being walked can multiply a tile's numbers. A mod with
+# no "op" matches every operation, and one with no "on" matches both
+# timings, so "疾走: everything on pass doubles" is a single row.
+func _die_op_multiplier(op: String, timing: String) -> int:
+	if selected_die.is_empty():
+		return 1
+	var total := 1
+	for raw in selected_die.get("mods", []):
+		var mod: Dictionary = raw
+		if mod.has("op") and str(mod["op"]) != op:
+			continue
+		if mod.has("on") and str(mod["on"]) != timing:
+			continue
+		total *= int(mod.get("x", 1))
+	return total
+
+# Runs every effect in a list whose timing matches, in the order written —
+# so "attack scaled by charge" followed by "spend charge" reads and behaves
+# the same way.
+func _run_effects(effects: Array, timing: String, label: String) -> String:
+	var messages := []
+	for raw in effects:
+		var eff: Dictionary = raw
+		if str(eff.get("on", "stop")) != timing:
+			continue
+		if not _cond_ok(eff.get("cond", {})):
+			continue
+		var op := str(eff["op"])
+		var amount := int(eff.get("amount", 0))
+		var scale := str(eff.get("scale", ""))
+		if scale != "":
+			amount *= _scale_value(scale)
+		amount *= _die_op_multiplier(op, timing)
+		var msg := _apply_op(op, amount, label)
+		if msg != "":
+			messages.append(msg)
+	return " ".join(messages)
+
+# The complete list of things that can happen in this game. A new operation
+# is the only kind of change that still needs code — and most new content
+# needs none.
+func _apply_op(op: String, amount: int, label: String) -> String:
+	match op:
 		"attack":
-			var dmg := _combo_damage(value) * _die_multiplier(trigger, "attack")
-			if _strike(str(tile.get("target", "lowest")), dmg):
-				return "%s：%dダメージ" % [name, dmg]
+			if amount <= 0:
+				return ""
+			if _strike_enemy(amount):
+				return "%s：%dダメージ" % [label, amount]
 			return ""
 		"shield":
-			var gain := value * _die_multiplier(trigger, "shield")
-			_gain_shield(gain)
-			return "%s：盾+%d" % [name, gain]
+			if amount <= 0:
+				return ""
+			_gain_shield(amount)
+			return "%s：盾+%d" % [label, amount]
 		"heal":
-			var mend := value * _die_multiplier(trigger, "heal")
-			_heal(mend)
-			return "%s：HP+%d" % [name, mend]
-		"step":
-			var extra := value * _die_multiplier(trigger, "other")
-			steps_left += extra
-			return "%s：%d歩追加" % [name, extra]
-		"shock":
-			var shock_damage := _combo_damage(value) * _die_multiplier(trigger, "attack")
-			var landed := _strike(str(tile.get("target", "all")), shock_damage)
-			var shock_shield := 2 * _die_multiplier(trigger, "shield")
-			_gain_shield(shock_shield)
-			if landed:
-				return "%s：%dダメージ、盾+%d" % [name, shock_damage, shock_shield]
-			return "%s：盾+%d" % [name, shock_shield]
-		"draw":
-			_draw_to_hand()
-			_refresh_hand()
-			return "%s：ダイスを1枚補充" % name
+			if amount <= 0:
+				return ""
+			_heal(amount)
+			return "%s：HP+%d" % [label, amount]
+		"self_damage":
+			if amount <= 0:
+				return ""
+			player_hp -= amount
+			_spawn_floating_text(player_pos, "-%d" % amount, Color("#FF6A4D"))
+			sfx.emit("hurt")
+			_refresh_top()
+			return "%s：HP-%d" % [label, amount]
 		"combo":
-			var gained := value * _die_multiplier(trigger, "other")
-			combo += gained
-			_spawn_floating_text(player_pos, "コンボ+%d" % gained, COL_GOLD)
-			return "%s：コンボ+%d（今 %d）" % [name, gained, combo]
+			if amount <= 0:
+				return ""
+			combo += amount
+			_spawn_floating_text(player_pos, "コンボ+%d" % amount, COL_GOLD)
+			return "%s：コンボ+%d（今%d）" % [label, amount, combo]
+		"charge":
+			if amount <= 0:
+				return ""
+			charge += amount
+			_spawn_floating_text(player_pos, "チャージ+%d" % amount, Color("#A87CE0"))
+			return "%s：チャージ+%d（今%d）" % [label, amount, charge]
+		"spend_charge":
+			if charge <= 0:
+				return ""
+			var spent := charge
+			charge = 0
+			return "%s：チャージ%dを消費" % [label, spent]
+		"poison":
+			if amount <= 0:
+				return ""
+			var target := _living_enemy()
+			if target.is_empty():
+				return ""
+			target["poison"] = int(target.get("poison", 0)) + amount
+			_spawn_enemy_popup("毒+%d" % amount, Color("#C6E86B"))
+			_refresh_enemy()
+			return "%s：毒+%d（今%d）" % [label, amount, int(target["poison"])]
+		"step":
+			if amount <= 0:
+				return ""
+			steps_left += amount
+			return "%s：%d歩追加" % [label, amount]
+		"draw":
+			if amount <= 0:
+				return ""
+			for i in range(amount):
+				hand_limit += 1
+			_draw_to_hand()
+			for i in range(amount):
+				hand_limit -= 1
+			_refresh_hand()
+			return "%s：ダイスを%d枚補充" % [label, amount]
+		"reroll":
+			if amount <= 0:
+				return ""
+			rerolls_left += amount
+			return "%s：振り直し+%d" % [label, amount]
+		"action":
+			if amount <= 0:
+				return ""
+			actions_left += amount
+			return "%s：行動+%d" % [label, amount]
 	return ""
 
-func _strike(target: String, amount: int) -> bool:
-	match target:
-		"highest":
-			return _strike_highest(amount)
-		"all":
-			return _strike_all(amount)
-	return _strike_lowest(amount)
-
-func _combo_damage(base: int) -> int:
-	return base + combo
-
-func _lowest_hp_enemy() -> Dictionary:
-	var best := {}
-	var best_hp := 2147483647
-	for enemy in enemies:
-		var hp := int(enemy["hp"])
-		if hp > 0 and hp < best_hp:
-			best = enemy
-			best_hp = hp
-	return best
-
-func _highest_hp_enemy() -> Dictionary:
-	var best := {}
-	var best_hp := -1
-	for enemy in enemies:
-		var hp := int(enemy["hp"])
-		if hp > 0 and hp > best_hp:
-			best = enemy
-			best_hp = hp
-	return best
-
-func _strike_lowest(amount: int) -> bool:
-	var target := _lowest_hp_enemy()
-	if target.is_empty():
-		return false
-	_damage_enemy(target, amount)
-	return true
-
-func _strike_highest(amount: int) -> bool:
-	var target := _highest_hp_enemy()
-	if target.is_empty():
-		return false
-	_damage_enemy(target, amount)
-	return true
-
-func _strike_all(amount: int) -> bool:
-	var hit_any := false
+func _living_enemy() -> Dictionary:
 	for enemy in enemies:
 		if int(enemy["hp"]) > 0:
-			_damage_enemy(enemy, amount)
-			hit_any = true
-	return hit_any
+			return enemy
+	return {}
+
+func _enemy_poison() -> int:
+	var target := _living_enemy()
+	return 0 if target.is_empty() else int(target.get("poison", 0))
+
+func _strike_enemy(amount: int) -> bool:
+	var target := _living_enemy()
+	if target.is_empty():
+		return false
+	_damage_enemy(target, amount)
+	return true
 
 # --- state changes, each one visible the moment it happens --------------
 
@@ -3460,9 +3843,16 @@ func _gain_shield(amount: int) -> void:
 	_refresh_top()
 
 func _damage_enemy(enemy: Dictionary, amount: int) -> void:
+	# 装甲 subtracts from every individual hit, so it punishes builds that
+	# win by many small hits and barely troubles one big one.
+	amount -= int(enemy.get("armor", 0))
 	if amount <= 0:
+		_spawn_enemy_popup("装甲で防いだ", COL_TEXT_SOFT)
 		return
 	enemy["hp"] = int(enemy["hp"]) - amount
+	var thorns := int(enemy.get("thorns", 0))
+	if thorns > 0:
+		_take_damage(thorns)
 	run_damage_dealt += amount
 	_spawn_enemy_popup("-%d" % amount, Color("#FFE0CF"), amount >= 6)
 	_flash_enemy()
@@ -3514,6 +3904,27 @@ func _enemy_turn() -> void:
 	_set_banner("敵のターン")
 	await get_tree().create_timer(BEAT_PHASE).timeout
 	var messages := []
+
+	# Poison resolves before the enemy acts, so a lethal stack means the
+	# enemy never gets its swing in — that is the payoff for the毒 build.
+	for enemy in enemies:
+		var stacks := int(enemy.get("poison", 0))
+		if stacks > 0 and int(enemy["hp"]) > 0:
+			_damage_enemy(enemy, stacks)
+			enemy["poison"] = stacks - 1
+			messages.append("毒：%dダメージ（残り%d）" % [stacks, stacks - 1])
+			_set_log(messages[messages.size() - 1])
+			await get_tree().create_timer(BEAT_EFFECT).timeout
+		var regen := int(enemy.get("regen", 0))
+		if regen > 0 and int(enemy["hp"]) > 0:
+			enemy["hp"] = min(int(enemy["max_hp"]), int(enemy["hp"]) + regen)
+			_spawn_enemy_popup("+%d" % regen, COL_HP)
+			_refresh_enemy()
+	_cleanup_dead_enemies()
+	if enemies.is_empty():
+		_hide_banner()
+		_finish_encounter()
+		return
 	for enemy in enemies:
 		if int(enemy["hp"]) <= 0:
 			continue
@@ -3752,8 +4163,10 @@ func _landing_cell_for(roll: int) -> Vector2i:
 		remaining -= 1
 		var p := _pos_for_step(step)
 		var tile: Dictionary = tile_defs[str(permanent_board[p.y][p.x])]
-		if str(tile["trigger"]) == "pass" and str(tile["mode"]) == "step":
-			remaining += int(tile["value"])
+		for raw in tile.get("effects", []):
+			var eff: Dictionary = raw
+			if str(eff.get("on", "stop")) == "pass" and str(eff["op"]) == "step":
+				remaining += int(eff.get("amount", 0))
 	return _pos_for_step(step)
 
 func _steps_ahead(pos: Vector2i) -> int:
@@ -3848,7 +4261,10 @@ func _make_die(die_id: String) -> Dictionary:
 		"id": die_id,
 		"name": str(def["name"]),
 		"faces": (def["faces"] as Array).duplicate(),
-		"power": str(def["power"]),
+		"effects": (def.get("effects", []) as Array).duplicate(true),
+		"mods": (def.get("mods", []) as Array).duplicate(true),
+		"dir": int(def.get("dir", 1)),
+		"pierce": bool(def.get("pierce", false)),
 		"color": Color(def["color"]),
 		"short": str(def["short"]),
 		"roll": 0,
@@ -3856,33 +4272,6 @@ func _make_die(die_id: String) -> Dictionary:
 
 func _die_color(die: Dictionary) -> Color:
 	return Color(die.get("color", Color("#54687F")))
-
-func _active_power() -> String:
-	if selected_die.is_empty():
-		return "none"
-	return str(selected_die.get("power", "none"))
-
-# The multiplier the die currently being walked applies to one tile effect.
-# Split by trigger as well as kind so the two damage powers stay opposites:
-# 攻撃 pays off for landing exactly right, 疾走 for sweeping a lot of road.
-func _die_multiplier(trigger: String, kind: String) -> int:
-	match _active_power():
-		"attack_x2":
-			if kind == "attack" and trigger == "stop":
-				return 2
-		"pass_x2":
-			if trigger == "pass":
-				return 2
-		"shield_x2":
-			if kind == "shield":
-				return 2
-		"heal_x2":
-			if kind == "heal":
-				return 2
-	return 1
-
-func _die_combo_gain(die: Dictionary) -> int:
-	return 2 if str(die.get("power", "none")) == "combo2" else 1
 
 func _faces_text(faces: Array) -> String:
 	var sorted_faces: Array = faces.duplicate()
