@@ -4,6 +4,7 @@ const BOARD_W := 4
 const BOARD_H := 4
 const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
+const REROLLS_PER_TURN := 1
 const MAX_ENCOUNTERS := 6
 
 # Every size in this file is authored in these units, and the window's
@@ -682,6 +683,7 @@ class BoardView:
 				if lit.a > 0.0:
 					draw_line(pa, pb, lit, 12.0, true)
 					_draw_arrow(pa, pb, lit.darkened(0.25))
+		_draw_landing_marks()
 
 	# Telegraphed cells breathe, so "this one will hurt" is motion as well as
 	# a colour — the old build marked danger with a border alone.
@@ -694,6 +696,27 @@ class BoardView:
 			var p: Vector2 = main._board_cell_center(cell)
 			draw_arc(p, token * 0.5 + 5.0 + pulse * 4.0, 0.0, TAU, 28,
 				Color(1.0, 0.48, 0.09, 0.30 + pulse * 0.35), 3.0 + pulse * 2.0, true)
+
+	# One ring per die still in hand, on the cell that die would land on,
+	# in that die's own colour. This is the whole point of rolling up
+	# front: the choice of die is now a choice of square.
+	func _draw_landing_marks() -> void:
+		if main.state != "player" or not main.dice_rolled:
+			return
+		var token: float = main._board_token_size()
+		var seen := {}
+		for die in main.hand:
+			var roll := int(die.get("roll", 0))
+			if roll <= 0:
+				continue
+			var cell: Vector2i = main._landing_cell_for(roll)
+			var ring_index: int = int(seen.get(cell, 0))
+			seen[cell] = ring_index + 1
+			var p: Vector2 = main._board_cell_center(cell)
+			var radius: float = token * 0.5 + 7.0 + float(ring_index) * 6.0
+			var col: Color = main._tag_color(str(die["tag"]))
+			draw_arc(p, radius, 0.0, TAU, 30, Color("#2A2320"), 6.0, true)
+			draw_arc(p, radius, 0.0, TAU, 30, col, 4.0, true)
 
 	func _draw_player_marker() -> void:
 		if not main.player_visual_ready:
@@ -878,6 +901,8 @@ var hand_slots: Array = []
 var end_turn_button: Button
 var restart_button: Button
 var catalog_button: Button
+var reroll_button: Button
+var roll_catcher: Button
 var log_label: Label
 var banner: PanelContainer
 var banner_label: Label
@@ -944,6 +969,12 @@ var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
 var catalog_return_state := "title"
+# The hand is rolled once, up front, and the faces then stay put: the
+# player picks which of the known results to walk. Rolling at the moment a
+# die is chosen meant the stop-type tiles could never be aimed at, which
+# made half the board a lottery.
+var dice_rolled := false
+var rerolls_left := 0
 
 # Tile colors are assigned by what the effect *does to whom*: warm for
 # "this hurts the enemy", cool for "this helps me", and one sickly green
@@ -1135,6 +1166,16 @@ func _build_ui() -> void:
 	zone_log.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(zone_log)
 	_build_log_zone()
+
+	# A tap anywhere over the board and hand throws the dice. It sits above
+	# the cells, so while the hand is unrolled the whole play area is one
+	# big "roll" button, and it disappears the moment they are thrown.
+	roll_catcher = Button.new()
+	roll_catcher.flat = true
+	roll_catcher.focus_mode = Control.FOCUS_NONE
+	roll_catcher.visible = false
+	roll_catcher.pressed.connect(Callable(self, "_on_roll_area_pressed"))
+	add_child(roll_catcher)
 
 	_build_overlay()
 
@@ -1432,6 +1473,15 @@ func _build_command_zone() -> void:
 	row.add_theme_constant_override("separation", 8)
 	zone_cmd.add_child(row)
 
+	reroll_button = Button.new()
+	reroll_button.text = "振り直す"
+	reroll_button.focus_mode = Control.FOCUS_NONE
+	reroll_button.custom_minimum_size = Vector2(132, 0)
+	reroll_button.add_theme_font_size_override("font_size", FS_SMALL)
+	_style_button(reroll_button, COL_SHIELD, COL_INK)
+	reroll_button.pressed.connect(Callable(self, "_on_reroll_pressed"))
+	row.add_child(reroll_button)
+
 	end_turn_button = Button.new()
 	end_turn_button.text = "行動終了"
 	end_turn_button.focus_mode = Control.FOCUS_NONE
@@ -1452,15 +1502,10 @@ func _build_command_zone() -> void:
 	catalog_button.pressed.connect(Callable(self, "_show_catalog"))
 	row.add_child(catalog_button)
 
+	# 最初から used to sit next to 行動終了 with no confirmation, one slip
+	# away from throwing a run out. It lives in the 図鑑 sheet now.
 	restart_button = Button.new()
-	restart_button.text = "最初から"
-	restart_button.focus_mode = Control.FOCUS_NONE
-	restart_button.custom_minimum_size = Vector2(112, 0)
-	restart_button.add_theme_font_size_override("font_size", FS_SMALL)
-	_style_button(restart_button, COL_PANEL_SUNK, COL_INK)
-	restart_button.add_theme_color_override("font_color", COL_INK)
-	restart_button.pressed.connect(Callable(self, "_show_title"))
-	row.add_child(restart_button)
+	restart_button.visible = false
 
 func _build_log_zone() -> void:
 	log_label = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1572,6 +1617,13 @@ func _layout_screen() -> void:
 		y += cmd_h + gap
 		_place(zone_log, Rect2(margin, y, width, log_h))
 
+	if roll_catcher != null and zone_board != null and zone_hand != null:
+		var top: float = min(zone_board.position.y, zone_hand.position.y)
+		var bottom: float = max(zone_board.position.y + zone_board.size.y, zone_hand.position.y + zone_hand.size.y)
+		var left: float = min(zone_board.position.x, zone_hand.position.x)
+		var right: float = max(zone_board.position.x + zone_board.size.x, zone_hand.position.x + zone_hand.size.x)
+		roll_catcher.position = Vector2(left, top)
+		roll_catcher.size = Vector2(right - left, bottom - top)
 	if overlay != null:
 		overlay.size = vp
 		_layout_overlay()
@@ -1805,12 +1857,16 @@ func _refresh_enemy() -> void:
 
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
+	if roll_catcher != null:
+		roll_catcher.visible = playing and not dice_rolled and not hand.is_empty()
 	zone_cmd.visible = state != "title"
 	zone_hand.visible = state == "player" or state == "moving" or state == "enemy"
 	end_turn_button.visible = playing or state == "moving" or state == "enemy"
 	end_turn_button.disabled = not playing
-	restart_button.visible = state != "title"
 	catalog_button.visible = state != "title"
+	reroll_button.visible = playing or state == "moving" or state == "enemy"
+	reroll_button.disabled = not (playing and dice_rolled and rerolls_left > 0 and not hand.is_empty())
+	reroll_button.text = "振り直す %d" % rerolls_left
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
@@ -1958,10 +2014,10 @@ func _refresh_ribbon() -> void:
 		return
 	var interior: float = _board_spacing() * 2.0 - _board_token_size() - 12.0
 	var moving: bool = state == "moving"
-	ribbon_caption.visible = state == "player" and interior >= 96.0
+	ribbon_caption.visible = state == "player" and dice_rolled and interior >= 96.0
 	ribbon_row.visible = ribbon_caption.visible
 	roll_readout.visible = moving
-	ribbon_box.visible = state == "player" or moving
+	ribbon_box.visible = (state == "player" and dice_rolled) or moving
 
 	if moving:
 		roll_readout.visible = steps_left > 0
@@ -2060,13 +2116,14 @@ func _make_empty_slot() -> Control:
 func _make_die_card(die: Dictionary, index: int) -> Control:
 	var tag := str(die["tag"])
 	var faces: Array = die["faces"]
+	var roll := int(die.get("roll", 0))
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
-	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 6, 6))
+	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 5, 5))
 
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
-	col.add_theme_constant_override("separation", 5)
+	col.add_theme_constant_override("separation", 4)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(col)
 
@@ -2075,21 +2132,56 @@ func _make_die_card(die: Dictionary, index: int) -> Control:
 	name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(name_label)
 
-	var faces_grid := GridContainer.new()
-	faces_grid.columns = 3
-	faces_grid.add_theme_constant_override("h_separation", 3)
-	faces_grid.add_theme_constant_override("v_separation", 3)
-	faces_grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	faces_grid.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(faces_grid)
+	# The result, big. Before the hand is rolled this is a question mark:
+	# the card is a die you have not thrown yet, not a die with no value.
+	var face_holder := Control.new()
+	face_holder.custom_minimum_size = Vector2(0, 54)
+	face_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	face_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(face_holder)
+
+	var face := DiceFace.new()
+	face.name = "RolledFace"
+	face.value = max(roll, 1)
+	face.query = roll <= 0
+	face.custom_minimum_size = Vector2(54, 54)
+	face.size = Vector2(54, 54)
+	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	face_holder.add_child(face)
+	face.set_anchors_preset(Control.PRESET_CENTER)
+	face.offset_left = -27
+	face.offset_top = -27
+	face.offset_right = 27
+	face.offset_bottom = 27
+	face.pivot_offset = Vector2(27, 27)
+
+	if roll <= 0:
+		var query := _make_label(FS_NUM_BIG, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		query.text = "?"
+		query.autowrap_mode = TextServer.AUTOWRAP_OFF
+		query.set_anchors_preset(Control.PRESET_CENTER)
+		query.offset_left = -27
+		query.offset_top = -34
+		query.offset_right = 27
+		query.offset_bottom = 34
+		face_holder.add_child(query)
+
+	# The die's own range stays on the card, small, so a good result can be
+	# read against what this die is capable of.
+	var faces_row := HBoxContainer.new()
+	faces_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	faces_row.add_theme_constant_override("separation", 2)
+	faces_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(faces_row)
 	var sorted_faces: Array = faces.duplicate()
 	sorted_faces.sort()
 	for face_value in sorted_faces:
-		var face := DiceFace.new()
-		face.value = int(face_value)
-		face.custom_minimum_size = Vector2(22, 22)
-		face.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		faces_grid.add_child(face)
+		var pip := DiceFace.new()
+		pip.value = int(face_value)
+		pip.custom_minimum_size = Vector2(13, 13)
+		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pip.modulate = Color(1, 1, 1, 0.55 if int(face_value) != roll else 1.0)
+		faces_row.add_child(pip)
 
 	var tag_label := _make_label(FS_SMALL - 1, Color(1, 1, 1, 0.9), HORIZONTAL_ALIGNMENT_CENTER)
 	tag_label.text = _tag_name(tag)
@@ -2301,6 +2393,17 @@ func _show_catalog() -> void:
 			column.add_child(_make_catalog_row(tile))
 	column.add_child(_make_catalog_row(temp_defs["hazard"]))
 
+	if catalog_return_state != "title":
+		var quit_row := Button.new()
+		quit_row.text = "この挑戦をやめてタイトルへ"
+		quit_row.focus_mode = Control.FOCUS_NONE
+		quit_row.custom_minimum_size = Vector2(0, 40)
+		quit_row.add_theme_font_size_override("font_size", FS_SMALL)
+		_style_button(quit_row, COL_PANEL_SUNK, COL_INK)
+		quit_row.add_theme_color_override("font_color", COL_INK)
+		quit_row.pressed.connect(Callable(self, "_show_title"))
+		overlay_list.add_child(quit_row)
+
 	var close_button := Button.new()
 	close_button.text = "閉じる"
 	close_button.focus_mode = Control.FOCUS_NONE
@@ -2381,7 +2484,7 @@ func _show_title() -> void:
 	temp_board = _make_empty_board("none")
 	_refresh_all()
 	_set_log("")
-	_open_overlay("Dice Board Rogue", "環状のコースを出目ぶん進み、踏んだマスの効果で戦うすごろくローグライク。全6戦。")
+	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全6戦。")
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
 		var dice_names := []
@@ -2542,7 +2645,7 @@ func _start_encounter() -> void:
 	_snap_player_visual()
 	var intro := "第%d戦。ダイスを選んで進みましょう。" % encounter
 	if encounter == 1:
-		intro = "○丸は通過で、□四角は止まって効くマス。図鑑で一覧が見られます。"
+		intro = "画面をタップして手札を全部振り、出た目から1つ選んで進みます。"
 	_start_player_turn(intro)
 
 func _setup_encounter() -> void:
@@ -2623,10 +2726,15 @@ func _start_player_turn(message: String = "") -> void:
 	route_power = 0
 	route_hits = 0
 	turn_visited = {}
+	dice_rolled = false
+	rerolls_left = REROLLS_PER_TURN
 	_draw_to_hand()
+	for die in hand:
+		die["roll"] = 0
 	if message != "":
 		_set_log(message)
 	_refresh_all()
+	_set_banner("タップしてダイスを振る")
 
 func _draw_to_hand() -> void:
 	while hand.size() < HAND_LIMIT:
@@ -2636,19 +2744,97 @@ func _draw_to_hand() -> void:
 			draw_pile = discard_pile.duplicate(true)
 			discard_pile = []
 			draw_pile.shuffle()
-		hand.append(draw_pile.pop_back())
+		var drawn: Dictionary = draw_pile.pop_back()
+		drawn["roll"] = _random_face(drawn) if dice_rolled else 0
+		hand.append(drawn)
 
 # --- player turn -------------------------------------------------------
+
+func _random_face(die: Dictionary) -> int:
+	var faces: Array = die["faces"]
+	return int(faces[rng.randi_range(0, faces.size() - 1)])
+
+# Rolls the whole hand at once. The first roll of a turn is free; after
+# that it costs the turn's single reroll, and a reroll re-rolls everything
+# still in hand rather than letting the player fish with one die.
+func _roll_hand(is_reroll: bool) -> void:
+	if state != "player" or hand.is_empty():
+		return
+	if is_reroll:
+		if rerolls_left <= 0:
+			return
+		rerolls_left -= 1
+	dice_rolled = true
+	_hide_banner()
+	sfx.emit("roll")
+	for die in hand:
+		die["roll"] = _random_face(die)
+	_refresh_hand()
+	_refresh_board()
+	_refresh_command()
+	await _animate_hand_roll()
+	_refresh_all()
+
+# Every die tumbles at once but settles in turn, so three results land as
+# three separate beats instead of one indistinguishable flicker.
+func _animate_hand_roll() -> void:
+	var faces_by_slot := []
+	for i in range(hand_slots.size()):
+		faces_by_slot.append(_slot_face(i))
+	var frames := 7
+	for step in range(frames):
+		for i in range(faces_by_slot.size()):
+			var face: DiceFace = faces_by_slot[i]
+			if face == null:
+				continue
+			# Later slots keep tumbling for a few extra frames.
+			if step >= frames - 2 + i - 1 and i < hand.size():
+				face.value = int(hand[i]["roll"])
+			elif i < hand.size():
+				face.value = _random_face(hand[i])
+			face.rotation = deg_to_rad(rng.randf_range(-16.0, 16.0)) * (1.0 - float(step) / float(frames))
+			face.queue_redraw()
+		await get_tree().create_timer(0.05).timeout
+	for i in range(faces_by_slot.size()):
+		var settled: DiceFace = faces_by_slot[i]
+		if settled == null or i >= hand.size():
+			continue
+		settled.value = int(hand[i]["roll"])
+		settled.rotation = 0.0
+		settled.queue_redraw()
+		_punch(settled, 1.25)
+		sfx.emit("step")
+		await get_tree().create_timer(0.07).timeout
+
+func _slot_face(index: int) -> DiceFace:
+	if index >= hand_slots.size():
+		return null
+	var slot: Control = hand_slots[index]
+	if slot.get_child_count() == 0:
+		return null
+	return slot.get_child(0).find_child("RolledFace", true, false) as DiceFace
+
+func _on_roll_area_pressed() -> void:
+	if state == "player" and not dice_rolled:
+		await _roll_hand(false)
+
+func _on_reroll_pressed() -> void:
+	if state == "player" and dice_rolled and rerolls_left > 0:
+		await _roll_hand(true)
 
 func _on_die_pressed(index: int) -> void:
 	if state != "player" or index < 0 or index >= hand.size() or actions_left <= 0:
 		return
+	if not dice_rolled:
+		await _roll_hand(false)
+		return
 	var die: Dictionary = hand[index]
-	var faces: Array = die["faces"]
-	var final_roll := int(faces[rng.randi_range(0, faces.size() - 1)])
+	var final_roll := int(die.get("roll", 0))
+	if final_roll <= 0:
+		return
 
-	# Lock the state before the first await so a second tap during the roll
-	# animation cannot spend a second die.
+	# Lock the state before the first await so a second tap during the move
+	# cannot spend a second die.
 	state = "moving"
 	selected_die = die.duplicate(true)
 	selected_roll = final_roll
@@ -2659,27 +2845,11 @@ func _on_die_pressed(index: int) -> void:
 	route_path = [player_pos]
 	discard_pile.append(selected_die)
 	hand.remove_at(index)
-	sfx.emit("roll")
-	_refresh_all()
-	await _animate_roll(faces, final_roll)
+	sfx.emit("hit")
 	_set_log("%s：出目 %d" % [str(selected_die["name"]), final_roll])
+	_refresh_all()
+	await get_tree().create_timer(0.2).timeout
 	await _advance_player()
-
-# The roll lands in the middle of the ring, where the route is, instead of
-# on the card in the corner of the screen.
-func _animate_roll(faces: Array, final_value: int) -> void:
-	if roll_readout == null:
-		return
-	roll_readout.visible = true
-	var delays := [0.04, 0.045, 0.05, 0.06, 0.08, 0.1]
-	for i in range(delays.size()):
-		roll_readout.text = str(faces[rng.randi_range(0, faces.size() - 1)])
-		_layout_ribbon()
-		await get_tree().create_timer(delays[i]).timeout
-	roll_readout.text = str(final_value)
-	_layout_ribbon()
-	_punch(roll_readout, 1.45)
-	await get_tree().create_timer(0.5).timeout
 
 func _advance_player() -> void:
 	while steps_left > 0:
@@ -3136,6 +3306,22 @@ func _pos_for_step(step: int) -> Vector2i:
 
 func _track_index(pos: Vector2i) -> int:
 	return int(ring_index_map.get(pos, 0))
+
+# Where a roll of this size actually finishes, following 跳躍路 the same
+# way the move itself will.
+func _landing_cell_for(roll: int) -> Vector2i:
+	var step := player_step
+	var remaining := roll
+	var guard := 0
+	while remaining > 0 and guard < 32:
+		guard += 1
+		step = _normalize_step(step + 1)
+		remaining -= 1
+		var p := _pos_for_step(step)
+		var tile: Dictionary = tile_defs[str(permanent_board[p.y][p.x])]
+		if str(tile["trigger"]) == "pass" and str(tile["mode"]) == "step":
+			remaining += int(tile["value"])
+	return _pos_for_step(step)
 
 func _steps_ahead(pos: Vector2i) -> int:
 	var idx := preview_path.find(pos)
