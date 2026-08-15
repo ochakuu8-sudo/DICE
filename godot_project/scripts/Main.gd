@@ -2,9 +2,12 @@ extends Control
 
 const BOARD_W := 4
 const BOARD_H := 4
-const HAND_LIMIT := 3
 const ACTIONS_PER_TURN := 2
 const REROLLS_PER_TURN := 1
+# How many squares an enemy can keep fouled at once. Uncapped, a long
+# fight ended with most of the ring poisoned and the player's own board
+# invisible underneath it.
+const MAX_DEBUFFS := 4
 const MAX_ENCOUNTERS := 6
 
 # Every size in this file is authored in these units, and the window's
@@ -657,6 +660,7 @@ class BoardView:
 		if main == null or main.ring_cells.is_empty():
 			return
 		if layer == "token":
+			_draw_debuff_rings()
 			_draw_danger_pulse()
 			_draw_player_marker()
 			return
@@ -717,6 +721,16 @@ class BoardView:
 			var col: Color = main._tag_color(str(die["tag"]))
 			draw_arc(p, radius, 0.0, TAU, 30, Color("#2A2320"), 6.0, true)
 			draw_arc(p, radius, 0.0, TAU, 30, col, 4.0, true)
+
+	# A ring right on the rim of a fouled cell: visible at a glance without
+	# covering the tile's own icon or number.
+	func _draw_debuff_rings() -> void:
+		var token: float = main._board_token_size()
+		for cell in main.ring_cells:
+			if str(main.temp_board[cell.y][cell.x]) != "hazard":
+				continue
+			var p: Vector2 = main._board_cell_center(cell)
+			draw_arc(p, token * 0.5 - 3.0, 0.0, TAU, 30, Color("#D9F27A"), 3.0, true)
 
 	func _draw_player_marker() -> void:
 		if not main.player_visual_ready:
@@ -895,7 +909,7 @@ var ribbon_row: HBoxContainer
 var ribbon_caption: Label
 var roll_readout: Label
 
-var hand_row: HBoxContainer
+var hand_row: GridContainer
 var hand_slots: Array = []
 
 var end_turn_button: Button
@@ -921,6 +935,7 @@ var cell_icons: Array = []
 var cell_step_labels: Array = []
 var cell_value_labels: Array = []
 var cell_danger_labels: Array = []
+var cell_debuff_labels: Array = []
 
 # --- state -------------------------------------------------------------
 var state := "title"
@@ -973,6 +988,8 @@ var catalog_return_state := "title"
 # player picks which of the known results to walk. Rolling at the moment a
 # die is chosen meant the stop-type tiles could never be aimed at, which
 # made half the board a lottery.
+var hand_limit := 3
+var last_cleanse_count := 0
 var dice_rolled := false
 var rerolls_left := 0
 
@@ -1022,10 +1039,17 @@ var tile_defs := {
 		"detail": "手札を1枚補充し、このターンの攻撃を+2する。次の一投を強くする踏み台。"}
 }
 
+# Enemies do not build their own squares — they foul yours. A debuff sits
+# on top of whatever tile is already there: the tile keeps its colour, its
+# icon and its effect, and picks up a cost for walking over it. Killing the
+# enemy that cast them clears the board.
 var temp_defs := {
 	"none": {"short": "", "color": Color("#00000000"), "desc": ""},
-	"hazard": {"short": "毒", "color": Color("#9BC53D"), "desc": "毒沼: 通過するとHP-2"},
-	"block": {"short": "壁", "color": Color("#4A4038"), "desc": "通れない"}
+	"hazard": {"name": "毒", "icon": "poison", "color": Color("#9BC53D"), "value": 2,
+		"trigger": "pass", "effect": "通過するとHP-2",
+		"desc": "毒: 通過するとHP-2。敵がマスにかける。倒せば消える",
+		"detail": "敵がマスにかけるデバフ。マス自体の効果はそのまま残り、通るたびにHPを2失う。かけた敵を倒すと盤面から全て消える。"},
+	"block": {"name": "壁", "color": Color("#4A4038"), "desc": "通れない"}
 }
 
 var reward_pool := [
@@ -1038,6 +1062,7 @@ var hero_defs := {
 	"knight": {
 		"name": "剣士",
 		"hp": 36,
+		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "斬撃路と防御路の盤面。硬く、着実に削る。",
 		"dice": [
@@ -1055,6 +1080,7 @@ var hero_defs := {
 	"mage": {
 		"name": "魔導士",
 		"hp": 28,
+		"hand": 3,
 		"color": Color("#7C4DD6"),
 		"desc": "火走りの盤面。小さな傷を重ねて焼き削る。",
 		"dice": [
@@ -1072,13 +1098,15 @@ var hero_defs := {
 	"rogue": {
 		"name": "盗賊",
 		"hp": 31,
+		"hand": 4,
 		"color": Color("#5B8C2A"),
-		"desc": "小さい出目で刻む。罠や射撃台を仕込んで育てる。",
+		"desc": "手札が4枚。小さい出目を並べて、止まる場所を選び抜く。",
 		"dice": [
 			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
 			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"},
 			{"name": "幸運ダイス", "faces": [1, 2, 2, 4, 4, 6], "tag": "lucky"},
-			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"}
+			{"name": "軽業ダイス", "faces": [1, 1, 2, 2, 3, 4], "tag": "swift"},
+			{"name": "仕掛けダイス", "faces": [1, 2, 3, 3, 5, 6], "tag": "trick"}
 		],
 		"tiles": [
 			[0, 0, "slash"], [1, 0, "guard"], [2, 0, "bow"],
@@ -1406,6 +1434,17 @@ func _build_board_zone() -> void:
 		cell.add_child(danger_label)
 		cell_danger_labels.append(danger_label)
 
+		var debuff_label := _make_label(FS_SMALL - 1, Color("#D9F27A"), HORIZONTAL_ALIGNMENT_CENTER, true)
+		debuff_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		debuff_label.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		debuff_label.offset_left = -6
+		debuff_label.offset_top = -4
+		debuff_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		debuff_label.add_theme_constant_override("outline_size", 5)
+		debuff_label.add_theme_color_override("font_outline_color", COL_INK)
+		cell.add_child(debuff_label)
+		cell_debuff_labels.append(debuff_label)
+
 	# The ring's middle is the one piece of free space on the board, so the
 	# lookahead lives there — right next to the road it describes, instead
 	# of floating above the board as an unlabelled row of chips.
@@ -1450,22 +1489,20 @@ func _build_board_zone() -> void:
 	banner.add_child(banner_label)
 
 func _build_hand_zone() -> void:
-	hand_row = HBoxContainer.new()
+	# A grid, not a fixed row of three: the hand size is a property of the
+	# run, so the slots are built to match it and the cards size themselves
+	# to whatever width that leaves.
+	hand_row = GridContainer.new()
 	hand_row.set_anchors_preset(Control.PRESET_FULL_RECT)
-	hand_row.add_theme_constant_override("separation", 8)
+	hand_row.add_theme_constant_override("h_separation", 7)
+	hand_row.add_theme_constant_override("v_separation", 7)
 	hand_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	zone_hand.add_child(hand_row)
 
 	# Three permanent slots. The old build re-centred a shrinking row, so
 	# spending a die slid the remaining cards sideways under the player's
 	# thumb; an empty slot holds its place instead.
-	for i in range(HAND_LIMIT):
-		var slot := Control.new()
-		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slot.size_flags_vertical = Control.SIZE_FILL
-		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		hand_row.add_child(slot)
-		hand_slots.append(slot)
+	_ensure_hand_slots()
 
 func _build_command_zone() -> void:
 	var row := HBoxContainer.new()
@@ -1881,6 +1918,7 @@ func _refresh_board() -> void:
 			var step_label: Label = cell_step_labels[idx]
 			var value_label: Label = cell_value_labels[idx]
 			var danger_label: Label = cell_danger_labels[idx]
+			var debuff_label: Label = cell_debuff_labels[idx]
 			var pos := Vector2i(x, y)
 
 			if not ring_index_map.has(pos):
@@ -1904,12 +1942,7 @@ func _refresh_board() -> void:
 					value_text = "+%d" % int(tile["value"])
 				"draw":
 					value_text = "引"
-			if temp_type == "hazard":
-				color = temp_defs["hazard"]["color"]
-				icon_kind = "poison"
-				value_text = "-2"
-				value_color = Color("#3A2B00")
-			elif temp_type == "block":
+			if temp_type == "block":
 				color = temp_defs["block"]["color"]
 				icon_kind = ""
 				value_text = ""
@@ -1963,7 +1996,14 @@ func _refresh_board() -> void:
 			value_label.text = value_text
 			value_label.add_theme_color_override("font_color", value_color)
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
-			var squared: bool = str(tile["trigger"]) == "stop" and temp_type != "hazard"
+			# A fouled tile darkens and takes a mark, but keeps its own
+			# shape and icon: the board a player built stays legible under
+			# whatever the enemy throws at it.
+			debuff_label.text = ""
+			if temp_type == "hazard":
+				color = color.lerp(Color("#6F7A2A"), 0.32)
+				debuff_label.text = "毒"
+			var squared: bool = str(tile["trigger"]) == "stop"
 			_apply_cell_style(button, color, border_color, border_width, dim, squared)
 	_refresh_ribbon()
 	board_view.queue_redraw()
@@ -2041,8 +2081,7 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	var color: Color = tile["color"]
 	var kind: String = str(tile["icon"])
 	if temp_type == "hazard":
-		color = temp_defs["hazard"]["color"]
-		kind = "poison"
+		color = color.lerp(Color("#6F7A2A"), 0.42)
 
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 1)
@@ -2052,7 +2091,7 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	box.custom_minimum_size = Vector2(chip, chip)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := _flat_style(color, COL_INK, 2, 0, 0)
-	var round_chip: bool = temp_type == "hazard" or str(tile["trigger"]) == "pass"
+	var round_chip: bool = str(tile["trigger"]) == "pass"
 	var chip_radius: int = int(chip * 0.5) if round_chip else 3
 	style.corner_radius_top_left = chip_radius
 	style.corner_radius_top_right = chip_radius
@@ -2087,25 +2126,50 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 
 # --- hand --------------------------------------------------------------
 
-func _refresh_hand() -> void:
-	if hand_slots.is_empty():
+func _hand_columns() -> int:
+	if hand_limit <= 5:
+		return max(hand_limit, 1)
+	return int(ceil(float(hand_limit) / 2.0))
+
+func _ensure_hand_slots() -> void:
+	var columns := _hand_columns()
+	hand_row.columns = columns
+	if hand_slots.size() == hand_limit:
 		return
+	_clear_children(hand_row)
+	hand_slots = []
+	for i in range(hand_limit):
+		var slot := Control.new()
+		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hand_row.add_child(slot)
+		hand_slots.append(slot)
+
+func _refresh_hand() -> void:
+	if hand_row == null:
+		return
+	_ensure_hand_slots()
+	var columns := _hand_columns()
+	var rows: int = int(ceil(float(hand_limit) / float(columns)))
+	var slot_w: float = (zone_hand.size.x - 7.0 * float(columns - 1)) / float(max(columns, 1))
+	var slot_h: float = (zone_hand.size.y - 7.0 * float(rows - 1)) / float(max(rows, 1))
 	for i in range(hand_slots.size()):
 		var slot: Control = hand_slots[i]
 		_clear_children(slot)
 		if i < hand.size():
-			slot.add_child(_make_die_card(hand[i], i))
+			slot.add_child(_make_die_card(hand[i], i, slot_w, slot_h))
 		else:
-			slot.add_child(_make_empty_slot())
+			slot.add_child(_make_empty_slot(slot_w))
 
-func _make_empty_slot() -> Control:
+func _make_empty_slot(slot_w: float = 120.0) -> Control:
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	var style := _flat_style(Color(0.85, 0.78, 0.63, 0.35), Color(COL_INK.r, COL_INK.g, COL_INK.b, 0.30), 2, 6, 6)
 	panel.add_theme_stylebox_override("panel", style)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var label := _make_label(FS_SMALL, Color(COL_TEXT_SOFT.r, COL_TEXT_SOFT.g, COL_TEXT_SOFT.b, 0.7), HORIZONTAL_ALIGNMENT_CENTER)
-	label.text = "使用済み"
+	label.text = "使用済み" if slot_w >= 86.0 else "済"
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	panel.add_child(label)
 	return panel
@@ -2113,13 +2177,16 @@ func _make_empty_slot() -> Control:
 # A die card built out of real containers, with the whole face of the card
 # as one hit target. The six faces are drawn as pips instead of printed as
 # "1/2/3/4/5/6", so a loaded die looks loaded at a glance.
-func _make_die_card(die: Dictionary, index: int) -> Control:
+func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: float = 140.0) -> Control:
 	var tag := str(die["tag"])
 	var faces: Array = die["faces"]
 	var roll := int(die.get("roll", 0))
+	var tight: bool = slot_w < 92.0
+	var face_size: float = clamp(min(slot_w * 0.56, slot_h * 0.40), 26.0, 54.0)
+	var pip_size: float = clamp((slot_w - 14.0) / float(max(faces.size(), 1)) - 2.0, 6.0, 13.0)
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
-	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 5, 5))
+	panel.add_theme_stylebox_override("panel", _flat_style(_tag_color(tag), COL_INK, 3, 4 if tight else 5, 5))
 
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -2127,15 +2194,16 @@ func _make_die_card(die: Dictionary, index: int) -> Control:
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(col)
 
-	var name_label := _make_label(FS_SMALL, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	var name_label := _make_label(FS_SMALL - (2 if tight else 0), COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
 	name_label.text = str(die["name"]).replace("ダイス", "")
 	name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	name_label.clip_text = true
 	col.add_child(name_label)
 
 	# The result, big. Before the hand is rolled this is a question mark:
 	# the card is a die you have not thrown yet, not a die with no value.
 	var face_holder := Control.new()
-	face_holder.custom_minimum_size = Vector2(0, 54)
+	face_holder.custom_minimum_size = Vector2(0, face_size)
 	face_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	face_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(face_holder)
@@ -2144,26 +2212,27 @@ func _make_die_card(die: Dictionary, index: int) -> Control:
 	face.name = "RolledFace"
 	face.value = max(roll, 1)
 	face.query = roll <= 0
-	face.custom_minimum_size = Vector2(54, 54)
-	face.size = Vector2(54, 54)
+	var half: float = face_size * 0.5
+	face.custom_minimum_size = Vector2(face_size, face_size)
+	face.size = Vector2(face_size, face_size)
 	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	face_holder.add_child(face)
 	face.set_anchors_preset(Control.PRESET_CENTER)
-	face.offset_left = -27
-	face.offset_top = -27
-	face.offset_right = 27
-	face.offset_bottom = 27
-	face.pivot_offset = Vector2(27, 27)
+	face.offset_left = -half
+	face.offset_top = -half
+	face.offset_right = half
+	face.offset_bottom = half
+	face.pivot_offset = Vector2(half, half)
 
 	if roll <= 0:
-		var query := _make_label(FS_NUM_BIG, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		var query := _make_label(int(face_size * 0.72), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
 		query.text = "?"
 		query.autowrap_mode = TextServer.AUTOWRAP_OFF
 		query.set_anchors_preset(Control.PRESET_CENTER)
-		query.offset_left = -27
-		query.offset_top = -34
-		query.offset_right = 27
-		query.offset_bottom = 34
+		query.offset_left = -half
+		query.offset_top = -half - 7.0
+		query.offset_right = half
+		query.offset_bottom = half + 7.0
 		face_holder.add_child(query)
 
 	# The die's own range stays on the card, small, so a good result can be
@@ -2178,14 +2247,18 @@ func _make_die_card(die: Dictionary, index: int) -> Control:
 	for face_value in sorted_faces:
 		var pip := DiceFace.new()
 		pip.value = int(face_value)
-		pip.custom_minimum_size = Vector2(13, 13)
+		pip.custom_minimum_size = Vector2(pip_size, pip_size)
 		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		pip.modulate = Color(1, 1, 1, 0.55 if int(face_value) != roll else 1.0)
 		faces_row.add_child(pip)
 
-	var tag_label := _make_label(FS_SMALL - 1, Color(1, 1, 1, 0.9), HORIZONTAL_ALIGNMENT_CENTER)
-	tag_label.text = _tag_name(tag)
-	col.add_child(tag_label)
+	# The trait line is the first thing to go when the cards get narrow —
+	# the result and the range are what a choice is actually made on.
+	if not tight:
+		var tag_label := _make_label(FS_SMALL - 1, Color(1, 1, 1, 0.9), HORIZONTAL_ALIGNMENT_CENTER)
+		tag_label.text = _tag_name(tag)
+		tag_label.clip_text = true
+		col.add_child(tag_label)
 
 	var hit := Button.new()
 	hit.flat = true
@@ -2391,6 +2464,10 @@ func _show_catalog() -> void:
 			if str(tile["trigger"]) != trigger:
 				continue
 			column.add_child(_make_catalog_row(tile))
+	var debuff_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	debuff_heading.text = "◇ 敵のデバフ — マスに重ねてかけられる"
+	debuff_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
+	column.add_child(debuff_heading)
 	column.add_child(_make_catalog_row(temp_defs["hazard"]))
 
 	if catalog_return_state != "title":
@@ -2433,6 +2510,8 @@ func _make_catalog_row(tile: Dictionary) -> Control:
 	swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := _flat_style(Color(tile["color"]), COL_INK, 3, 0, 0)
 	var radius: int = 19 if str(tile.get("trigger", "pass")) == "pass" else 5
+	if not tile.has("detail"):
+		radius = 19
 	style.corner_radius_top_left = radius
 	style.corner_radius_top_right = radius
 	style.corner_radius_bottom_left = radius
@@ -2491,7 +2570,7 @@ func _show_title() -> void:
 		for die in hero["dice"]:
 			dice_names.append(str(die["name"]).replace("ダイス", ""))
 		_add_overlay_option(
-			"%s   HP %d" % [str(hero["name"]), int(hero["hp"])],
+			"%s   HP %d   手札%d" % [str(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3))],
 			"%s\nダイス: %s" % [str(hero["desc"]), "・".join(dice_names)],
 			Color(hero["color"]),
 			"slash" if key == "knight" else ("fire" if key == "mage" else "trap"),
@@ -2605,6 +2684,7 @@ func _start_run(key: String) -> void:
 	hero_name = str(hero["name"])
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(hero["hp"])
+	hand_limit = int(hero.get("hand", 3))
 	player_hp = player_max_hp
 	player_shield = 0
 	next_enemy_uid = 0
@@ -2675,7 +2755,7 @@ func _setup_encounter() -> void:
 				offsets = [2, 4, 5]
 		enemies.append(_make_enemy(type_name, hp, damage, attack_kind, offsets))
 
-	for n in range(min(encounter, 4)):
+	for n in range(clamp(encounter - 1, 0, MAX_DEBUFFS - 1)):
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
@@ -2737,7 +2817,7 @@ func _start_player_turn(message: String = "") -> void:
 	_set_banner("タップしてダイスを振る")
 
 func _draw_to_hand() -> void:
-	while hand.size() < HAND_LIMIT:
+	while hand.size() < hand_limit:
 		if draw_pile.is_empty():
 			if discard_pile.is_empty():
 				break
@@ -2898,7 +2978,7 @@ func _advance_player() -> void:
 func _finish_encounter() -> void:
 	_cleanup_dead_enemies()
 	_hide_banner()
-	_set_log("敵を倒した。")
+	_set_log("敵を倒した。マスの毒も消えた。" if last_cleanse_count > 0 else "敵を倒した。")
 	# Long enough to watch the enemy actually die before the reward card
 	# covers the board.
 	await get_tree().create_timer(1.2).timeout
@@ -2908,7 +2988,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	var messages := []
 	if str(temp_board[pos.y][pos.x]) == "hazard":
 		_take_damage(2)
-		messages.append("毒沼を踏んだ。HP-2")
+		messages.append("毒のマス：HP-2")
 	var tile_type: String = str(permanent_board[pos.y][pos.x])
 	if str(tile_defs[tile_type]["trigger"]) == "pass":
 		var effect := _apply_tile_effect(tile_type)
@@ -3082,6 +3162,21 @@ func _cleanup_dead_enemies() -> void:
 		_spawn_burst_at_enemy()
 		sfx.emit("kill")
 	enemies = survivors
+	if any_died and enemies.is_empty():
+		_clear_debuffs()
+
+# Every debuff on the board belongs to the enemy that cast it, so the
+# board is cleansed the moment the last one dies.
+func _clear_debuffs() -> void:
+	last_cleanse_count = 0
+	for cell in ring_cells:
+		if str(temp_board[cell.y][cell.x]) != "none":
+			temp_board[cell.y][cell.x] = "none"
+			last_cleanse_count += 1
+			_spawn_floating_text(cell, "浄", COL_HP)
+	if last_cleanse_count > 0:
+		sfx.emit("shield")
+		_refresh_board()
 
 func _any_enemy_alive() -> bool:
 	for enemy in enemies:
@@ -3122,12 +3217,12 @@ func _enemy_turn() -> void:
 		_set_log(messages[messages.size() - 1])
 		await get_tree().create_timer(BEAT_PHASE).timeout
 
-	if encounter >= 3 and not enemies.is_empty() and rng.randi_range(0, 100) < 45:
+	if encounter >= 3 and not enemies.is_empty() and _debuff_count() < MAX_DEBUFFS and rng.randi_range(0, 100) < 45:
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
-			messages.append("毒沼が広がった")
-			_set_log("毒沼が広がった")
+			messages.append("マスに毒がかけられた")
+			_set_log("マスに毒がかけられた")
 			_refresh_board()
 			_spawn_floating_text(p, "毒", Color("#5B7A0F"))
 			sfx.emit("hurt")
@@ -3225,7 +3320,7 @@ func _show_cell_info(pos: Vector2i) -> void:
 	parts.append("%s %s" % [str(tile["name"]), _trigger_label(str(tile["trigger"]))])
 	parts.append(str(tile["effect"]))
 	if temp_type == "hazard":
-		parts.append(str(temp_defs["hazard"]["desc"]))
+		parts.append("毒がかかっている（通過でHP-2）")
 	if danger_cells.has(pos):
 		parts.append("敵の攻撃予告あり")
 	if log_label != null:
@@ -3370,6 +3465,13 @@ func _telegraphed_cells() -> Dictionary:
 		for c in enemy.get("telegraph_cells", []):
 			cells[c] = true
 	return cells
+
+func _debuff_count() -> int:
+	var total := 0
+	for cell in ring_cells:
+		if str(temp_board[cell.y][cell.x]) != "none":
+			total += 1
+	return total
 
 func _random_empty_cell() -> Vector2i:
 	var choices := []
