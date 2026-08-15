@@ -976,7 +976,6 @@ var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
 var ring_forward: Dictionary = {}
 var preview_path: Array[Vector2i] = []
-var turn_visited: Dictionary = {}
 
 var permanent_board: Array = []
 var temp_board: Array = []
@@ -1954,11 +1953,11 @@ func _refresh_enemy() -> void:
 	_animate_gauge(enemy_hp_bar)
 	enemy_hp_label.text = "%d/%d" % [max(int(enemy["hp"]), 0), int(enemy["max_hp"])]
 
-	var guaranteed: bool = str(enemy.get("attack_kind", "positional")) == "guaranteed"
+	var guaranteed: bool = str(enemy.get("attack_kind", "cell")) == "guaranteed"
 	intent_icon.set_kind("slash" if guaranteed else "focus")
 	intent_label.text = str(int(enemy["damage"]))
 	intent_panel.add_theme_stylebox_override("panel", _flat_style(COL_ENEMY if guaranteed else COL_DANGER, COL_INK, 3, 8, 3))
-	intent_note.text = "毎ターン必ず当たる" if guaranteed else "光ったマスを通ると当たる"
+	intent_note.text = "毎ターン必ず当たる" if guaranteed else "行動を終えた時に光ったマスにいると当たる"
 
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
@@ -2873,32 +2872,50 @@ func _start_encounter() -> void:
 		intro = "画面をタップして手札を全部振り、出た目から1つ選んで進みます。"
 	_start_player_turn(intro)
 
+# Every non-boss enemy in the game is one of exactly two attack kinds:
+# "cell" (マス指定攻撃) telegraphs specific squares and only lands on
+# whichever square the player is standing on once their turn is over, and
+# "guaranteed" (必中攻撃) always lands regardless of position. A "cell"
+# enemy's squares come from one of two patterns — "relative", which reads
+# off the player's own step count and re-paints itself every turn, or
+# "fixed", a set of squares on the physical board that never moves. The
+# two patterns are what give same-kind enemies a different feel: a
+# relative enemy is punishing a distance, a fixed one is punishing a place.
 func _setup_encounter() -> void:
 	if encounter == MAX_ENCOUNTERS:
-		enemies.append(_make_enemy("ボス", 58, 10, "guaranteed", []))
+		enemies.append(_make_enemy("ボス", 58, 10, "guaranteed", "relative", []))
 	else:
 		var type_name := "はぐれ兵"
 		var hp := 12 + encounter * 8
 		var damage := 4 + encounter
-		var attack_kind := "positional"
-		var offsets: Array = [2]
+		var attack_kind := "cell"
+		var telegraph_mode := "relative"
+		var cell_spec: Array = [2]
 		match encounter:
 			1:
-				offsets = [2]
+				# One square, a fixed distance ahead: the simplest possible
+				# read, to teach the rule before complicating it.
+				cell_spec = [2]
 			2:
 				type_name = "斥候"
-				offsets = [2, 4]
+				cell_spec = [2, 5]
 			3:
 				type_name = "射手"
 				attack_kind = "guaranteed"
-				offsets = []
+				cell_spec = []
 			4:
 				type_name = "重装"
-				offsets = [1, 3, 5]
+				# 重装 does not care where the player currently stands — it
+				# has already staked out three squares of the board itself,
+				# so the danger this fight is about place, not distance.
+				telegraph_mode = "fixed"
+				cell_spec = [2, 6, 10]
 			_:
 				type_name = "隊長"
-				offsets = [2, 4, 5]
-		enemies.append(_make_enemy(type_name, hp, damage, attack_kind, offsets))
+				# A four-square band instead of scattered points: the safe
+				# landings this fight are "barely move" or "commit past it".
+				cell_spec = [2, 3, 4, 5]
+		enemies.append(_make_enemy(type_name, hp, damage, attack_kind, telegraph_mode, cell_spec))
 
 	for n in range(clamp(encounter - 1, 0, MAX_DEBUFFS - 1)):
 		var p := _random_empty_cell()
@@ -2908,7 +2925,7 @@ func _setup_encounter() -> void:
 	for enemy in enemies:
 		_generate_telegraph(enemy)
 
-func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, offsets: Array) -> Dictionary:
+func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, telegraph_mode: String, cell_spec: Array) -> Dictionary:
 	next_enemy_uid += 1
 	return {
 		"type": type_name,
@@ -2917,17 +2934,26 @@ func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, o
 		"max_hp": hp,
 		"damage": damage,
 		"attack_kind": attack_kind,
-		"attack_offsets": offsets,
+		"telegraph_mode": telegraph_mode,
+		# Only one of these is ever read, picked by telegraph_mode — kept
+		# as two named fields instead of one ambiguous "offsets" so a
+		# glance at the dictionary says which kind of number it holds.
+		"attack_offsets": cell_spec if telegraph_mode == "relative" else [],
+		"attack_steps": cell_spec if telegraph_mode == "fixed" else [],
 		"telegraph_cells": [],
 	}
 
 func _generate_telegraph(enemy: Dictionary) -> void:
-	if str(enemy.get("attack_kind", "positional")) == "guaranteed":
+	if str(enemy.get("attack_kind", "cell")) == "guaranteed":
 		enemy["telegraph_cells"] = []
 		return
 	var cells: Array = []
-	for offset in enemy.get("attack_offsets", []):
-		cells.append(_pos_for_step(player_step + int(offset)))
+	if str(enemy.get("telegraph_mode", "relative")) == "fixed":
+		for step in enemy.get("attack_steps", []):
+			cells.append(_pos_for_step(int(step)))
+	else:
+		for offset in enemy.get("attack_offsets", []):
+			cells.append(_pos_for_step(player_step + int(offset)))
 	enemy["telegraph_cells"] = cells
 
 func _reset_dice_for_encounter() -> void:
@@ -2949,7 +2975,6 @@ func _start_player_turn(message: String = "") -> void:
 	steps_left = 0
 	route_path = []
 	combo = 0
-	turn_visited = {}
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
 	hand_slots = []
@@ -3083,7 +3108,6 @@ func _advance_player() -> void:
 		player_step = _normalize_step(player_step + 1)
 		player_pos = _pos_for_step(player_step)
 		route_path.append(player_pos)
-		turn_visited[player_pos] = true
 		steps_left -= 1
 		sfx.emit("step")
 		_refresh_board()
@@ -3339,14 +3363,15 @@ func _enemy_turn() -> void:
 	for enemy in enemies:
 		if int(enemy["hp"]) <= 0:
 			continue
+		# マス指定攻撃 cares only about where the turn actually ended, not
+		# whether the piece ran across the cell on the way — landing on it
+		# and passing through it read the same on the board, but only one
+		# of them should cost HP.
 		var hit := false
-		if str(enemy.get("attack_kind", "positional")) == "guaranteed":
+		if str(enemy.get("attack_kind", "cell")) == "guaranteed":
 			hit = true
 		else:
-			for c in enemy.get("telegraph_cells", []):
-				if turn_visited.has(c):
-					hit = true
-					break
+			hit = enemy.get("telegraph_cells", []).has(player_pos)
 		var enemy_label: String = str(enemy["type"])
 		if hit:
 			await _lunge_enemy()
@@ -3466,7 +3491,7 @@ func _show_cell_info(pos: Vector2i) -> void:
 	if temp_type == "hazard":
 		parts.append("毒がかかっている（通過でHP-2）")
 	if danger_cells.has(pos):
-		parts.append("敵の攻撃予告あり")
+		parts.append("敵の攻撃予告あり（そこで行動を終えると被弾）")
 	if log_label != null:
 		log_label.text = " / ".join(parts)
 	cell_info_timer = 3.5
@@ -3477,7 +3502,7 @@ func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> Strin
 	if ahead > 0:
 		lines.append("現在地から%dマス先" % ahead)
 	if danger_cells.has(pos):
-		lines.append("敵の攻撃予告")
+		lines.append("敵の攻撃予告（そこで行動を終えると被弾）")
 	if temp_type != "none":
 		lines.append(str(temp_defs[temp_type]["desc"]))
 	var tile: Dictionary = tile_defs[perm_type]
