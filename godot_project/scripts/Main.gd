@@ -1031,10 +1031,13 @@ var rerolls_left := 0
 
 # --- counters the effect system can read and scale against ---------------
 # Each of these is the spine of one build concept rather than a rule that
-# applies to everything. combo is deliberately NOT added to every attack any
-# more: it only pays out through content that names it, the same as charge,
-# lap and poison. That is what makes "a combo build" a choice instead of a
-# tax everyone pays.
+# applies to everything. combo still counts every die spent this turn —
+# that increment is the one common baseline, shared by every hero — but it
+# is no longer added to every attack's damage. It only pays out through
+# content that names it (連鎖路, 連撃, 供物台, ...), the same as charge, lap
+# and poison. That is what makes "a combo build" a choice instead of a tax
+# everyone pays, without also making the counter itself invisible to
+# anyone who never picked combo content up.
 var charge := 0             # survives the whole encounter; cash it in
 var lap_count := 0          # laps completed this encounter
 var action_index := 0       # 1st or 2nd action of this turn
@@ -3572,6 +3575,10 @@ func _on_die_pressed(index: int) -> void:
 	selected_roll = final_roll
 	action_index += 1
 	crossed_this_action = 0
+	# The baseline every hero shares: combo counts dice spent this turn.
+	# Nothing pays it out automatically — 連鎖路/連撃/供物台 and the rest
+	# are what turn that count into something, which is the build.
+	combo += 1
 	route_path = [player_pos]
 	discard_pile.append(selected_die)
 	hand.remove_at(index)
