@@ -14,11 +14,24 @@ const HAND_VISIBLE := 4.7
 const HAND_GAP := 7.0
 const MAX_ENCOUNTERS := 7
 # A die face is normally the count of steps it moves you, signed for
-# direction — but two dice need faces that are not step counts at all: 帰還
-# has a "go home" face, and one day something might need another symbol.
-# Sentinels far outside any real face range (±1-8) so they can never be
-# mistaken for a rolled distance.
+# direction — but some faces are not step counts at all: they warp the
+# piece straight to a fixed ring square, spending the action without
+# walking it. Sentinels far outside any real rolled distance (±1-8) so
+# they can never collide with one, mapped to the ring step each warps to
+# and the short label its face and log line show instead of a number.
+# RING's four corners are steps 0/3/6/9 — see _build_track_graph.
 const RESET_FACE := 99
+const CORNER_TL := 90
+const CORNER_TR := 91
+const CORNER_BR := 92
+const CORNER_BL := 93
+const WARP_FACES := {
+	RESET_FACE: {"label": "帰", "step": 0},
+	CORNER_TL: {"label": "左上", "step": 0},
+	CORNER_TR: {"label": "右上", "step": 3},
+	CORNER_BR: {"label": "右下", "step": 6},
+	CORNER_BL: {"label": "左下", "step": 9},
+}
 
 # Every size in this file is authored in these units, and the window's
 # content scale is pinned to them at startup (see _apply_content_scale), so
@@ -1025,6 +1038,9 @@ var catalog_return_state := "title"
 # die is chosen meant the stop-type tiles could never be aimed at, which
 # made half the board a lottery.
 var hand_limit := 3
+# Actions per turn, same story as hand_limit: a hero property, not a global
+# rule — 盗賊's extra action point is what its small, weak faces are for.
+var actions_per_turn := ACTIONS_PER_TURN
 var last_cleanse_count := 0
 var dice_rolled := false
 var rerolls_left := 0
@@ -1352,6 +1368,9 @@ var dice_defs := {
 	"reset": {"name": "帰還", "faces": [2, 3, 4, 5, RESET_FACE, RESET_FACE],
 		"color": Color("#C9A227"), "short": "帰の目でスタートへ", "effect": "「帰」の目が出るとスタート地点へ戻る",
 		"detail": "6面のうち2面が「帰」。出ればどこにいてもスタート地点まで飛んで戻る、歩数を消費しない移動。危険な予告マスから逃げたり、盛った盤面を素通りしたくない時の緊急脱出に。"},
+	"teleport": {"name": "テレポート", "faces": [1, 1, CORNER_TR, CORNER_TL, CORNER_BR, CORNER_BL],
+		"color": Color("#5B3AA8"), "short": "四隅へ瞬間移動", "effect": "四隅のいずれかへ、現在地に関係なく瞬間移動",
+		"detail": "6面のうち4面が盤の四隅（右上・左上・右下・左下）。出目どおりの角へ、今どこにいるかに関係なく飛ぶ — 歩数は消費しない。残り2面はただの1で、狙った角に賭けるか小さく刻むかの両極端なダイス。"},
 	"tempo": {"name": "コンボ", "faces": [0, 0, 0, 1, 1, 1],
 		"color": Color("#D6812B"), "short": "行動+1", "effect": "使うと行動+1（実質タダで使える）",
 		"effects": [{"on": "spend", "op": "action", "amount": 1}],
@@ -1368,7 +1387,7 @@ var die_reward_pool := [
 	"heavydie", "precise", "gamble",
 	"blade", "rush", "bulwark", "mend", "toxin", "dynamo", "tempest",
 	"chainb", "delve", "augur", "charger", "ember", "rally", "devote", "nimble",
-	"reverse", "vault", "reset", "tempo", "guard_die"
+	"reverse", "vault", "reset", "tempo", "guard_die", "teleport"
 ]
 
 var reward_pool := [
@@ -1390,10 +1409,10 @@ var hero_defs := {
 		"hp": 36,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
-		"desc": "狙って止まり、重く殴る。大斬撃と砦の芯だけを持って始まる。",
+		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
 		# The starting board is deliberately almost empty: the player should
 		# be the author of the ring, not the editor of someone else's.
-		"dice": ["normal", "normal", "heavydie", "blade"],
+		"dice": ["normal", "normal", "blade", "guard_die"],
 		"tiles": [
 			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
 		]
@@ -1403,19 +1422,22 @@ var hero_defs := {
 		"hp": 28,
 		"hand": 3,
 		"color": Color("#7C4DD6"),
-		"desc": "溜めて撃ち抜く。チャージの芯と、手札を回すダイスを持つ。",
-		"dice": ["normal", "normal", "augur", "charger"],
+		"desc": "溜めて撃ち抜く。チャージの芯と、四隅へ飛ぶテレポートを持つ。",
+		"dice": ["normal", "normal", "charger", "teleport"],
 		"tiles": [
 			[2, 0, "battery"], [3, 2, "aim"], [1, 3, "spring"]
 		]
 	},
 	"rogue": {
 		"name": "盗賊",
-		"hp": 31,
+		"hp": 22,
 		"hand": 4,
+		# One extra action every turn, at the cost of the run's lowest HP —
+		# 盗賊 buys tempo with survivability, not the other way around.
+		"actions": 3,
 		"color": Color("#5B8C2A"),
-		"desc": "手札が4枚。刻んで積み、通過で削る手数のキャラ。",
-		"dice": ["normal", "normal", "nimble", "chainb", "delve"],
+		"desc": "手札4枚・行動3回。HPは全キャラ最低だが、とにかく手数で押し切る。",
+		"dice": ["normal", "normal", "tempo", "nimble", "gamble"],
 		"tiles": [
 			[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]
 		]
@@ -2197,7 +2219,7 @@ func _refresh_top() -> void:
 	combo_chip.modulate = Color(1, 1, 1, 1.0 if combo > 0 else 0.5)
 
 	_clear_children(action_pip_box)
-	for i in range(ACTIONS_PER_TURN):
+	for i in range(actions_per_turn):
 		var pip := IconGlyph.new()
 		pip.kind = "pip_on" if i < actions_left else "pip_off"
 		pip.glyph_color = COL_GOLD if i < actions_left else COL_TEXT_SOFT
@@ -2665,13 +2687,13 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	# die's own faces can legitimately roll a real 0 or a negative number
 	# now, so the turn's own dice_rolled flag is the only honest signal.
 	var unrolled: bool = not dice_rolled
-	var is_reset: bool = dice_rolled and roll == RESET_FACE
+	var is_warp: bool = dice_rolled and _is_warp_face(roll)
 
 	var face := DiceFace.new()
 	face.name = "RolledFace"
 	face.value = roll
 	face.invert = roll < 0
-	face.query = unrolled or is_reset
+	face.query = unrolled or is_warp
 	var half: float = face_size * 0.5
 	face.custom_minimum_size = Vector2(face_size, face_size)
 	face.size = Vector2(face_size, face_size)
@@ -2684,9 +2706,13 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	face.offset_bottom = half
 	face.pivot_offset = Vector2(half, half)
 
-	if unrolled or is_reset:
-		var overlay := _make_label(int(face_size * 0.72), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-		overlay.text = "?" if unrolled else "帰"
+	if unrolled or is_warp:
+		var overlay_text := "?" if unrolled else _warp_face_label(roll)
+		# The corner labels are two characters (左上/右上/...) where "?"
+		# and 帰 are one, so the font has to shrink to still fit the face.
+		var overlay_size := face_size * (0.72 if overlay_text.length() <= 1 else 0.40)
+		var overlay := _make_label(int(overlay_size), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		overlay.text = overlay_text
 		overlay.autowrap_mode = TextServer.AUTOWRAP_OFF
 		overlay.set_anchors_preset(Control.PRESET_CENTER)
 		overlay.offset_left = -half
@@ -2709,7 +2735,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 		var fv := int(face_value)
 		pip.value = fv
 		pip.invert = fv < 0
-		pip.query = fv == RESET_FACE
+		pip.query = _is_warp_face(fv)
 		pip.custom_minimum_size = Vector2(pip_size, pip_size)
 		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		pip.modulate = Color(1, 1, 1, 1.0 if (dice_rolled and fv == roll) else 0.55)
@@ -3068,7 +3094,7 @@ func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
 			showcase = int(f)
 	pip.value = showcase
 	pip.invert = showcase < 0
-	pip.query = showcase == RESET_FACE
+	pip.query = _is_warp_face(showcase)
 	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pip.set_anchors_preset(Control.PRESET_FULL_RECT)
 	pip.offset_left = 6
@@ -3076,9 +3102,10 @@ func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
 	pip.offset_right = -6
 	pip.offset_bottom = -6
 	swatch.add_child(pip)
-	if showcase == RESET_FACE:
-		var flag := _make_label(18, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-		flag.text = "帰"
+	if _is_warp_face(showcase):
+		var label_text := _warp_face_label(showcase)
+		var flag := _make_label(18 if label_text.length() <= 1 else 11, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		flag.text = label_text
 		flag.set_anchors_preset(Control.PRESET_FULL_RECT)
 		flag.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		swatch.add_child(flag)
@@ -3122,11 +3149,13 @@ func _show_title() -> void:
 	temp_board = _make_empty_board("none")
 	_refresh_all()
 	_set_log("")
-	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全6戦。")
+	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全%d戦。" % MAX_ENCOUNTERS)
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
 		_add_overlay_option(
-			"%s   HP %d   手札%d" % [str(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3))],
+			"%s   HP %d   手札%d   行動%d" % [
+				str(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3)),
+				int(hero.get("actions", ACTIONS_PER_TURN))],
 			"%s\nダイス: %s" % [str(hero["desc"]), _hero_dice_names(hero)],
 			Color(hero["color"]),
 			"slash" if key == "knight" else ("fire" if key == "mage" else "trap"),
@@ -3273,6 +3302,7 @@ func _start_run(key: String) -> void:
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(hero["hp"])
 	hand_limit = int(hero.get("hand", 3))
+	actions_per_turn = int(hero.get("actions", ACTIONS_PER_TURN))
 	player_hp = player_max_hp
 	player_shield = 0
 	next_enemy_uid = 0
@@ -3297,7 +3327,7 @@ func _start_encounter() -> void:
 		backdrop_view.tint_progress = float(encounter - 1) / float(max(MAX_ENCOUNTERS - 1, 1))
 	player_pos = _pos_for_step(player_step)
 	player_shield = 0
-	actions_left = ACTIONS_PER_TURN
+	actions_left = actions_per_turn
 	selected_die = {}
 	selected_roll = 0
 	move_dir = 1
@@ -3431,7 +3461,7 @@ func _start_player_turn(message: String = "") -> void:
 	state = "player"
 	run_turns += 1
 	player_shield = 0
-	actions_left = ACTIONS_PER_TURN
+	actions_left = actions_per_turn
 	selected_die = {}
 	selected_roll = 0
 	steps_left = 0
@@ -3567,14 +3597,14 @@ func _on_die_pressed(index: int) -> void:
 	# The die's own effects fire before the piece moves, so a die that pays
 	# combo or charge has already paid it by the time the squares are read.
 	var spend_note := _run_effects(selected_die.get("effects", []), "spend", str(selected_die["name"]))
-	var roll_text := "帰" if final_roll == RESET_FACE else str(final_roll)
+	var roll_text := _warp_face_label(final_roll) if _is_warp_face(final_roll) else str(final_roll)
 	_set_log("%sダイス：出目 %s%s" % [
 		str(selected_die["name"]), roll_text, ("　" + spend_note) if spend_note != "" else ""])
 	_refresh_all()
 	await get_tree().create_timer(0.2).timeout
 
-	if final_roll == RESET_FACE:
-		await _warp_to_start()
+	if _is_warp_face(final_roll):
+		await _warp_to_step(_warp_face_step(final_roll))
 	else:
 		# The roll's own sign is the direction: 逆走's faces are all
 		# negative, so no separate "which way" field is needed anywhere
@@ -3607,12 +3637,13 @@ func _advance_player() -> void:
 			return
 	await _resolve_landing()
 
-# 帰還's "帰" face skips the walk entirely — it is a jump, not a sweep, so
-# nothing along the way fires and 疾走's crossed-count stays at zero. The
-# square the player lands on still resolves normally, through the same
-# _resolve_landing tail every ordinary move ends on.
-func _warp_to_start() -> void:
-	player_step = _track_index(_start_pos())
+# A warp face (帰還's "帰", テレポート's four corners) skips the walk
+# entirely — it is a jump, not a sweep, so nothing along the way fires and
+# 疾走's crossed-count stays at zero. The square the player lands on still
+# resolves normally, through the same _resolve_landing tail every ordinary
+# move ends on.
+func _warp_to_step(target_step: int) -> void:
+	player_step = _normalize_step(target_step)
 	player_pos = _pos_for_step(player_step)
 	route_path.append(player_pos)
 	sfx.emit("step")
@@ -4230,8 +4261,8 @@ func _track_index(pos: Vector2i) -> int:
 # Where a roll of this size actually finishes, following 跳躍路 the same
 # way the move itself will.
 func _landing_cell_for(roll: int) -> Vector2i:
-	if roll == RESET_FACE:
-		return _start_pos()
+	if _is_warp_face(roll):
+		return _pos_for_step(_warp_face_step(roll))
 	var step := player_step
 	var dir := -1 if roll < 0 else 1
 	var remaining := absi(roll)
@@ -4354,13 +4385,22 @@ func _make_die(die_id: String) -> Dictionary:
 func _die_color(die: Dictionary) -> Color:
 	return Color(die.get("color", Color("#54687F")))
 
+func _is_warp_face(v: int) -> bool:
+	return WARP_FACES.has(v)
+
+func _warp_face_label(v: int) -> String:
+	return str((WARP_FACES.get(v, {}) as Dictionary).get("label", "?"))
+
+func _warp_face_step(v: int) -> int:
+	return int((WARP_FACES.get(v, {}) as Dictionary).get("step", 0))
+
 func _faces_text(faces: Array) -> String:
 	var sorted_faces: Array = faces.duplicate()
 	sorted_faces.sort()
 	var parts := []
 	for f in sorted_faces:
 		var fv := int(f)
-		parts.append("帰" if fv == RESET_FACE else str(fv))
+		parts.append(_warp_face_label(fv) if _is_warp_face(fv) else str(fv))
 	return "・".join(parts)
 
 func _hero_dice_names(hero: Dictionary) -> String:
