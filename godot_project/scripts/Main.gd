@@ -1039,7 +1039,6 @@ var rerolls_left := 0
 # everyone pays, without also making the counter itself invisible to
 # anyone who never picked combo content up.
 var charge := 0             # survives the whole encounter; cash it in
-var lap_count := 0          # laps completed this encounter
 var action_index := 0       # 1st or 2nd action of this turn
 var crossed_this_action := 0
 
@@ -1053,10 +1052,9 @@ var crossed_this_action := 0
 #   on     "pass"  every square entered, including the one landed on
 #          "stop"  only the square the action ended on
 #          "spend" the moment the die is chosen (dice only)
-#          "lap"   when the piece crosses the start square
 #   op     what actually changes — see _apply_op
-#   scale  multiply amount by a counter (combo / charge / lap / shield /
-#          roll / crossed / poison). This is how a build "cashes in".
+#   scale  multiply amount by a counter (combo / charge / shield / roll /
+#          crossed / poison). This is how a build "cashes in".
 #   cond   optional gate on the player's own state — never on anything the
 #          player cannot control, or a board can lock itself out.
 #
@@ -1197,20 +1195,6 @@ var tile_defs := {
 		"trigger": "stop", "effect": "毒×3ダメージ（毒は残る）",
 		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "poison"}],
 		"detail": "盛った毒を即座に打点へ変換する。毒を撒く手段とセットで初めて意味を持つ。"},
-
-	# --- 周回: リングを何周したかを資源にする ---
-	"milestone": {"name": "里程標", "kind": "周回", "color": Color("#C25A2B"), "icon": "flag_start",
-		"trigger": "pass", "effect": "通過ごとに周回数×2ダメージ",
-		"effects": [{"on": "pass", "op": "attack", "amount": 2, "scale": "lap"}],
-		"detail": "1周もしていないうちは無力。走り続けて周回を重ねるほど、通過するたびの打点が上がる。"},
-	"beacon": {"name": "狼煙台", "kind": "周回", "color": Color("#D6812B"), "icon": "fire",
-		"trigger": "stop", "effect": "周回数×4ダメージ",
-		"effects": [{"on": "stop", "op": "attack", "amount": 4, "scale": "lap"}],
-		"detail": "周回を打点に変える決算マス。序盤は弱く、長期戦で化ける。"},
-	"pilgrim": {"name": "巡礼路", "kind": "周回", "color": Color("#2E8449"), "icon": "heal",
-		"trigger": "stop", "effect": "周回数×3回復",
-		"effects": [{"on": "stop", "op": "heal", "amount": 3, "scale": "lap"}],
-		"detail": "走り続けた距離が回復になる。戦闘間にHPが戻らないこのゲームでの、数少ない立て直し手段。"},
 
 	# --- 補助: 手札と行動そのものを増やす ---
 	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
@@ -1360,11 +1344,11 @@ var dice_defs := {
 	# --- 移動そのものを変える ---
 	"reverse": {"name": "逆走", "faces": [-1, -2, -3, -4, -5, -6],
 		"color": Color("#C25A2B"), "short": "逆向きに進む", "effect": "リングを逆向きに進む",
-		"detail": "出目がすべて負の、唯一まっすぐ戻れるダイス。前進だけでは届かない手前のマスに止まれるので着地点の選択肢が別物になり、突進マスは弱まり慎重マスは強まる。ただし周回は進まない。"},
+		"detail": "出目がすべて負の、唯一まっすぐ戻れるダイス。前進だけでは届かない手前のマスに止まれるので着地点の選択肢が別物になり、突進マスは弱まり慎重マスは強まる。"},
 	"vault": {"name": "跳躍", "faces": [2, 2, 3, 3, 4, 4],
 		"color": Color("#16A0C8"), "short": "+2歩", "effect": "使うと2歩多く進む",
 		"effects": [{"on": "spend", "op": "step", "amount": 2}],
-		"detail": "実質4から6の移動になる。通過型マスを多く踏みたいときや、周回を稼ぎたいときに。"},
+		"detail": "実質4から6の移動になる。通過型マスを多く踏みたいときに。"},
 	"reset": {"name": "帰還", "faces": [2, 3, 4, 5, RESET_FACE, RESET_FACE],
 		"color": Color("#C9A227"), "short": "帰の目でスタートへ", "effect": "「帰」の目が出るとスタート地点へ戻る",
 		"detail": "6面のうち2面が「帰」。出ればどこにいてもスタート地点まで飛んで戻る、歩数を消費しない移動。危険な予告マスから逃げたり、盛った盤面を素通りしたくない時の緊急脱出に。"},
@@ -1396,7 +1380,6 @@ var reward_pool := [
 	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
 	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
-	{"type": "milestone"}, {"type": "beacon"}, {"type": "pilgrim"},
 	{"type": "focus"}, {"type": "spring"}, {"type": "shock"},
 	{"type": "relay"}, {"type": "windfall"}, {"type": "one_more"}, {"type": "altar"}
 ]
@@ -2925,7 +2908,6 @@ const TILE_KINDS := [
 	["狙撃", "チャージを溜め、止まって撃ち切る"],
 	["要塞", "盾を集め、盾そのものを打点に変える"],
 	["毒", "毒を盛り、敵のターンごとに削る"],
-	["周回", "リングを何周したかを資源にする"],
 	["移動", "移動そのものを変える"],
 	["補助", "手札・行動・立て直し"],
 ]
@@ -3323,8 +3305,6 @@ func _start_encounter() -> void:
 	route_path = []
 	combo = 0
 	charge = 0
-	lap_count = 0
-	move_dir = 1
 	temp_board = _make_empty_board("none")
 	enemies = []
 	_setup_encounter()
@@ -3605,18 +3585,11 @@ func _on_die_pressed(index: int) -> void:
 
 func _advance_player() -> void:
 	while steps_left > 0:
-		var previous := player_step
 		player_step = _normalize_step(player_step + move_dir)
 		player_pos = _pos_for_step(player_step)
 		route_path.append(player_pos)
 		steps_left -= 1
 		crossed_this_action += 1
-		# Crossing the start square forwards completes a lap. Walking
-		# backwards over it does not — laps are distance covered, not a
-		# square you can tap back and forth across.
-		if move_dir > 0 and player_step == _track_index(_start_pos()) and previous != player_step:
-			lap_count += 1
-			_spawn_floating_text(player_pos, "%d周" % lap_count, COL_GOLD)
 		sfx.emit("step")
 		_refresh_board()
 		await _animate_player_step(STEP_TIME)
@@ -3635,9 +3608,9 @@ func _advance_player() -> void:
 	await _resolve_landing()
 
 # 帰還's "帰" face skips the walk entirely — it is a jump, not a sweep, so
-# nothing along the way fires, no laps are credited, and 疾走 crossed-count
-# stays at zero. The square the player lands on still resolves normally,
-# through the same _resolve_landing tail every ordinary move ends on.
+# nothing along the way fires and 疾走's crossed-count stays at zero. The
+# square the player lands on still resolves normally, through the same
+# _resolve_landing tail every ordinary move ends on.
 func _warp_to_start() -> void:
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
@@ -3727,8 +3700,6 @@ func _scale_value(scale: String) -> int:
 			return combo
 		"charge":
 			return charge
-		"lap":
-			return lap_count
 		"shield":
 			return player_shield
 		"roll":
@@ -3752,8 +3723,6 @@ func _cond_ok(cond: Dictionary) -> bool:
 	if cond.has("min_combo") and combo < int(cond["min_combo"]):
 		return false
 	if cond.has("min_charge") and charge < int(cond["min_charge"]):
-		return false
-	if cond.has("min_lap") and lap_count < int(cond["min_lap"]):
 		return false
 	if cond.has("min_poison") and _enemy_poison() < int(cond["min_poison"]):
 		return false
