@@ -1371,10 +1371,10 @@ var dice_defs := {
 	"teleport": {"name": "テレポート", "faces": [1, 1, CORNER_TR, CORNER_TL, CORNER_BR, CORNER_BL],
 		"color": Color("#5B3AA8"), "short": "四隅へ瞬間移動", "effect": "四隅のいずれかへ、現在地に関係なく瞬間移動",
 		"detail": "6面のうち4面が盤の四隅（右上・左上・右下・左下）。出目どおりの角へ、今どこにいるかに関係なく飛ぶ — 歩数は消費しない。残り2面はただの1で、狙った角に賭けるか小さく刻むかの両極端なダイス。"},
-	"tempo": {"name": "コンボ", "faces": [0, 0, 0, 1, 1, 1],
+	"tempo": {"name": "コンボ", "faces": [3, 3, 3, 4, 4, 4],
 		"color": Color("#D6812B"), "short": "行動+1", "effect": "使うと行動+1（実質タダで使える）",
 		"effects": [{"on": "spend", "op": "action", "amount": 1}],
-		"detail": "使った瞬間に行動が1回戻るので、実質タダで手札を1枚消費できる。出目は0か1で移動はほぼ進まないが、その分の行動をコンボ積みや連鎖の清算に回せる。"},
+		"detail": "使った瞬間に行動が1回戻るので、実質タダで手札を1枚消費できる。出目も3か4としっかり進むので、コンボを積みながら移動そのものにも困らない。"},
 	"guard_die": {"name": "防御", "faces": [1, 1, 2, 2, 3, 4],
 		"color": Color("#2E7BD6"), "short": "出目ぶん盾", "effect": "使うと出目と同じ数だけ盾",
 		"effects": [{"on": "spend", "op": "shield", "amount": 1, "scale": "roll"}],
@@ -1432,11 +1432,8 @@ var hero_defs := {
 		"name": "盗賊",
 		"hp": 22,
 		"hand": 4,
-		# One extra action every turn, at the cost of the run's lowest HP —
-		# 盗賊 buys tempo with survivability, not the other way around.
-		"actions": 3,
 		"color": Color("#5B8C2A"),
-		"desc": "手札4枚・行動3回。HPは全キャラ最低だが、とにかく手数で押し切る。",
+		"desc": "手札4枚。HPは全キャラ最低だが、とにかく手数で押し切る。",
 		"dice": ["normal", "normal", "tempo", "nimble", "gamble"],
 		"tiles": [
 			[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]
