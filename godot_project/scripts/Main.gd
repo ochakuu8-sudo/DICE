@@ -12,7 +12,6 @@ const MAX_DEBUFFS := 4
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
 const HAND_GAP := 7.0
-const MAX_ENCOUNTERS := 7
 # A die face is normally the count of steps it moves you, signed for
 # direction — but some faces are not step counts at all: they warp the
 # piece straight to a fixed ring square, spending the action without
@@ -928,6 +927,7 @@ var zone_board: Control
 var zone_hand: Control
 var zone_cmd: Control
 var zone_log: Control
+var zone_map: Control
 
 var run_track: RunTrack
 var run_label: Label
@@ -938,6 +938,12 @@ var shield_chip: PanelContainer
 var shield_label: Label
 var gold_chip: PanelContainer
 var gold_label: Label
+
+var map_scroll: ScrollContainer
+var map_canvas: Control
+var map_links: Control
+var map_title: Label
+var map_buttons: Dictionary = {}   # "row,col" -> Button
 var combo_chip: PanelContainer
 var combo_label: Label
 var action_pip_box: HBoxContainer
@@ -1525,6 +1531,12 @@ func _build_ui() -> void:
 	add_child(zone_log)
 	_build_log_zone()
 
+	zone_map = Control.new()
+	zone_map.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	zone_map.visible = false
+	add_child(zone_map)
+	_build_map_zone()
+
 	# A tap anywhere over the board and hand throws the dice. It sits above
 	# the cells, so while the hand is unrolled the whole play area is one
 	# big "roll" button, and it disappears the moment they are thrown.
@@ -1985,6 +1997,11 @@ func _layout_screen() -> void:
 
 	var margin := 10.0
 	var gap := 8.0
+	# The map takes the whole frame below the status strip: it is its own
+	# screen, not a panel sharing space with the board.
+	if zone_map != null:
+		var map_top: float = margin + 74.0 + gap
+		_place(zone_map, Rect2(margin, map_top, vp.x - margin * 2.0, vp.y - map_top - margin))
 	if _is_landscape():
 		# Two columns: the board keeps the left, everything the player reads
 		# or presses stacks on the right — so the end-turn button can never
@@ -2207,6 +2224,7 @@ func _refresh_all() -> void:
 	_refresh_board()
 	_refresh_hand()
 	_refresh_command()
+	_refresh_map()
 
 func _set_log(text: String) -> void:
 	log_hold = text
@@ -2220,7 +2238,7 @@ func _refresh_top() -> void:
 	if not in_run:
 		return
 	run_label.text = "第%d戦" % max(encounter, 1)
-	run_track.total = MAX_ENCOUNTERS
+	run_track.total = MAP_ROWS
 	run_track.current = encounter
 	run_track.queue_redraw()
 
@@ -2268,7 +2286,7 @@ func _animate_gauge(bar: GaugeBar) -> void:
 
 func _refresh_enemy() -> void:
 	var show: bool = state != "title" and not enemies.is_empty()
-	zone_enemy.visible = state != "title"
+	zone_enemy.visible = state != "title" and state != "map" and state != "node_event"
 	enemy_panel.modulate = Color(1, 1, 1, 1.0 if show else 0.0)
 	if not show:
 		return
@@ -2296,7 +2314,7 @@ func _refresh_command() -> void:
 	var playing: bool = state == "player"
 	if roll_catcher != null:
 		roll_catcher.visible = playing and not dice_rolled and not hand.is_empty()
-	zone_cmd.visible = state != "title"
+	zone_cmd.visible = state != "title" and state != "map" and state != "node_event"
 	zone_hand.visible = state == "player" or state == "moving" or state == "enemy"
 	end_turn_button.visible = playing or state == "moving" or state == "enemy"
 	end_turn_button.disabled = not playing
@@ -2325,7 +2343,7 @@ func _refresh_board() -> void:
 				button.visible = false
 				button.disabled = true
 				continue
-			button.visible = state != "title"
+			button.visible = state != "title" and state != "map" and state != "node_event"
 
 			var perm_type: String = str(permanent_board[pos.y][pos.x])
 			var temp_type: String = str(temp_board[pos.y][pos.x])
@@ -3177,7 +3195,7 @@ func _show_title() -> void:
 	temp_board = _make_empty_board("none")
 	_refresh_all()
 	_set_log("")
-	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全%d戦。" % MAX_ENCOUNTERS)
+	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
 		_add_overlay_option(
@@ -3194,7 +3212,7 @@ func _show_title() -> void:
 
 func _show_reward() -> void:
 	state = "reward_select"
-	if encounter >= MAX_ENCOUNTERS:
+	if _is_boss_node():
 		_show_victory()
 		return
 	sfx.emit("reward")
@@ -3254,7 +3272,7 @@ func _show_victory() -> void:
 	state = "victory"
 	sfx.emit("kill")
 	_refresh_all()
-	_open_overlay("踏破成功", "%s は全%d戦を突破しました。" % [hero_name, MAX_ENCOUNTERS])
+	_open_overlay("踏破成功", "%s は全%d層を踏破しました。" % [hero_name, MAP_ROWS])
 	_add_result_stats()
 	_add_overlay_option("もう一度、同じキャラで", "同じ盤面構成から新しいランを始めます。", COL_HP, "warp", Callable(self, "_restart_same_hero"))
 	_add_overlay_option("キャラを選び直す", "タイトルに戻ります。", COL_TEXT_SOFT, "dice", Callable(self, "_show_title"))
@@ -3280,7 +3298,7 @@ func _add_result_stats() -> void:
 	stats.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay_list.add_child(stats)
 	var entries := [
-		["到達", "%d / %d戦" % [encounter, MAX_ENCOUNTERS]],
+		["到達", "%d / %d層" % [max(map_row + 1, 0), MAP_ROWS]],
 		["与ダメージ", str(run_damage_dealt)],
 		["ターン", str(run_turns)],
 	]
@@ -3347,13 +3365,14 @@ func _start_run(key: String) -> void:
 	for die_id in hero["dice"]:
 		dice_bag.append(_make_die(str(die_id)))
 	hp_bar.display_value = float(player_hp)
-	_start_encounter()
+	_generate_map()
 	_snap_player_visual()
+	_show_map()
 
 func _start_encounter() -> void:
 	encounter += 1
 	if backdrop_view != null:
-		backdrop_view.tint_progress = float(encounter - 1) / float(max(MAX_ENCOUNTERS - 1, 1))
+		backdrop_view.tint_progress = float(max(map_row, 0)) / float(max(MAP_ROWS - 1, 1))
 	player_pos = _pos_for_step(player_step)
 	player_shield = 0
 	actions_left = actions_per_turn
@@ -3412,11 +3431,562 @@ var enemy_defs := [
 		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40},
 ]
 
+# --- map screen ---------------------------------------------------------
+# The map is a tall column inside a scroll view: row 0 sits at the bottom
+# and the boss at the top, so climbing it reads as climbing. The links are
+# painted by a single Control behind the buttons rather than by each node,
+# which keeps the lines beneath every node no matter the draw order.
+const MAP_NODE_SIZE := 62.0
+const MAP_ROW_H := 92.0
+const MAP_COL_W := 150.0
+
+class MapLinks:
+	extends Control
+
+	var main = null
+
+	func _draw() -> void:
+		if main == null or main.map_nodes.is_empty():
+			return
+		for row in range(main.MAP_ROWS - 1):
+			for col in range(main.MAP_COLS):
+				var node = main.map_nodes[row][col]
+				if node == null:
+					continue
+				var a: Vector2 = main._map_node_center(row, col)
+				for raw in (node["links"] as Dictionary).keys():
+					var to_col := int(raw)
+					if main.map_nodes[row + 1][to_col] == null:
+						continue
+					var b: Vector2 = main._map_node_center(row + 1, to_col)
+					# A link the player could take right now is lit; the rest
+					# of the map stays visible but recedes.
+					var live: bool = row == main.map_row and col == main.map_col
+					var walked: bool = row < main.map_row
+					var col_line := Color("#8C7A55")
+					var width := 4.0
+					if walked:
+						col_line = Color("#C0AC84")
+					if live:
+						col_line = main.COL_GOLD
+						width = 6.0
+					draw_line(a, b, Color("#2A2320"), width + 4.0, true)
+					draw_line(a, b, col_line, width, true)
+
+func _map_canvas_size() -> Vector2:
+	return Vector2(MAP_COL_W * float(MAP_COLS), MAP_ROW_H * float(MAP_ROWS))
+
+# Row 0 is drawn at the bottom, so the map is climbed upward.
+func _map_node_center(row: int, col: int) -> Vector2:
+	var x: float = MAP_COL_W * (float(col) + 0.5)
+	var y: float = MAP_ROW_H * (float(MAP_ROWS - 1 - row) + 0.5)
+	return Vector2(x, y)
+
+func _build_map_zone() -> void:
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 10, 8))
+	zone_map.add_child(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	panel.add_child(col)
+
+	map_title = _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	map_title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(map_title)
+
+	map_scroll = ScrollContainer.new()
+	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	map_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(map_scroll)
+
+	# A centring row, so the fixed-width map column sits in the middle of a
+	# wide landscape window instead of hugging the left edge.
+	var centre := HBoxContainer.new()
+	centre.alignment = BoxContainer.ALIGNMENT_CENTER
+	centre.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	map_scroll.add_child(centre)
+
+	map_canvas = Control.new()
+	map_canvas.custom_minimum_size = _map_canvas_size()
+	map_canvas.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	centre.add_child(map_canvas)
+
+	map_links = MapLinks.new()
+	map_links.main = self
+	map_links.set_anchors_preset(Control.PRESET_FULL_RECT)
+	map_links.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	map_canvas.add_child(map_links)
+
+func _show_map() -> void:
+	state = "map"
+	_hide_banner()
+	_close_overlay()
+	_refresh_all()
+	_refresh_map()
+	# Keep the row the player is standing on in view as they climb.
+	await get_tree().process_frame
+	_scroll_map_to_current()
+
+func _scroll_map_to_current() -> void:
+	if map_scroll == null:
+		return
+	var focus_row: int = max(map_row, 0)
+	var centre_y: float = _map_node_center(focus_row, 0).y
+	var target: float = centre_y - map_scroll.size.y * 0.5
+	map_scroll.scroll_vertical = int(clampf(target, 0.0, max(_map_canvas_size().y - map_scroll.size.y, 0.0)))
+
+func _refresh_map() -> void:
+	if zone_map == null:
+		return
+	zone_map.visible = state == "map"
+	if not zone_map.visible or map_nodes.is_empty():
+		return
+	map_canvas.custom_minimum_size = _map_canvas_size()
+	map_title.text = "第%d層 / %d層" % [max(map_row + 1, 0) + (1 if map_row < 0 else 0), MAP_ROWS]
+	if map_row < 0:
+		map_title.text = "出発地点を選ぶ（全%d層）" % MAP_ROWS
+
+	for row in range(MAP_ROWS):
+		for c in range(MAP_COLS):
+			var key := "%d,%d" % [row, c]
+			var node = map_nodes[row][c]
+			if node == null:
+				if map_buttons.has(key):
+					(map_buttons[key] as Button).visible = false
+				continue
+			var button: Button
+			if map_buttons.has(key):
+				button = map_buttons[key]
+			else:
+				button = _make_map_node_button(row, c)
+				map_buttons[key] = button
+			button.visible = true
+			_style_map_node(button, node, row, c)
+
+func _make_map_node_button(row: int, c: int) -> Button:
+	var button := Button.new()
+	button.focus_mode = Control.FOCUS_NONE
+	button.custom_minimum_size = Vector2(MAP_NODE_SIZE, MAP_NODE_SIZE)
+	button.size = Vector2(MAP_NODE_SIZE, MAP_NODE_SIZE)
+	var centre := _map_node_center(row, c)
+	button.position = centre - Vector2(MAP_NODE_SIZE, MAP_NODE_SIZE) * 0.5
+	button.pressed.connect(Callable(self, "_on_map_node_pressed").bind(row, c))
+	map_canvas.add_child(button)
+
+	var icon := IconGlyph.new()
+	icon.name = "NodeIcon"
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	icon.offset_left = 12
+	icon.offset_top = 10
+	icon.offset_right = -12
+	icon.offset_bottom = -18
+	button.add_child(icon)
+
+	var label := _make_label(FS_SMALL - 2, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	label.name = "NodeLabel"
+	label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	label.clip_text = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	label.offset_top = -18
+	label.offset_bottom = -2
+	button.add_child(label)
+	return button
+
+func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void:
+	var kind := str(node["type"])
+	var def: Dictionary = NODE_DEFS[kind]
+	var here: bool = row == map_row and c == map_col
+	var reachable: bool = _is_map_reachable(row, c)
+	var done: bool = bool(node.get("cleared", false))
+
+	var icon: IconGlyph = button.find_child("NodeIcon", true, false)
+	icon.set_kind(str(def["icon"]))
+	icon.glyph_color = COL_TEXT_ON_DARK
+	icon.outline_color = COL_INK
+
+	var label: Label = button.find_child("NodeLabel", true, false)
+	# A combat node says who is waiting there. Hiding it would defeat the
+	# point of letting the player choose a route.
+	var text := str(def["label"])
+	if int(node.get("enemy", -1)) >= 0:
+		text = str(enemy_defs[int(node["enemy"])]["name"])
+	label.text = text
+
+	var fill: Color = Color(def["color"])
+	var border := COL_INK
+	var width := 3
+	if here:
+		border = COL_GOLD
+		width = 5
+	elif reachable:
+		border = COL_NEXT
+		width = 4
+	var dim: bool = not (here or reachable)
+	if done:
+		fill = fill.lerp(COL_PANEL_SUNK, 0.55)
+	button.disabled = not reachable
+	button.modulate = Color(1, 1, 1, 1.0 if (here or reachable) else 0.5)
+	_apply_cell_style(button, fill, border, width, dim and not done, "stop")
+
+func _on_map_node_pressed(row: int, c: int) -> void:
+	if state != "map" or not _is_map_reachable(row, c):
+		return
+	sfx.emit("step")
+	map_row = row
+	map_col = c
+	_enter_map_node()
+
+# Every node type funnels through here, so adding one is a branch in a
+# single place rather than a change to the run flow.
+func _enter_map_node() -> void:
+	var node = _map_node_at(map_row, map_col)
+	if node == null:
+		return
+	node["cleared"] = true
+	match str(node["type"]):
+		"rest":
+			_resolve_rest_node()
+		"shop":
+			_resolve_shop_node()
+		"event":
+			_resolve_event_node()
+		_:
+			_start_encounter()
+
+func _resolve_rest_node() -> void:
+	var healed: int = min(player_max_hp - player_hp, int(round(player_max_hp * 0.3)))
+	player_hp += healed
+	hp_bar.display_value = float(player_hp)
+	sfx.emit("shield")
+	_refresh_top()
+	_open_overlay("休憩", "傷を癒した。HPが %d 回復（%d / %d）。" % [healed, player_hp, player_max_hp])
+	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
+	_layout_overlay()
+	state = "node_event"
+
+func _resolve_shop_node() -> void:
+	state = "node_event"
+	_open_overlay("店", "所持金 %dG。ダイスの購入と、いらないダイスの処分ができます。" % gold)
+	var stock := die_reward_pool.duplicate()
+	stock.shuffle()
+	for i in range(min(2, stock.size())):
+		var die_id := str(stock[i])
+		var die_def: Dictionary = dice_defs[die_id]
+		var price: int = 25
+		var affordable: bool = gold >= price
+		_add_overlay_option(
+			"%sダイス　%dG%s" % [str(die_def["name"]), price, "" if affordable else "（所持金が足りない）"],
+			str(die_def["effect"]),
+			Color(die_def["color"]) if affordable else COL_PANEL_SUNK,
+			"dice",
+			Callable(self, "_buy_die").bind(die_id, price)
+		)
+	var removal_price := 20
+	_add_overlay_option(
+		"ダイスを1つ処分　%dG%s" % [removal_price, "" if gold >= removal_price else "（所持金が足りない）"],
+		"バッグからダイスを取り除きます。手札に来る確率が上がります。",
+		COL_DANGER if gold >= removal_price else COL_PANEL_SUNK,
+		"trap",
+		Callable(self, "_open_removal").bind(removal_price)
+	)
+	_add_overlay_option("店を出る", "次の層を選びます。", COL_TEXT_SOFT, "boot", Callable(self, "_leave_node"))
+	_layout_overlay()
+
+func _buy_die(die_id: String, price: int) -> void:
+	if gold < price:
+		return
+	gold -= price
+	dice_bag.append(_make_die(die_id))
+	sfx.emit("reward")
+	_refresh_top()
+	_resolve_shop_node()
+
+func _open_removal(price: int) -> void:
+	if gold < price or dice_bag.size() <= 1:
+		return
+	state = "node_event"
+	_open_overlay("処分するダイスを選ぶ", "所持 %d 個。1つ選ぶと %dG かかります。" % [dice_bag.size(), price])
+	for i in range(dice_bag.size()):
+		var die: Dictionary = dice_bag[i]
+		_add_overlay_option(
+			"%sダイス［出目 %s］" % [str(die["name"]), _faces_text(die["faces"])],
+			str(die.get("short", "")),
+			_die_color(die),
+			"dice",
+			Callable(self, "_remove_die").bind(i, price)
+		)
+	_add_overlay_option("やめる", "店に戻ります。", COL_TEXT_SOFT, "boot", Callable(self, "_resolve_shop_node"))
+	_layout_overlay()
+
+func _remove_die(index: int, price: int) -> void:
+	if gold < price or index < 0 or index >= dice_bag.size() or dice_bag.size() <= 1:
+		return
+	gold -= price
+	dice_bag.remove_at(index)
+	sfx.emit("hit")
+	_refresh_top()
+	_resolve_shop_node()
+
+func _resolve_event_node() -> void:
+	state = "node_event"
+	var ids: Array = event_defs.keys()
+	var event: Dictionary = event_defs[str(ids[rng.randi_range(0, ids.size() - 1)])]
+	_open_overlay(str(event["name"]), str(event["body"]))
+	for raw in event["choices"]:
+		var choice: Dictionary = raw
+		_add_overlay_option(
+			str(choice["label"]),
+			str(choice.get("detail", "")),
+			Color(choice.get("color", COL_TEXT_SOFT)),
+			str(choice.get("icon", "focus")),
+			Callable(self, "_take_event_choice").bind(choice)
+		)
+	_layout_overlay()
+
+# An event choice is just a list of ops, run through the same engine tiles
+# and dice use — so a new event is a table row, not code.
+func _take_event_choice(choice: Dictionary) -> void:
+	var notes := []
+	for raw in choice.get("effects", []):
+		var eff: Dictionary = raw
+		var op := str(eff["op"])
+		var amount := int(eff.get("amount", 0))
+		match op:
+			"gold":
+				gold = max(0, gold + amount)
+				notes.append("%dG" % amount if amount < 0 else "+%dG" % amount)
+			"heal":
+				var gained: int = min(player_max_hp - player_hp, amount)
+				player_hp += gained
+				notes.append("HP+%d" % gained)
+			"max_hp":
+				player_max_hp += amount
+				player_hp = max(1, player_hp + amount)
+				notes.append("最大HP%+d" % amount)
+			"self_damage":
+				player_hp -= amount
+				notes.append("HP-%d" % amount)
+			"die":
+				dice_bag.append(_make_die(str(eff["id"])))
+				notes.append("%sダイスを入手" % str(dice_defs[str(eff["id"])]["name"]))
+			"random_die":
+				var pool := die_reward_pool.duplicate()
+				pool.shuffle()
+				dice_bag.append(_make_die(str(pool[0])))
+				notes.append("%sダイスを入手" % str(dice_defs[str(pool[0])]["name"]))
+	hp_bar.display_value = float(player_hp)
+	sfx.emit("reward")
+	_refresh_top()
+	if player_hp <= 0:
+		_show_game_over("道中で力尽きました。")
+		return
+	_open_overlay(str(choice["label"]), " / ".join(notes) if not notes.is_empty() else "何も起きなかった。")
+	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
+	_layout_overlay()
+
+func _leave_node() -> void:
+	_close_overlay()
+	_show_map()
+
+# Events are pure data: a body, and choices whose effects are a list of ops
+# run by _take_event_choice. Adding one is a row here.
+var event_defs := {
+	"shrine": {"name": "打ち捨てられた祠", "body": "供物を求める祠がある。金貨を投げ入れれば、何かが応えるかもしれない。",
+		"choices": [
+			{"label": "20G を捧げる", "detail": "ダイスを1つ授かる", "color": Color("#C9A227"), "icon": "dice",
+				"effects": [{"op": "gold", "amount": -20}, {"op": "random_die"}]},
+			{"label": "立ち去る", "detail": "何も起きない", "color": Color("#6B5C49"), "icon": "boot",
+				"effects": []},
+		]},
+	"spring": {"name": "湧き水", "body": "澄んだ水が湧いている。飲めば傷が癒えそうだ。",
+		"choices": [
+			{"label": "飲む", "detail": "HP+12", "color": Color("#3EA95E"), "icon": "heal",
+				"effects": [{"op": "heal", "amount": 12}]},
+			{"label": "水を汲んで売る", "detail": "+18G", "color": Color("#C9A227"), "icon": "dice",
+				"effects": [{"op": "gold", "amount": 18}]},
+		]},
+	"bargain": {"name": "怪しい行商", "body": "フードの奥は見えない。「いい取引がある」とだけ言う。",
+		"choices": [
+			{"label": "血を分ける", "detail": "HP-8 と引き換えにダイスを1つ", "color": Color("#9C3A6B"), "icon": "skull",
+				"effects": [{"op": "self_damage", "amount": 8}, {"op": "random_die"}]},
+			{"label": "鍛えてもらう", "detail": "最大HP+6", "color": Color("#2E7BD6"), "icon": "guard",
+				"effects": [{"op": "max_hp", "amount": 6}]},
+			{"label": "断る", "detail": "何も起きない", "color": Color("#6B5C49"), "icon": "boot",
+				"effects": []},
+		]},
+	"cache": {"name": "隠し袋", "body": "岩陰に袋が押し込まれている。持ち主はもういないだろう。",
+		"choices": [
+			{"label": "金を取る", "detail": "+30G", "color": Color("#C9A227"), "icon": "dice",
+				"effects": [{"op": "gold", "amount": 30}]},
+			{"label": "中のダイスを取る", "detail": "ダイスを1つ", "color": Color("#5B8C2A"), "icon": "focus",
+				"effects": [{"op": "random_die"}]},
+		]},
+	"altar": {"name": "血の祭壇", "body": "刃の跡が残る石。力を求めるなら、代価がいる。",
+		"choices": [
+			{"label": "捧げる", "detail": "最大HP-5、ダイスを1つ", "color": Color("#C2453A"), "icon": "trap",
+				"effects": [{"op": "max_hp", "amount": -5}, {"op": "random_die"}]},
+			{"label": "祈るだけにする", "detail": "HP+8", "color": Color("#3EA95E"), "icon": "heal",
+				"effects": [{"op": "heal", "amount": 8}]},
+		]},
+}
+
+# --- the run map --------------------------------------------------------
+# A column of rows the player climbs one step at a time, bottom to top,
+# choosing between the nodes each row offers. Combat nodes name their enemy
+# on the map rather than hiding it, because steering toward a particular
+# fight is the whole point of having a map.
+#
+# The map is generated by carving paths rather than by scattering nodes and
+# hoping they connect: a handful of walkers each climb from the bottom row
+# to the top, stepping at most one column sideways per row, and only the
+# cells a walker touched become real nodes. Connectivity, and "every node
+# can still reach the boss", are therefore true by construction — no repair
+# pass, and no possibility of a dead end.
+const MAP_ROWS := 12          # row 0 is the first choice, row 11 is the boss
+const MAP_COLS := 3
+const MAP_WALKERS := 4        # paths carved; more walkers = wider map
+
+const NODE_DEFS := {
+	"battle": {"label": "戦闘", "color": Color("#C2453A"), "icon": "slash"},
+	"elite": {"label": "強敵", "color": Color("#8E2F6B"), "icon": "skull"},
+	"rest": {"label": "休憩", "color": Color("#3EA95E"), "icon": "heal"},
+	"shop": {"label": "店", "color": Color("#C9A227"), "icon": "dice"},
+	"event": {"label": "イベント", "color": Color("#4F8C8A"), "icon": "focus"},
+	"boss": {"label": "ボス", "color": Color("#8E2F6B"), "icon": "enemy_boss"},
+}
+
+# Row -> what may appear there, as a weighted bag. The early rows are plain
+# fights so the game gets taught before it gets complicated; 強敵 only turn
+# up once there is a deck to beat them with; 休憩 get commoner as the run
+# wears the player down. This lands around 7 fights in the 12 stops.
+const NODE_WEIGHTS := [
+	{"battle": 1},                                        # row 0
+	{"battle": 4, "event": 2},                            # row 1
+	{"battle": 4, "event": 2, "shop": 1},                 # row 2
+	{"battle": 4, "rest": 2, "event": 2},                 # row 3
+	{"battle": 4, "elite": 1, "event": 2, "shop": 1},     # row 4
+	{"battle": 3, "elite": 2, "rest": 2, "event": 2},     # row 5
+	{"battle": 3, "elite": 2, "event": 2, "shop": 2},     # row 6
+	{"battle": 3, "elite": 2, "rest": 3, "event": 2},     # row 7
+	{"battle": 3, "elite": 3, "event": 2, "shop": 1},     # row 8
+	{"battle": 3, "elite": 3, "rest": 3, "event": 1},     # row 9
+	{"rest": 3, "shop": 2},                               # row 10 — before the boss
+	{"boss": 1},                                          # row 11
+]
+
+var map_nodes: Array = []          # [row][col] -> node Dictionary, or null
+var map_row := -1                  # -1 = the run has not entered the map yet
+var map_col := 0
+
+func _generate_map() -> void:
+	map_nodes = []
+	for row in range(MAP_ROWS):
+		var cells := []
+		for col in range(MAP_COLS):
+			cells.append(null)
+		map_nodes.append(cells)
+	map_row = -1
+	map_col = 0
+
+	for w in range(MAP_WALKERS):
+		var col := rng.randi_range(0, MAP_COLS - 1)
+		var prev_col := -1
+		for row in range(MAP_ROWS):
+			# The boss row is one node wide, so every walker funnels into it.
+			var here: int = 1 if row == MAP_ROWS - 1 else col
+			_ensure_map_node(row, here)
+			if prev_col >= 0:
+				(map_nodes[row - 1][prev_col] as Dictionary)["links"][here] = true
+			prev_col = here
+			if row < MAP_ROWS - 1:
+				col = clampi(here + rng.randi_range(-1, 1), 0, MAP_COLS - 1)
+
+	for row in range(MAP_ROWS):
+		for col in range(MAP_COLS):
+			var node = map_nodes[row][col]
+			if node == null:
+				continue
+			node["type"] = _pick_node_type(row)
+			if node["type"] in ["battle", "elite", "boss"]:
+				node["enemy"] = _pick_enemy_for(row, str(node["type"]))
+
+func _ensure_map_node(row: int, col: int) -> void:
+	if map_nodes[row][col] == null:
+		map_nodes[row][col] = {
+			"row": row, "col": col, "type": "battle", "enemy": -1,
+			"links": {}, "cleared": false,
+		}
+
+func _pick_node_type(row: int) -> String:
+	var weights: Dictionary = NODE_WEIGHTS[clampi(row, 0, NODE_WEIGHTS.size() - 1)]
+	var total := 0
+	for key in weights.keys():
+		total += int(weights[key])
+	var roll := rng.randi_range(1, max(total, 1))
+	for key in weights.keys():
+		roll -= int(weights[key])
+		if roll <= 0:
+			return str(key)
+	return "battle"
+
+# Enemies are drawn from the same table as before, but indexed by how far up
+# the map the fight sits rather than by a global counter — so two runs that
+# take different routes meet different rosters.
+func _pick_enemy_for(row: int, kind: String) -> int:
+	var last: int = enemy_defs.size() - 1
+	if kind == "boss":
+		return last
+	var span: float = float(row) / float(max(MAP_ROWS - 2, 1))
+	var base: int = int(round(span * float(last - 1)))
+	if kind == "elite":
+		base += 1
+	return clampi(base, 0, last - 1)
+
+func _is_boss_node() -> bool:
+	var node = _map_node_at(map_row, map_col)
+	return node != null and str(node.get("type", "")) == "boss"
+
+func _map_node_at(row: int, col: int):
+	if row < 0 or row >= MAP_ROWS or col < 0 or col >= MAP_COLS:
+		return null
+	return map_nodes[row][col]
+
+# What the player may enter next: any node on the bottom row before the run
+# has started, otherwise whatever the current node links up to.
+func _map_reachable() -> Array:
+	var out := []
+	if map_nodes.is_empty():
+		return out
+	if map_row < 0:
+		for col in range(MAP_COLS):
+			if map_nodes[0][col] != null:
+				out.append(Vector2i(col, 0))
+		return out
+	var node = _map_node_at(map_row, map_col)
+	if node == null:
+		return out
+	for col in (node["links"] as Dictionary).keys():
+		if _map_node_at(map_row + 1, int(col)) != null:
+			out.append(Vector2i(int(col), map_row + 1))
+	return out
+
+func _is_map_reachable(row: int, col: int) -> bool:
+	for p in _map_reachable():
+		if p.x == col and p.y == row:
+			return true
+	return false
+
 func _setup_encounter() -> void:
-	# The last slot is always the boss; the fights before it walk the table
-	# in order, so adding an enemy row lengthens the run's variety without
-	# touching any code here.
-	var index: int = enemy_defs.size() - 1 if encounter >= MAX_ENCOUNTERS else min(encounter - 1, enemy_defs.size() - 2)
+	# Which enemy is decided by the map node the player walked into, not by
+	# a global counter — that is what makes choosing a route mean something.
+	var node = _map_node_at(map_row, map_col)
+	var index: int = enemy_defs.size() - 1
+	if node != null and int(node.get("enemy", -1)) >= 0:
+		index = clampi(int(node["enemy"]), 0, enemy_defs.size() - 1)
 	var def: Dictionary = enemy_defs[index]
 	var enemy := _make_enemy(
 		str(def["name"]), int(def["hp"]), int(def["damage"]),
@@ -3424,9 +3994,15 @@ func _setup_encounter() -> void:
 	for trait_key in ["armor", "regen", "thorns", "gold"]:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
+	if node != null and str(node.get("type", "")) == "elite":
+		enemy["max_hp"] = int(enemy["max_hp"]) * 3 / 2
+		enemy["hp"] = int(enemy["max_hp"])
+		enemy["damage"] = int(enemy["damage"]) + 2
+		enemy["gold"] = int(enemy["gold"]) * 2
+		enemy["type"] = "%s（強敵）" % str(enemy["type"])
 	enemies.append(enemy)
 
-	for n in range(clamp(encounter - 1, 0, MAX_DEBUFFS - 1)):
+	for n in range(clamp(map_row / 3, 0, MAX_DEBUFFS - 1)):
 		var p := _random_empty_cell()
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
@@ -4147,9 +4723,12 @@ func _on_die_reward_selected(die_id: String) -> void:
 	_close_overlay()
 	_hide_banner()
 	sfx.emit("reward")
-	_start_encounter()
 	_set_log("%sダイスを手に入れた（%s）。手札は全%d個から引かれます。" % [
 		str(die_def["name"]), str(die_def["effect"]), dice_bag.size()])
+	if _is_boss_node():
+		_show_victory()
+	else:
+		_show_map()
 
 func _can_place_reward(pos: Vector2i) -> bool:
 	if not _inside(pos):
@@ -4192,11 +4771,11 @@ func _on_cell_pressed(index: int) -> void:
 		preview_place_pos = Vector2i(-1, -1)
 		_hide_banner()
 		sfx.emit("reward")
-		if encounter >= MAX_ENCOUNTERS:
+		if _is_boss_node():
 			_show_victory()
 		else:
-			_start_encounter()
 			_set_log("%s を配置しました。" % pending_reward_name)
+			_show_map()
 	elif ring_index_map.has(pos):
 		_show_cell_info(pos)
 
