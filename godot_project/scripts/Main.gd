@@ -13,6 +13,12 @@ const MAX_DEBUFFS := 4
 const HAND_VISIBLE := 4.7
 const HAND_GAP := 7.0
 const MAX_ENCOUNTERS := 7
+# A die face is normally the count of steps it moves you, signed for
+# direction — but two dice need faces that are not step counts at all: 帰還
+# has a "go home" face, and one day something might need another symbol.
+# Sentinels far outside any real face range (±1-8) so they can never be
+# mistaken for a rolled distance.
+const RESET_FACE := 99
 
 # Every size in this file is authored in these units, and the window's
 # content scale is pinned to them at startup (see _apply_content_scale), so
@@ -449,15 +455,21 @@ class DiceFace:
 	# laid over the card sits on a blank face instead of on top of a number
 	# the die has not actually rolled yet.
 	var query := false
+	# A negative face (逆走) reads as a photographic negative of a normal
+	# die — same pip count, opposite fill — so "this moves you backwards"
+	# is visible on the face itself, not just in the card's text below it.
+	var invert := false
 
 	func _draw() -> void:
-		draw_rect(Rect2(Vector2.ZERO, size), face_color, true)
-		draw_rect(Rect2(Vector2.ZERO, size), dot_color, false, max(2.0, size.x * 0.06))
+		var bg: Color = dot_color if invert else face_color
+		var fg: Color = face_color if invert else dot_color
+		draw_rect(Rect2(Vector2.ZERO, size), bg, true)
+		draw_rect(Rect2(Vector2.ZERO, size), fg, false, max(2.0, size.x * 0.06))
 		if query:
 			return
 		var dot_r: float = min(size.x, size.y) * 0.10
-		for p in _pip_positions(value):
-			draw_circle(Vector2(p.x * size.x, p.y * size.y), dot_r, dot_color)
+		for p in _pip_positions(absi(value)):
+			draw_circle(Vector2(p.x * size.x, p.y * size.y), dot_r, fg)
 
 	func _pip_positions(v: int) -> Array:
 		var l := 0.26
@@ -467,6 +479,9 @@ class DiceFace:
 		var m := 0.5
 		var b := 0.74
 		match v:
+			0:
+				# A 0 face is a blank die: nothing rolled, nowhere to walk.
+				return []
 			1:
 				return [Vector2(c, m)]
 			2:
@@ -727,8 +742,6 @@ class BoardView:
 		var seen := {}
 		for die in main.hand:
 			var roll := int(die.get("roll", 0))
-			if roll <= 0:
-				continue
 			var cell: Vector2i = main._landing_cell_for(roll)
 			var ring_index: int = int(seen.get(cell, 0))
 			seen[cell] = ring_index + 1
@@ -1087,6 +1100,14 @@ var tile_defs := {
 		"trigger": "pass", "effect": "1歩多く進む",
 		"effects": [{"on": "pass", "op": "step", "amount": 1}],
 		"detail": "出目を1つ伸ばす。止まりたいマスに足りないときの調整に使う。"},
+	"assault": {"name": "突進", "kind": "移動", "color": Color("#D6491F"), "icon": "slash",
+		"trigger": "stop", "effect": "4ダメージ＋出目（逆走では出目ぶん弱まる）",
+		"effects": [{"on": "stop", "op": "attack", "amount": 4, "add_scale": "roll"}],
+		"detail": "大きい出目で踏み込むほど重い。逆走で辿り着くと出目ぶん弱まり、出目次第では不発にもなる — 前進で使うためのマス。"},
+	"caution": {"name": "慎重", "kind": "移動", "color": Color("#2E6B8C"), "icon": "guard",
+		"trigger": "stop", "effect": "9ダメージ－出目（逆走では出目ぶん強まる）",
+		"effects": [{"on": "stop", "op": "attack", "amount": 9, "add_scale": "roll", "add_scale_sign": -1}],
+		"detail": "突進の裏返し。小さい出目、あるいは逆走で辿り着くほど重くなる — 大きく動いた勢いそのままでは弱く、抑えて止まるか押し戻されて初めて活きる。"},
 
 	# --- 連鎖: コンボを積み、コンボを参照するマスで清算する ---
 	"chain": {"name": "連鎖路", "kind": "連鎖", "color": Color("#F2C230"), "icon": "chain",
@@ -1211,6 +1232,10 @@ var tile_defs := {
 		"trigger": "stop", "effect": "出目5以上で止まると行動+1",
 		"effects": [{"on": "stop", "op": "action", "amount": 1, "cond": {"min_roll": 5}}],
 		"detail": "大きい出目で踏み込めば、そのターンにもう一度動ける。条件を満たせない出目では何も起きない。"},
+	"one_more": {"name": "ワンモア", "kind": "補助", "color": Color("#E0A32B"), "icon": "dice",
+		"trigger": "stop", "effect": "行動+1",
+		"effects": [{"on": "stop", "op": "action", "amount": 1}],
+		"detail": "出目に関係なく必ず行動が1回戻る。好機より控えめだが、条件なしで確実に手数を伸ばせる。"},
 	"altar": {"name": "供物台", "kind": "補助", "color": Color("#9C3A6B"), "icon": "skull",
 		"trigger": "stop", "effect": "HP4を払ってコンボ+3、チャージ+3",
 		"effects": [{"on": "stop", "op": "self_damage", "amount": 4},
@@ -1243,8 +1268,12 @@ var temp_defs := {
 # worth more on a board built to suit it, so the tile-build and the
 # dice-build pull on each other instead of being two separate piles.
 #
-# "dir" of -1 makes the piece walk backwards — the one thing that changes
-# the shape of movement itself rather than what movement pays.
+# A face's sign is its direction: a positive face steps forward, a negative
+# one steps back. Every ordinary die only ever has positive faces, so this
+# costs nothing for the rest of the roster — it exists for 逆走, whose
+# faces are all negative, and it is also why 突進/慎重 below can read the
+# turn's signed roll directly instead of needing their own "which way did
+# this die point" logic.
 var dice_defs := {
 	# --- 基本 ---
 	"normal": {"name": "標準", "faces": [1, 2, 3, 4, 5, 6],
@@ -1326,14 +1355,24 @@ var dice_defs := {
 		"detail": "毒だらけになった盤面を平気で渡り歩ける。敵が毒を撒き始める中盤以降で価値が上がる。"},
 
 	# --- 移動そのものを変える ---
-	"reverse": {"name": "逆走", "faces": [1, 2, 3, 4, 5, 6],
+	"reverse": {"name": "逆走", "faces": [-1, -2, -3, -4, -5, -6],
 		"color": Color("#C25A2B"), "short": "逆向きに進む", "effect": "リングを逆向きに進む",
-		"dir": -1,
-		"detail": "唯一まっすぐ戻れるダイス。前進だけでは届かない手前のマスに止まれるので、着地点の選択肢が別物になる。ただし周回は進まない。"},
+		"detail": "出目がすべて負の、唯一まっすぐ戻れるダイス。前進だけでは届かない手前のマスに止まれるので着地点の選択肢が別物になり、突進マスは弱まり慎重マスは強まる。ただし周回は進まない。"},
 	"vault": {"name": "跳躍", "faces": [2, 2, 3, 3, 4, 4],
 		"color": Color("#16A0C8"), "short": "+2歩", "effect": "使うと2歩多く進む",
 		"effects": [{"on": "spend", "op": "step", "amount": 2}],
-		"detail": "実質4から6の移動になる。通過型マスを多く踏みたいときや、周回を稼ぎたいときに。"}
+		"detail": "実質4から6の移動になる。通過型マスを多く踏みたいときや、周回を稼ぎたいときに。"},
+	"reset": {"name": "帰還", "faces": [2, 3, 4, 5, RESET_FACE, RESET_FACE],
+		"color": Color("#C9A227"), "short": "帰の目でスタートへ", "effect": "「帰」の目が出るとスタート地点へ戻る",
+		"detail": "6面のうち2面が「帰」。出ればどこにいてもスタート地点まで飛んで戻る、歩数を消費しない移動。危険な予告マスから逃げたり、盛った盤面を素通りしたくない時の緊急脱出に。"},
+	"tempo": {"name": "コンボ", "faces": [0, 0, 0, 1, 1, 1],
+		"color": Color("#D6812B"), "short": "行動+1", "effect": "使うと行動+1（実質タダで使える）",
+		"effects": [{"on": "spend", "op": "action", "amount": 1}],
+		"detail": "使った瞬間に行動が1回戻るので、実質タダで手札を1枚消費できる。出目は0か1で移動はほぼ進まないが、その分の行動をコンボ積みや連鎖の清算に回せる。"},
+	"guard_die": {"name": "防御", "faces": [1, 1, 2, 2, 3, 4],
+		"color": Color("#2E7BD6"), "short": "出目ぶん盾", "effect": "使うと出目と同じ数だけ盾",
+		"effects": [{"on": "spend", "op": "shield", "amount": 1, "scale": "roll"}],
+		"detail": "出目が小さいほど得るものも小さい、正直な盾ダイス。大きい目を引いた時ほど嬉しい、数少ない「出目そのものが報酬」のダイス。"}
 }
 
 # Everything except the plain road and the two 標準-tier dice is on offer,
@@ -1342,12 +1381,13 @@ var die_reward_pool := [
 	"heavydie", "precise", "gamble",
 	"blade", "rush", "bulwark", "mend", "toxin", "dynamo", "tempest",
 	"chainb", "delve", "augur", "charger", "ember", "rally", "devote", "nimble",
-	"reverse", "vault"
+	"reverse", "vault", "reset", "tempo", "guard_die"
 ]
 
 var reward_pool := [
 	{"type": "slash"}, {"type": "fire"}, {"type": "guard"}, {"type": "heal"},
 	{"type": "gale"}, {"type": "tailwind"}, {"type": "warp"},
+	{"type": "assault"}, {"type": "caution"},
 	{"type": "chain"}, {"type": "volley"}, {"type": "resonance"}, {"type": "spiral"},
 	{"type": "battery"}, {"type": "aim"}, {"type": "lance"},
 	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
@@ -1355,7 +1395,7 @@ var reward_pool := [
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
 	{"type": "milestone"}, {"type": "beacon"}, {"type": "pilgrim"},
 	{"type": "focus"}, {"type": "spring"}, {"type": "shock"},
-	{"type": "relay"}, {"type": "windfall"}, {"type": "altar"}
+	{"type": "relay"}, {"type": "windfall"}, {"type": "one_more"}, {"type": "altar"}
 ]
 
 var hero_defs := {
@@ -2353,10 +2393,13 @@ func _tile_readout(tile: Dictionary) -> Dictionary:
 		var scale := str(eff.get("scale", ""))
 		if scale != "":
 			amount *= _scale_value(scale)
+		var add_scale := str(eff.get("add_scale", ""))
+		if add_scale != "":
+			amount += _scale_value(add_scale) * int(eff.get("add_scale_sign", 1))
 		if amount <= best_amount:
 			continue
 		best_amount = amount
-		scaled = scale != ""
+		scaled = scale != "" or add_scale != ""
 		var glyph := str(OP_GLYPHS[op])
 		if op == "draw" or op == "reroll" or op == "action":
 			best_text = glyph
@@ -2632,10 +2675,17 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	face_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(face_holder)
 
+	# "Not yet rolled" used to be inferred from roll<=0, but two of this
+	# die's own faces can legitimately roll a real 0 or a negative number
+	# now, so the turn's own dice_rolled flag is the only honest signal.
+	var unrolled: bool = not dice_rolled
+	var is_reset: bool = dice_rolled and roll == RESET_FACE
+
 	var face := DiceFace.new()
 	face.name = "RolledFace"
-	face.value = max(roll, 1)
-	face.query = roll <= 0
+	face.value = roll
+	face.invert = roll < 0
+	face.query = unrolled or is_reset
 	var half: float = face_size * 0.5
 	face.custom_minimum_size = Vector2(face_size, face_size)
 	face.size = Vector2(face_size, face_size)
@@ -2648,16 +2698,16 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	face.offset_bottom = half
 	face.pivot_offset = Vector2(half, half)
 
-	if roll <= 0:
-		var query := _make_label(int(face_size * 0.72), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-		query.text = "?"
-		query.autowrap_mode = TextServer.AUTOWRAP_OFF
-		query.set_anchors_preset(Control.PRESET_CENTER)
-		query.offset_left = -half
-		query.offset_top = -half - 7.0
-		query.offset_right = half
-		query.offset_bottom = half + 7.0
-		face_holder.add_child(query)
+	if unrolled or is_reset:
+		var overlay := _make_label(int(face_size * 0.72), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		overlay.text = "?" if unrolled else "帰"
+		overlay.autowrap_mode = TextServer.AUTOWRAP_OFF
+		overlay.set_anchors_preset(Control.PRESET_CENTER)
+		overlay.offset_left = -half
+		overlay.offset_top = -half - 7.0
+		overlay.offset_right = half
+		overlay.offset_bottom = half + 7.0
+		face_holder.add_child(overlay)
 
 	# The die's own range stays on the card, small, so a good result can be
 	# read against what this die is capable of.
@@ -2670,10 +2720,13 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	sorted_faces.sort()
 	for face_value in sorted_faces:
 		var pip := DiceFace.new()
-		pip.value = int(face_value)
+		var fv := int(face_value)
+		pip.value = fv
+		pip.invert = fv < 0
+		pip.query = fv == RESET_FACE
 		pip.custom_minimum_size = Vector2(pip_size, pip_size)
 		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		pip.modulate = Color(1, 1, 1, 0.55 if int(face_value) != roll else 1.0)
+		pip.modulate = Color(1, 1, 1, 1.0 if (dice_rolled and fv == roll) else 0.55)
 		faces_row.add_child(pip)
 
 	# What this die *does* when spent. This is the line the choice is now
@@ -3021,7 +3074,16 @@ func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
 	swatch.add_theme_stylebox_override("panel", _flat_style(Color(die_def["color"]), COL_INK, 3, 0, 0))
 	line.add_child(swatch)
 	var pip := DiceFace.new()
-	pip.value = int(faces.max())
+	# The representative face is whichever has the biggest magnitude, not
+	# the biggest number — for 逆走 (all negative) that is its -6, not the
+	# least-negative -1 a plain max() would pick.
+	var showcase: int = int(faces[0])
+	for f in faces:
+		if absi(int(f)) > absi(showcase):
+			showcase = int(f)
+	pip.value = showcase
+	pip.invert = showcase < 0
+	pip.query = showcase == RESET_FACE
 	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pip.set_anchors_preset(Control.PRESET_FULL_RECT)
 	pip.offset_left = 6
@@ -3029,6 +3091,12 @@ func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
 	pip.offset_right = -6
 	pip.offset_bottom = -6
 	swatch.add_child(pip)
+	if showcase == RESET_FACE:
+		var flag := _make_label(18, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
+		flag.text = "帰"
+		flag.set_anchors_preset(Control.PRESET_FULL_RECT)
+		flag.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		swatch.add_child(flag)
 
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3496,16 +3564,12 @@ func _on_die_pressed(index: int) -> void:
 		return
 	var die: Dictionary = hand[index]
 	var final_roll := int(die.get("roll", 0))
-	if final_roll <= 0:
-		return
 
 	# Lock the state before the first await so a second tap during the move
 	# cannot spend a second die.
 	state = "moving"
 	selected_die = die.duplicate(true)
 	selected_roll = final_roll
-	steps_left = final_roll
-	move_dir = int(selected_die.get("dir", 1))
 	action_index += 1
 	crossed_this_action = 0
 	route_path = [player_pos]
@@ -3516,11 +3580,21 @@ func _on_die_pressed(index: int) -> void:
 	# The die's own effects fire before the piece moves, so a die that pays
 	# combo or charge has already paid it by the time the squares are read.
 	var spend_note := _run_effects(selected_die.get("effects", []), "spend", str(selected_die["name"]))
-	_set_log("%sダイス：出目 %d%s" % [
-		str(selected_die["name"]), final_roll, ("　" + spend_note) if spend_note != "" else ""])
+	var roll_text := "帰" if final_roll == RESET_FACE else str(final_roll)
+	_set_log("%sダイス：出目 %s%s" % [
+		str(selected_die["name"]), roll_text, ("　" + spend_note) if spend_note != "" else ""])
 	_refresh_all()
 	await get_tree().create_timer(0.2).timeout
-	await _advance_player()
+
+	if final_roll == RESET_FACE:
+		await _warp_to_start()
+	else:
+		# The roll's own sign is the direction: 逆走's faces are all
+		# negative, so no separate "which way" field is needed anywhere
+		# else in the movement code.
+		move_dir = -1 if final_roll < 0 else 1
+		steps_left = absi(final_roll)
+		await _advance_player()
 
 func _advance_player() -> void:
 	while steps_left > 0:
@@ -3551,7 +3625,25 @@ func _advance_player() -> void:
 		if not _any_enemy_alive():
 			_finish_encounter()
 			return
+	await _resolve_landing()
 
+# 帰還's "帰" face skips the walk entirely — it is a jump, not a sweep, so
+# nothing along the way fires, no laps are credited, and 疾走 crossed-count
+# stays at zero. The square the player lands on still resolves normally,
+# through the same _resolve_landing tail every ordinary move ends on.
+func _warp_to_start() -> void:
+	player_step = _track_index(_start_pos())
+	player_pos = _pos_for_step(player_step)
+	route_path.append(player_pos)
+	sfx.emit("step")
+	_refresh_board()
+	await _animate_player_step(STEP_TIME * 1.4)
+	await _resolve_landing()
+
+# The tail every move shares once the piece has stopped moving: resolve the
+# landing square, spend the action, and either hand control back to the
+# player or pass to the enemy.
+func _resolve_landing() -> void:
 	var stop_message := _resolve_stop_tile(player_pos)
 	if stop_message != "":
 		_set_log(stop_message)
@@ -3700,6 +3792,14 @@ func _run_effects(effects: Array, timing: String, label: String) -> String:
 		var scale := str(eff.get("scale", ""))
 		if scale != "":
 			amount *= _scale_value(scale)
+		# add_scale is additive rather than multiplicative — "4 + the roll"
+		# instead of "4 times the roll" — and, combined with add_scale_sign,
+		# is what lets 突進/慎重 read the same signed roll in opposite
+		# directions without either tile needing to know 逆走 exists.
+		var add_scale := str(eff.get("add_scale", ""))
+		if add_scale != "":
+			var sign_mult := int(eff.get("add_scale_sign", 1))
+			amount += _scale_value(add_scale) * sign_mult
 		amount *= _die_op_multiplier(op, timing)
 		var msg := _apply_op(op, amount, label)
 		if msg != "":
@@ -4154,19 +4254,25 @@ func _track_index(pos: Vector2i) -> int:
 # Where a roll of this size actually finishes, following 跳躍路 the same
 # way the move itself will.
 func _landing_cell_for(roll: int) -> Vector2i:
+	if roll == RESET_FACE:
+		return _start_pos()
 	var step := player_step
-	var remaining := roll
+	var dir := -1 if roll < 0 else 1
+	var remaining := absi(roll)
 	var guard := 0
 	while remaining > 0 and guard < 32:
 		guard += 1
-		step = _normalize_step(step + 1)
+		step = _normalize_step(step + dir)
 		remaining -= 1
 		var p := _pos_for_step(step)
 		var tile: Dictionary = tile_defs[str(permanent_board[p.y][p.x])]
-		for raw in tile.get("effects", []):
-			var eff: Dictionary = raw
-			if str(eff.get("on", "stop")) == "pass" and str(eff["op"]) == "step":
-				remaining += int(eff.get("amount", 0))
+		# 跳躍路's "one more step" only extends a forward sweep — walking
+		# back through it should not also start stretching the walk.
+		if dir > 0:
+			for raw in tile.get("effects", []):
+				var eff: Dictionary = raw
+				if str(eff.get("on", "stop")) == "pass" and str(eff["op"]) == "step":
+					remaining += int(eff.get("amount", 0))
 	return _pos_for_step(step)
 
 func _steps_ahead(pos: Vector2i) -> int:
@@ -4263,7 +4369,6 @@ func _make_die(die_id: String) -> Dictionary:
 		"faces": (def["faces"] as Array).duplicate(),
 		"effects": (def.get("effects", []) as Array).duplicate(true),
 		"mods": (def.get("mods", []) as Array).duplicate(true),
-		"dir": int(def.get("dir", 1)),
 		"pierce": bool(def.get("pierce", false)),
 		"color": Color(def["color"]),
 		"short": str(def["short"]),
@@ -4278,7 +4383,8 @@ func _faces_text(faces: Array) -> String:
 	sorted_faces.sort()
 	var parts := []
 	for f in sorted_faces:
-		parts.append(str(int(f)))
+		var fv := int(f)
+		parts.append("帰" if fv == RESET_FACE else str(fv))
 	return "・".join(parts)
 
 func _hero_dice_names(hero: Dictionary) -> String:
