@@ -34,11 +34,15 @@ const WARP_FACES := {
 }
 
 # Every size in this file is authored in these units, and the window's
-# content scale is pinned to them at startup (see _apply_content_scale), so
-# one unit lands within a few percent of one real screen pixel on a phone.
-# The old build authored against 720x1280, which a 430px-wide phone scaled
-# to 0.60 — a font_size of 10 arrived on screen as six physical pixels.
-const DESIGN_SIZE := Vector2i(432, 768)
+# content scale is pinned to them at startup (see _apply_content_scale).
+#
+# 16:9 landscape, for desktop and for a phone held sideways. The two-column
+# layout in _layout_screen (board left, everything the player reads or
+# presses stacked right) needs 536 units of height for its right column, so
+# 576 leaves it real slack; and its 423-unit column width lands close to the
+# 412 the old portrait build was authored against, which is why every font
+# size and card width carries over without retuning.
+const DESIGN_SIZE := Vector2i(1024, 576)
 
 # --- palette -----------------------------------------------------------
 # A lit tabletop rather than a dark dungeon: light ground, saturated pieces,
@@ -932,6 +936,8 @@ var hp_bar: GaugeBar
 var hp_label: Label
 var shield_chip: PanelContainer
 var shield_label: Label
+var gold_chip: PanelContainer
+var gold_label: Label
 var combo_chip: PanelContainer
 var combo_label: Label
 var action_pip_box: HBoxContainer
@@ -1003,6 +1009,9 @@ var player_impact := 0.0
 var combo_hits := 0
 var run_damage_dealt := 0
 var run_turns := 0
+# Spending money for the map's shop nodes. Earned by killing things, so the
+# only way to afford a removal is to have fought for it.
+var gold := 0
 
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
@@ -1417,29 +1426,25 @@ var hero_defs := {
 			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
 		]
 	},
-	"mage": {
-		"name": "魔導士",
-		"hp": 28,
-		"hand": 3,
-		"color": Color("#7C4DD6"),
-		"desc": "溜めて撃ち抜く。チャージの芯と、四隅へ飛ぶテレポートを持つ。",
-		"dice": ["normal", "normal", "charger", "teleport"],
-		"tiles": [
-			[2, 0, "battery"], [3, 2, "aim"], [1, 3, "spring"]
-		]
-	},
-	"rogue": {
-		"name": "盗賊",
-		"hp": 22,
-		"hand": 4,
-		"color": Color("#5B8C2A"),
-		"desc": "手札4枚。HPは全キャラ最低だが、とにかく手数で押し切る。",
-		"dice": ["normal", "normal", "tempo", "nimble", "gamble"],
-		"tiles": [
-			[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]
-		]
-	}
 }
+
+# 魔導士 and 盗賊 are shelved, not deleted — everything that reads heroes
+# still walks hero_defs, so adding a row here is all it takes to bring one
+# back in an update. Kept verbatim so their kits do not have to be
+# reinvented later.
+#
+#	"mage": {
+#		"name": "魔導士", "hp": 28, "hand": 3, "color": Color("#7C4DD6"),
+#		"desc": "溜めて撃ち抜く。チャージの芯と、四隅へ飛ぶテレポートを持つ。",
+#		"dice": ["normal", "normal", "charger", "teleport"],
+#		"tiles": [[2, 0, "battery"], [3, 2, "aim"], [1, 3, "spring"]]
+#	},
+#	"rogue": {
+#		"name": "盗賊", "hp": 22, "hand": 4, "color": Color("#5B8C2A"),
+#		"desc": "手札4枚。HPは全キャラ最低だが、とにかく手数で押し切る。",
+#		"dice": ["normal", "normal", "tempo", "nimble", "gamble"],
+#		"tiles": [[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]]
+#	}
 
 func _ready() -> void:
 	rng.randomize()
@@ -1606,6 +1611,29 @@ func _build_top_zone() -> void:
 	shield_label = _make_label(FS_BODY, Color("#FFF7E6"), HORIZONTAL_ALIGNMENT_LEFT, true)
 	shield_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	shield_inner.add_child(shield_label)
+
+	# Gold sits next to shield as another chip. It survives the whole run
+	# rather than the turn, so unlike shield it is never dimmed to zero.
+	gold_chip = PanelContainer.new()
+	gold_chip.add_theme_stylebox_override("panel", _flat_style(COL_GOLD, COL_INK, 2, 6, 4))
+	gold_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gold_chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	chip_row.add_child(gold_chip)
+	var gold_inner := HBoxContainer.new()
+	gold_inner.add_theme_constant_override("separation", 4)
+	gold_inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gold_chip.add_child(gold_inner)
+	var gold_icon := IconGlyph.new()
+	gold_icon.kind = "pip_on"
+	gold_icon.glyph_color = COL_INK
+	gold_icon.outlined = false
+	gold_icon.custom_minimum_size = Vector2(16, 16)
+	gold_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gold_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gold_inner.add_child(gold_icon)
+	gold_label = _make_label(FS_BODY, COL_INK, HORIZONTAL_ALIGNMENT_LEFT, true)
+	gold_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	gold_inner.add_child(gold_label)
 
 	var action_caption := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT)
 	action_caption.text = "行動"
@@ -2210,6 +2238,9 @@ func _refresh_top() -> void:
 
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
+
+	gold_label.text = str(gold)
+	gold_chip.visible = state != "title"
 
 	combo_label.text = "コンボ %d" % combo
 	combo_chip.visible = state == "player" or state == "moving"
@@ -3305,6 +3336,7 @@ func _start_run(key: String) -> void:
 	next_enemy_uid = 0
 	run_damage_dealt = 0
 	run_turns = 0
+	gold = 0
 	encounter = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
@@ -3365,19 +3397,19 @@ const ENEMY_TRAIT_TEXT := {
 
 var enemy_defs := [
 	{"name": "はぐれ兵", "hp": 20, "damage": 5, "kind": "cell",
-		"mode": "relative", "cells": [2]},
+		"mode": "relative", "cells": [2], "gold": 12},
 	{"name": "斥候", "hp": 28, "damage": 6, "kind": "cell",
-		"mode": "relative", "cells": [2, 5]},
+		"mode": "relative", "cells": [2, 5], "gold": 15},
 	{"name": "射手", "hp": 36, "damage": 7, "kind": "guaranteed",
-		"mode": "relative", "cells": [], "armor": 2},
+		"mode": "relative", "cells": [], "armor": 2, "gold": 18},
 	{"name": "重装", "hp": 44, "damage": 8, "kind": "cell",
-		"mode": "fixed", "cells": [2, 6, 10], "armor": 3},
+		"mode": "fixed", "cells": [2, 6, 10], "armor": 3, "gold": 21},
 	{"name": "疫病持ち", "hp": 46, "damage": 8, "kind": "cell",
-		"mode": "relative", "cells": [1, 2, 3], "regen": 4},
+		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22},
 	{"name": "隊長", "hp": 52, "damage": 9, "kind": "cell",
-		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2},
+		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2, "gold": 25},
 	{"name": "ボス", "hp": 62, "damage": 10, "kind": "guaranteed",
-		"mode": "relative", "cells": [], "armor": 2, "regen": 3},
+		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40},
 ]
 
 func _setup_encounter() -> void:
@@ -3389,7 +3421,7 @@ func _setup_encounter() -> void:
 	var enemy := _make_enemy(
 		str(def["name"]), int(def["hp"]), int(def["damage"]),
 		str(def["kind"]), str(def["mode"]), def["cells"])
-	for trait_key in ["armor", "regen", "thorns"]:
+	for trait_key in ["armor", "regen", "thorns", "gold"]:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
 	enemies.append(enemy)
@@ -3423,6 +3455,7 @@ func _make_enemy(type_name: String, hp: int, damage: int, attack_kind: String, t
 		"armor": 0,
 		"regen": 0,
 		"thorns": 0,
+		"gold": 0,
 		"telegraph_mode": telegraph_mode,
 		# Only one of these is ever read, picked by telegraph_mode — kept
 		# as two named fields instead of one ambiguous "offsets" so a
@@ -3977,6 +4010,13 @@ func _cleanup_dead_enemies() -> void:
 		_spawn_enemy_popup("撃破!", COL_GOLD, true)
 		_spawn_burst_at_enemy()
 		sfx.emit("kill")
+		for enemy in enemies:
+			if int(enemy["hp"]) <= 0:
+				var bounty := int(enemy.get("gold", 0))
+				if bounty > 0:
+					gold += bounty
+					_spawn_enemy_popup("+%dG" % bounty, COL_GOLD)
+		_refresh_top()
 	enemies = survivors
 	if any_died and enemies.is_empty():
 		_clear_debuffs()
