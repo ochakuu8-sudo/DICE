@@ -5348,7 +5348,10 @@ func _on_die_pressed(index: int) -> void:
 		preview_die_index = index
 		sfx.emit("step")
 		_set_log(_die_preview_text(index))
-		_set_banner(tr("もう一度タップで確定"))
+		# Deliberately no banner: it centres itself on the board and would
+		# sit right on top of the lookahead row this preview exists to fill
+		# in. The card the thumb is already touching says もう一度で確定 in
+		# gold, which is both the affordance and where the player is looking.
 		_refresh_all()
 		return
 
