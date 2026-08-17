@@ -1048,6 +1048,7 @@ var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
 var catalog_return_state := "title"
+var settings_return_state := "title"
 # The hand is rolled once, up front, and the faces then stay put: the
 # player picks which of the known results to walk. Rolling at the moment a
 # die is chosen meant the stop-type tiles could never be aimed at, which
@@ -1469,6 +1470,8 @@ func _ready() -> void:
 	heavy.variation_embolden = 0.75
 	ui_font_heavy = heavy
 	_build_ui()
+	_load_profile()
+	_apply_audio_settings()
 	_layout_screen()
 	_show_title()
 
@@ -3033,6 +3036,16 @@ func _show_catalog() -> void:
 	for die_id in dice_defs.keys():
 		column.add_child(_make_die_catalog_row(str(die_id), int(owned.get(str(die_id), 0))))
 
+	var settings_row := Button.new()
+	settings_row.text = "設定"
+	settings_row.focus_mode = Control.FOCUS_NONE
+	settings_row.custom_minimum_size = Vector2(0, 40)
+	settings_row.add_theme_font_size_override("font_size", FS_SMALL)
+	_style_button(settings_row, COL_PANEL_SUNK, COL_INK)
+	settings_row.add_theme_color_override("font_color", COL_INK)
+	settings_row.pressed.connect(Callable(self, "_show_settings"))
+	overlay_list.add_child(settings_row)
+
 	if catalog_return_state != "title":
 		var quit_row := Button.new()
 		quit_row.text = "この挑戦をやめてタイトルへ"
@@ -3196,6 +3209,8 @@ func _show_title() -> void:
 	_refresh_all()
 	_set_log("")
 	_open_overlay("Dice Board Rogue", "手札のダイスを全部振り、出た目から1つ選んで進む。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
+	if _has_run_save():
+		_add_overlay_option("続きから", "中断した挑戦を再開します。", COL_GOLD, "warp", Callable(self, "_continue_run"))
 	for key in hero_defs.keys():
 		var hero: Dictionary = hero_defs[key]
 		_add_overlay_option(
@@ -3208,6 +3223,7 @@ func _show_title() -> void:
 			Callable(self, "_start_run").bind(key)
 		)
 	_add_overlay_option("図鑑", "マスとダイスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
+	_add_overlay_option("設定", "音量を調整します。", COL_TEXT_SOFT, "dice", Callable(self, "_show_settings"))
 	_layout_overlay()
 
 func _show_reward() -> void:
@@ -3270,6 +3286,9 @@ func _trigger_label(trigger: String) -> String:
 
 func _show_victory() -> void:
 	state = "victory"
+	_delete_run_save()
+	_bump_lifetime("wins")
+	_save_profile()
 	sfx.emit("kill")
 	_refresh_all()
 	_open_overlay("踏破成功", "%s は全%d層を踏破しました。" % [hero_name, MAP_ROWS])
@@ -3281,6 +3300,9 @@ func _show_victory() -> void:
 
 func _show_game_over(reason: String) -> void:
 	state = "game_over"
+	_delete_run_save()
+	_bump_lifetime("losses")
+	_save_profile()
 	sfx.emit("lose")
 	_refresh_all()
 	_open_overlay("ゲームオーバー", reason)
@@ -3523,6 +3545,7 @@ func _show_map() -> void:
 	state = "map"
 	_hide_banner()
 	_close_overlay()
+	_save_run(false)
 	_refresh_all()
 	_refresh_map()
 	# Keep the row the player is standing on in view as they climb.
@@ -3647,6 +3670,9 @@ func _enter_map_node() -> void:
 	if node == null:
 		return
 	node["cleared"] = true
+	# Recorded before the node resolves, so closing the game mid-fight
+	# resumes into this node instead of back onto the map.
+	_save_run(true)
 	match str(node["type"]):
 		"rest":
 			_resolve_rest_node()
@@ -3833,6 +3859,306 @@ var event_defs := {
 				"effects": [{"op": "heal", "amount": 8}]},
 		]},
 }
+
+func _continue_run() -> void:
+	_close_overlay()
+	if _load_run():
+		return
+	# A save that will not load is worse than none: drop it and go back to
+	# the title rather than leaving a button that does nothing.
+	_delete_run_save()
+	_show_title()
+
+# --- settings -----------------------------------------------------------
+# Volume only, for now. Reachable from the title and from the 図鑑 sheet, so
+# it is available mid-run without abandoning the climb.
+func _show_settings() -> void:
+	settings_return_state = state
+	state = "settings"
+	_open_overlay("設定", "音量を調整します。設定は自動的に保存されます。")
+	_add_volume_row("効果音", "sfx")
+	_add_volume_row("BGM", "bgm")
+	var close_button := Button.new()
+	close_button.text = "閉じる"
+	close_button.focus_mode = Control.FOCUS_NONE
+	close_button.custom_minimum_size = Vector2(0, 44)
+	close_button.add_theme_font_size_override("font_size", FS_BODY)
+	_style_button(close_button, COL_GOLD, COL_INK)
+	close_button.add_theme_color_override("font_color", COL_INK)
+	close_button.pressed.connect(Callable(self, "_close_settings"))
+	overlay_list.add_child(close_button)
+	_layout_overlay()
+
+func _add_volume_row(label_text: String, which: String) -> void:
+	var value: float = sfx_volume if which == "sfx" else bgm_volume
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL_SUNK, COL_INK, 2, 10, 8))
+	overlay_list.add_child(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	panel.add_child(col)
+
+	var caption := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	caption.text = "%s  %d%%" % [label_text, int(round(value * 100.0))]
+	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(caption)
+
+	# Buttons rather than a Slider: this UI is built for touch, and five
+	# fixed steps are far easier to hit than a thin drag target.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	col.add_child(row)
+	for step in range(5):
+		var level: float = float(step) / 4.0
+		var button := Button.new()
+		button.text = "%d" % int(round(level * 100.0))
+		button.focus_mode = Control.FOCUS_NONE
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.custom_minimum_size = Vector2(0, 38)
+		button.add_theme_font_size_override("font_size", FS_SMALL)
+		var chosen: bool = absf(level - value) < 0.13
+		_style_button(button, COL_GOLD if chosen else COL_PANEL, COL_INK)
+		button.add_theme_color_override("font_color", COL_INK)
+		button.pressed.connect(Callable(self, "_set_volume").bind(which, level))
+		row.add_child(button)
+
+func _set_volume(which: String, level: float) -> void:
+	if which == "sfx":
+		sfx_volume = level
+	else:
+		bgm_volume = level
+	_apply_audio_settings()
+	_save_profile()
+	if which == "sfx":
+		sfx.emit("step")
+	_show_settings()
+
+func _close_settings() -> void:
+	state = settings_return_state
+	if state == "title":
+		_show_title()
+		return
+	_close_overlay()
+	if state == "map":
+		_show_map()
+	else:
+		_refresh_all()
+
+# --- persistence --------------------------------------------------------
+# Two files, because they have different lifetimes. The profile outlives
+# every run and holds settings plus whatever the player has permanently
+# unlocked; the run file is the current climb and is deleted the moment it
+# ends. JSON rather than ConfigFile because the run is a nested structure
+# (a whole map, a board, a bag) and ConfigFile flattens badly.
+const PROFILE_PATH := "user://profile.json"
+const RUN_PATH := "user://run.json"
+const SAVE_VERSION := 1
+
+var sfx_volume: float = 0.8
+var bgm_volume: float = 0.7
+# Permanent unlocks, keyed by a string the caller invents ("enemy:はぐれ兵").
+# Phase 4's gallery reads this; nothing writes it yet except _unlock.
+var unlocked: Dictionary = {}
+var lifetime: Dictionary = {}
+
+func _load_profile() -> void:
+	var data := _read_json(PROFILE_PATH)
+	if data.is_empty():
+		return
+	sfx_volume = clampf(float(data.get("sfx_volume", sfx_volume)), 0.0, 1.0)
+	bgm_volume = clampf(float(data.get("bgm_volume", bgm_volume)), 0.0, 1.0)
+	unlocked = data.get("unlocked", {})
+	lifetime = data.get("lifetime", {})
+
+func _save_profile() -> void:
+	_write_json(PROFILE_PATH, {
+		"version": SAVE_VERSION,
+		"sfx_volume": sfx_volume,
+		"bgm_volume": bgm_volume,
+		"unlocked": unlocked,
+		"lifetime": lifetime,
+	})
+
+func _unlock(key: String) -> bool:
+	if unlocked.has(key):
+		return false
+	unlocked[key] = true
+	_save_profile()
+	return true
+
+func _is_unlocked(key: String) -> bool:
+	return unlocked.has(key)
+
+func _bump_lifetime(key: String, amount: int = 1) -> void:
+	lifetime[key] = int(lifetime.get(key, 0)) + amount
+
+func _apply_audio_settings() -> void:
+	if sfx == null:
+		return
+	sfx.enabled = sfx_volume > 0.0
+	# -9 dB was the hand-tuned level for "full"; scale down from there and
+	# mute outright at zero rather than trailing off into -80.
+	sfx.volume_db = -80.0 if sfx_volume <= 0.0 else linear_to_db(sfx_volume) - 9.0
+
+# --- run save ---
+# Saved at map level only. A node records that it was entered *before* it
+# resolves, so quitting mid-fight and reloading drops the player back into
+# that same node rather than back onto the map with a free re-pick.
+func _has_run_save() -> bool:
+	return FileAccess.file_exists(RUN_PATH)
+
+func _delete_run_save() -> void:
+	if _has_run_save():
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(RUN_PATH))
+		# globalize_path does not resolve user:// on every platform, so try
+		# the virtual path too — one of the two always lands.
+		if _has_run_save():
+			DirAccess.open("user://").remove("run.json")
+
+func _save_run(node_in_progress: bool = false) -> void:
+	if hero_key == "":
+		return
+	var bag := []
+	for die in dice_bag:
+		bag.append(str(die["id"]))
+	var board := []
+	for row in permanent_board:
+		board.append((row as Array).duplicate())
+	_write_json(RUN_PATH, {
+		"version": SAVE_VERSION,
+		"hero": hero_key,
+		"hp": player_hp,
+		"max_hp": player_max_hp,
+		"hand_limit": hand_limit,
+		"actions": actions_per_turn,
+		"gold": gold,
+		"step": player_step,
+		"damage": run_damage_dealt,
+		"turns": run_turns,
+		"bag": bag,
+		"board": board,
+		"map": _serialize_map(),
+		"map_row": map_row,
+		"map_col": map_col,
+		"in_node": node_in_progress,
+	})
+
+func _serialize_map() -> Array:
+	var rows := []
+	for row in range(MAP_ROWS):
+		var cells := []
+		for col in range(MAP_COLS):
+			var node = map_nodes[row][col]
+			if node == null:
+				cells.append(null)
+				continue
+			var links := []
+			for key in (node["links"] as Dictionary).keys():
+				links.append(int(key))
+			cells.append({
+				"type": str(node["type"]),
+				"enemy": int(node.get("enemy", -1)),
+				"cleared": bool(node.get("cleared", false)),
+				"links": links,
+			})
+		rows.append(cells)
+	return rows
+
+func _deserialize_map(rows: Array) -> void:
+	map_nodes = []
+	for row in range(MAP_ROWS):
+		var cells := []
+		for col in range(MAP_COLS):
+			var raw = rows[row][col] if row < rows.size() and col < (rows[row] as Array).size() else null
+			if raw == null:
+				cells.append(null)
+				continue
+			var links := {}
+			for c in (raw as Dictionary).get("links", []):
+				links[int(c)] = true
+			cells.append({
+				"row": row, "col": col,
+				"type": str((raw as Dictionary).get("type", "battle")),
+				"enemy": int((raw as Dictionary).get("enemy", -1)),
+				"cleared": bool((raw as Dictionary).get("cleared", false)),
+				"links": links,
+			})
+		map_nodes.append(cells)
+
+func _load_run() -> bool:
+	var data := _read_json(RUN_PATH)
+	if data.is_empty() or int(data.get("version", 0)) != SAVE_VERSION:
+		return false
+	var key := str(data.get("hero", ""))
+	if not hero_defs.has(key):
+		return false
+	hero_key = key
+	var hero: Dictionary = hero_defs[key]
+	hero_name = str(hero["name"])
+	hero_token_color = Color(hero["color"])
+	player_max_hp = int(data.get("max_hp", hero["hp"]))
+	player_hp = int(data.get("hp", player_max_hp))
+	hand_limit = int(data.get("hand_limit", hero.get("hand", 3)))
+	actions_per_turn = int(data.get("actions", ACTIONS_PER_TURN))
+	gold = int(data.get("gold", 0))
+	player_step = int(data.get("step", 0))
+	run_damage_dealt = int(data.get("damage", 0))
+	run_turns = int(data.get("turns", 0))
+	player_pos = _pos_for_step(player_step)
+
+	dice_bag = []
+	for id in data.get("bag", []):
+		if dice_defs.has(str(id)):
+			dice_bag.append(_make_die(str(id)))
+	if dice_bag.is_empty():
+		return false
+
+	permanent_board = _make_empty_board("empty")
+	var board: Array = data.get("board", [])
+	for y in range(min(board.size(), BOARD_H)):
+		var row: Array = board[y]
+		for x in range(min(row.size(), BOARD_W)):
+			if tile_defs.has(str(row[x])):
+				permanent_board[y][x] = str(row[x])
+
+	_deserialize_map(data.get("map", []))
+	if map_nodes.is_empty():
+		return false
+	map_row = int(data.get("map_row", -1))
+	map_col = int(data.get("map_col", 0))
+	temp_board = _make_empty_board("none")
+	enemies = []
+	next_enemy_uid = 0
+	hp_bar.display_value = float(player_hp)
+	_snap_player_visual()
+
+	# Mid-node when the game was closed: re-enter that node rather than
+	# handing back a free choice on the map.
+	if bool(data.get("in_node", false)) and map_row >= 0:
+		_enter_map_node()
+	else:
+		_show_map()
+	return true
+
+func _read_json(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	var text := file.get_as_text()
+	file.close()
+	var parsed = JSON.parse_string(text)
+	return parsed if parsed is Dictionary else {}
+
+func _write_json(path: String, data: Dictionary) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_warning("could not write %s" % path)
+		return
+	file.store_string(JSON.stringify(data))
+	file.close()
 
 # --- the run map --------------------------------------------------------
 # A column of rows the player climbs one step at a time, bottom to top,
