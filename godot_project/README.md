@@ -38,6 +38,21 @@ PowerShellからまとめて書き出す場合:
 .\run_editor.ps1 -GodotPath "C:\Godot_v4.7.1-stable_win64.exe"
 ```
 
+## テスト
+
+`tests/` はエディタを開かずに走るヘッドレステストです。エクスポートには含まれません
+（`export_presets.cfg` の `exclude_filter`）。
+
+```powershell
+& "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_preview.gd
+& "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_readout.gd
+```
+
+- `test_preview.gd`: ダイスの1タップ目が情報表示だけで、2タップ目で確定することを確認します。
+- `test_readout.gd`: マスに表示される数字と、実際に与えるダメージが一致することを確認します。
+
+どちらも失敗が0なら終了コード0を返します。
+
 ## 生成済みビルド
 
 GitHub Pages用のWebビルドは、リポジトリのルートにある `index.html` などへ配置しています。

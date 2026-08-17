@@ -840,7 +840,9 @@ class BoardView:
 			return
 		var token: float = main._board_token_size()
 		var seen := {}
-		for die in main.hand:
+		var considered: int = main.preview_die_index
+		for i in range(main.hand.size()):
+			var die: Dictionary = main.hand[i]
 			var roll := int(die.get("roll", 0))
 			var cell: Vector2i = main._landing_cell_for(roll)
 			var ring_index: int = int(seen.get(cell, 0))
@@ -848,8 +850,15 @@ class BoardView:
 			var p: Vector2 = main._board_cell_center(cell)
 			var radius: float = token * 0.5 + 7.0 + float(ring_index) * 6.0
 			var col: Color = main._die_color(die)
-			draw_arc(p, radius, 0.0, TAU, 30, Color("#2A2320"), 6.0, true)
-			draw_arc(p, radius, 0.0, TAU, 30, col, 4.0, true)
+			# Once one die is being considered the others still draw — the
+			# alternatives are half the decision — but they step back so the
+			# one under the question reads first.
+			var is_considered: bool = i == considered
+			var alpha: float = 1.0 if considered < 0 or is_considered else 0.28
+			draw_arc(p, radius, 0.0, TAU, 30, Color(0.16, 0.14, 0.13, alpha), 6.0, true)
+			draw_arc(p, radius, 0.0, TAU, 30, Color(col.r, col.g, col.b, alpha), 4.0, true)
+			if is_considered:
+				draw_arc(p, radius + 5.0, 0.0, TAU, 30, Color("#F2B33D"), 3.0, true)
 
 	# A ring right on the rim of a fouled cell: visible at a glance without
 	# covering the tile's own icon or number.
@@ -1152,6 +1161,16 @@ var combo := 0
 var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
+# Both of the game's committing taps are two-stage: the first one shows what
+# the tap would do, the second one does it. Touch has no hover, so a preview
+# has to be a tap — and the alternative, committing on the first one, means
+# the player is told the consequences of a move only after making it.
+# preview_die_index is the die currently being *considered*; -1 is "nothing
+# picked yet".
+var preview_die_index := -1
+# A warp face jumps rather than walks, so its preview is a destination and
+# not a route — the "+n steps" labels have to stay off for it.
+var preview_warp := false
 var catalog_return_state := "title"
 var settings_return_state := "title"
 var gallery_return_state := "title"
@@ -2501,6 +2520,13 @@ var danger_cells: Dictionary = {}
 var cell_info_timer := 0.0
 var log_hold := ""
 
+# The considered die, resolved once per board refresh rather than per cell.
+# Empty when nothing is being previewed, which is what makes every readout
+# fall back to the square's plain face value.
+var _readout_die: Dictionary = {}
+var _readout_route: Array[Vector2i] = []
+var _readout_crossed := 0
+
 func _process(delta: float) -> void:
 	if cell_info_timer > 0.0:
 		cell_info_timer -= delta
@@ -2681,6 +2707,11 @@ func _refresh_board() -> void:
 	_rebuild_preview_path()
 	_layout_board_buttons()
 	danger_cells = _telegraphed_cells()
+	_readout_die = _previewed_die()
+	_readout_route = []
+	if not _readout_die.is_empty():
+		_readout_route = preview_path
+	_readout_crossed = 0 if preview_warp else _readout_route.size()
 	var placing: bool = state == "reward_place"
 	for y in range(BOARD_H):
 		for x in range(BOARD_W):
@@ -2704,12 +2735,17 @@ func _refresh_board() -> void:
 			var tile: Dictionary = tile_defs[perm_type]
 			var color: Color = tile["color"]
 			var icon_kind: String = str(tile["icon"])
+			# Held in a variable because the placement preview replaces it:
+			# the square has to take on the *offered* tile's shape, or a
+			# stop-type tile previews as the round road it is replacing.
+			var trigger: String = str(tile["trigger"])
 			var value_text := ""
 			var value_color := Color("#FFF7E6")
 
-			var readout := _tile_readout(tile)
+			var readout := _tile_readout(tile, pos)
 			value_text = str(readout["text"])
 			var boosted: bool = bool(readout["scaled"])
+			var blocked: bool = bool(readout.get("blocked", false))
 			if temp_type == "block":
 				color = temp_defs["block"]["color"]
 				icon_kind = ""
@@ -2726,7 +2762,13 @@ func _refresh_board() -> void:
 			step_label.text = ""
 			danger_label.text = ""
 
-			if state == "player" and ahead > 0:
+			var considering: bool = not _readout_die.is_empty()
+			var on_route: bool = considering and _readout_route.has(pos)
+			var is_landing: bool = on_route and pos == _readout_route[_readout_route.size() - 1]
+
+			# A warp jumps, so counting steps to its destination would be a
+			# lie; every other route entry is genuinely "+n squares from here".
+			if state == "player" and ahead > 0 and not preview_warp:
 				step_label.text = "+%d" % ahead
 			if danger_cells.has(pos):
 				border_color = COL_DANGER
@@ -2735,7 +2777,17 @@ func _refresh_board() -> void:
 			if route_path.has(pos) and state == "moving":
 				border_color = COL_ROUTE
 				border_width = 5
-			if is_player_cell:
+			# The considered die's route, and the square it would stop on. The
+			# landing square wins over the danger border on purpose: a lit
+			# danger cell that is also where this die puts you is exactly the
+			# thing the first tap exists to show, and it keeps its ▲ label.
+			if on_route:
+				border_color = COL_ROUTE
+				border_width = 4
+			if is_landing:
+				border_color = COL_GOLD
+				border_width = 6
+			if is_player_cell and not on_route:
 				border_color = COL_GOLD
 				border_width = 5
 
@@ -2746,9 +2798,14 @@ func _refresh_board() -> void:
 					border_color = COL_NEXT
 					border_width = 4
 					if pos == preview_place_pos:
-						color = tile_defs[pending_reward_type]["color"]
-						icon_kind = str(tile_defs[pending_reward_type]["icon"])
-						value_text = "?"
+						# The square wears the tile it is being offered —
+						# colour, icon, shape and number — so the preview is
+						# the thing itself rather than a question mark.
+						var pending: Dictionary = tile_defs[pending_reward_type]
+						color = pending["color"]
+						icon_kind = str(pending["icon"])
+						value_text = str(_tile_readout(pending)["text"])
+						trigger = str(pending["trigger"])
 						border_color = COL_GOLD
 						border_width = 6
 				else:
@@ -2765,6 +2822,8 @@ func _refresh_board() -> void:
 			value_label.text = value_text
 			if boosted:
 				value_color = COL_GOLD
+			if blocked:
+				value_color = Color("#FFC9BE")
 			value_label.add_theme_color_override("font_color", Color(value_color.r, value_color.g, value_color.b, 0.55 if plain else 1.0))
 			button.tooltip_text = _cell_tooltip(pos, perm_type, temp_type)
 			# A fouled tile darkens and takes a mark, but keeps its own
@@ -2774,7 +2833,7 @@ func _refresh_board() -> void:
 			if temp_type == "hazard":
 				color = color.lerp(Color("#6F7A2A"), 0.32)
 				debuff_label.text = tr("毒")
-			_apply_cell_style(button, color, border_color, border_width, dim, str(tile["trigger"]))
+			_apply_cell_style(button, color, border_color, border_width, dim, trigger)
 	_refresh_ribbon()
 	board_view.queue_redraw()
 
@@ -2788,34 +2847,89 @@ const OP_GLYPHS := {
 	"reroll": "振", "action": "行", "self_damage": "-",
 }
 
-func _tile_readout(tile: Dictionary) -> Dictionary:
-	var best_amount := -1
-	var best_text := ""
-	var scaled := false
+# While a die is being considered, the squares it will actually run over
+# print what *that die* would pay there — its multipliers applied, its roll
+# and its combo point counted, and its conditions already answered. Squares
+# the die cannot reach keep printing their plain face value.
+func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictionary:
+	var die := _readout_die
+	var on_route: bool = not die.is_empty() and pos.x >= 0 and _readout_route.has(pos)
+	var lands: bool = on_route and pos == _readout_route[_readout_route.size() - 1]
+	# Totals per operation, not the single biggest effect. 大斬撃 is written
+	# as two attack rows ("7" and "+the roll") and the old readout printed
+	# whichever row was larger, so a square that deals 7+roll advertised 7.
+	# A preview that undercounts is the exact failure this readout exists to
+	# prevent, so same-op rows are summed the way the engine sums them.
+	var totals := {}
+	var scaled_ops := {}
+	var order := []
+	var blocked := false
 	for raw in tile.get("effects", []):
 		var eff: Dictionary = raw
 		var op := str(eff["op"])
 		if not OP_GLYPHS.has(op) or op == "self_damage":
 			continue
+		var timing := str(eff.get("on", "stop"))
+		if on_route:
+			# Only the timings this die will actually trigger here: a square
+			# it runs across never fires its stop half.
+			if timing == "stop" and not lands:
+				continue
+			if not _projected_cond_ok(eff.get("cond", {}), die, _readout_crossed):
+				blocked = true
+				continue
 		var amount := int(eff.get("amount", 0))
 		var scale := str(eff.get("scale", ""))
 		if scale != "":
-			amount *= _scale_value(scale)
+			var factor := _scale_value(scale)
+			if on_route:
+				factor = _projected_counter(scale, die, _readout_crossed)
+			amount *= factor
 		var add_scale := str(eff.get("add_scale", ""))
 		if add_scale != "":
-			amount += _scale_value(add_scale) * int(eff.get("add_scale_sign", 1))
-		if amount <= best_amount:
-			continue
-		best_amount = amount
-		scaled = scale != "" or add_scale != ""
-		var glyph := str(OP_GLYPHS[op])
-		if op == "draw" or op == "reroll" or op == "action":
-			best_text = glyph
-		elif op == "attack":
-			best_text = str(amount)
-		else:
-			best_text = "%s%d" % [glyph, amount]
-	return {"text": best_text, "scaled": scaled}
+			var counter := _scale_value(add_scale)
+			if on_route:
+				counter = _projected_counter(add_scale, die, _readout_crossed)
+			amount += counter * int(eff.get("add_scale_sign", 1))
+		if on_route:
+			amount *= _mod_multiplier(die, op, timing)
+		if not totals.has(op):
+			totals[op] = 0
+			order.append(op)
+		totals[op] = int(totals[op]) + amount
+		if scale != "" or add_scale != "":
+			scaled_ops[op] = true
+
+	# The square has room for one number, so the heaviest operation gets it.
+	var best_op := ""
+	var best_amount := -1
+	for op in order:
+		if int(totals[op]) > best_amount:
+			best_amount = int(totals[op])
+			best_op = str(op)
+
+	# Everything this square had to offer is gated behind a condition this
+	# die does not meet: say so, rather than printing a number it will not pay.
+	if best_op == "":
+		if blocked:
+			return {"text": "×", "scaled": false, "blocked": true}
+		return {"text": "", "scaled": false, "blocked": false}
+
+	var glyph := str(OP_GLYPHS[best_op])
+	var best_text := ""
+	if best_op == "draw" or best_op == "reroll" or best_op == "action":
+		best_text = glyph
+	elif best_op == "attack":
+		best_text = str(best_amount)
+	else:
+		best_text = "%s%d" % [glyph, best_amount]
+	# On the route, a number this die inflates is worth flagging as "this is
+	# not the resting value of this square".
+	return {
+		"text": best_text,
+		"scaled": scaled_ops.has(best_op) or on_route,
+		"blocked": false,
+	}
 
 func _telegraph_damage() -> int:
 	for enemy in enemies:
@@ -2881,6 +2995,13 @@ func _refresh_ribbon() -> void:
 	if not ribbon_row.visible:
 		_layout_ribbon()
 		return
+	# While a die is being considered the row stops being "the road ahead"
+	# and becomes "the squares this die runs over", so it has to say which.
+	var considered := _previewed_die()
+	if considered.is_empty():
+		ribbon_caption.text = tr("この先のマス　●通過 ■停止")
+	else:
+		ribbon_caption.text = tr("%s で踏むマス　●通過 ■停止") % _t(considered["name"])
 	var chip: float = clamp((interior - 15.0) / 6.0, 14.0, 28.0)
 	for i in range(preview_path.size()):
 		ribbon_row.add_child(_make_ribbon_chip(preview_path[i], i + 1, chip))
@@ -3058,10 +3179,15 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	var tight: bool = slot_w < 92.0
 	var face_size: float = clamp(min(slot_w * 0.56, slot_h * 0.40), 26.0, 54.0)
 	var pip_size: float = clamp((slot_w - 14.0) / float(max(faces.size(), 1)) - 2.0, 6.0, 13.0)
+	# The card under consideration wears a gold frame, so "which die am I
+	# being asked about" is answered on the card as well as on the board.
+	var considered: bool = index == preview_die_index and dice_rolled and state == "player"
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.custom_minimum_size = Vector2(slot_w, 0)
-	panel.add_theme_stylebox_override("panel", _flat_style(_die_color(die), COL_INK, 3, 4 if tight else 5, 5))
+	panel.add_theme_stylebox_override("panel", _flat_style(
+		_die_color(die), COL_GOLD if considered else COL_INK, 6 if considered else 3,
+		4 if tight else 5, 5))
 
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -3145,8 +3271,9 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	# actually made on, so unlike the old trait label it stays on the card
 	# even when the cards get narrow — a power the player cannot see is a
 	# power they will not plan around.
-	var power_label := _make_label(FS_SMALL - (2 if tight else 1), Color(1, 1, 1, 0.95), HORIZONTAL_ALIGNMENT_CENTER, true)
-	power_label.text = str(die.get("short", ""))
+	var power_label := _make_label(FS_SMALL - (2 if tight else 1),
+		COL_GOLD if considered else Color(1, 1, 1, 0.95), HORIZONTAL_ALIGNMENT_CENTER, true)
+	power_label.text = tr("もう一度で確定") if considered else str(die.get("short", ""))
 	power_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	power_label.clip_text = true
 	col.add_child(power_label)
@@ -5104,6 +5231,7 @@ func _start_player_turn(message: String = "") -> void:
 	move_dir = 1
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
+	preview_die_index = -1
 	hand_slots = []
 	if hand_scroll != null:
 		hand_scroll.scroll_horizontal = 0
@@ -5144,6 +5272,9 @@ func _roll_hand(is_reroll: bool) -> void:
 			return
 		rerolls_left -= 1
 	dice_rolled = true
+	# Every face on the table just changed, so whatever was being considered
+	# is no longer the move it was.
+	preview_die_index = -1
 	_hide_banner()
 	sfx.emit("roll")
 	for die in hand:
@@ -5207,8 +5338,25 @@ func _on_die_pressed(index: int) -> void:
 	if not dice_rolled:
 		await _roll_hand(false)
 		return
+
+	# First tap on a die is a question, not a move: it paints that die's route
+	# and landing square, prints what the squares along it would actually pay
+	# with this die's own multipliers applied, and says so in the log. Only a
+	# second tap on the *same* die spends it. Tapping a different die moves
+	# the question over to that one.
+	if preview_die_index != index:
+		preview_die_index = index
+		sfx.emit("step")
+		_set_log(_die_preview_text(index))
+		_set_banner(tr("もう一度タップで確定"))
+		_refresh_all()
+		return
+
 	var die: Dictionary = hand[index]
 	var final_roll := int(die.get("roll", 0))
+
+	preview_die_index = -1
+	_hide_banner()
 
 	# Lock the state before the first await so a second tap during the move
 	# cannot spend a second die.
@@ -5244,6 +5392,62 @@ func _on_die_pressed(index: int) -> void:
 		move_dir = -1 if final_roll < 0 else 1
 		steps_left = absi(final_roll)
 		await _advance_player()
+
+# The sentence the first tap prints: where this die puts you, what waits
+# there, and what it costs to get there. Everything in it is derived from
+# the same functions the move itself runs, so it cannot describe a move the
+# game will not make.
+func _die_preview_text(index: int) -> String:
+	var die: Dictionary = hand[index]
+	var roll := int(die.get("roll", 0))
+	var warp: bool = _is_warp_face(roll)
+	var route := _route_for_roll(roll)
+	var landing: Vector2i = route[route.size() - 1]
+	var crossed: int = 0 if warp else route.size()
+	# The readout context this text is about to ask questions against. The
+	# board refresh that follows sets the same three from the same source;
+	# doing it here means the sentence never reads a stale route.
+	_readout_die = die
+	_readout_route = route
+	_readout_crossed = crossed
+
+	var parts := []
+	parts.append("%s：出目 %s" % [
+		_t(die["name"]), _warp_face_label(roll) if warp else str(roll)])
+	var power := str(die.get("short", ""))
+	if power != "":
+		parts.append(power)
+
+	# What the square it stops on will do, with this die's own multipliers
+	# already folded in — the number here is the number that will be dealt.
+	var tile: Dictionary = tile_defs[str(permanent_board[landing.y][landing.x])]
+	var stop_note := "停止効果なし"
+	if _tile_has_timing(tile, "stop"):
+		stop_note = _t(tile["effect"])
+		var readout := _tile_readout(tile, landing)
+		if bool(readout.get("blocked", false)):
+			stop_note = "%s（条件を満たさず不発）" % _t(tile["effect"])
+		elif str(readout["text"]) != "":
+			stop_note = "%s → %s" % [_t(tile["effect"]), str(readout["text"])]
+	parts.append("着地：%s（%s）" % [_t(tile["name"]), stop_note])
+
+	# The cost of the walk itself. A hazard crossed is HP gone before the
+	# landing square ever pays out, and 軽業 is the one die that ignores it.
+	if not warp:
+		var fouled := 0
+		for cell in route:
+			if str(temp_board[cell.y][cell.x]) == "hazard":
+				fouled += 1
+		if fouled > 0:
+			if bool(die.get("pierce", false)):
+				parts.append("毒マス%d通過（無効）" % fouled)
+			else:
+				parts.append("毒マス%d通過 HP-%d" % [fouled, fouled * 2])
+	if danger_cells.has(landing):
+		parts.append("⚠ 敵の攻撃予告マス（%dダメージ）" % _telegraph_damage())
+	if crossed > 0:
+		parts.append("%dマス通過" % crossed)
+	return " / ".join(parts)
 
 func _advance_player() -> void:
 	while steps_left > 0:
@@ -5409,10 +5613,13 @@ func _cond_ok(cond: Dictionary) -> bool:
 # no "op" matches every operation, and one with no "on" matches both
 # timings, so "疾走: everything on pass doubles" is a single row.
 func _die_op_multiplier(op: String, timing: String) -> int:
-	if selected_die.is_empty():
+	return _mod_multiplier(selected_die, op, timing)
+
+func _mod_multiplier(die: Dictionary, op: String, timing: String) -> int:
+	if die.is_empty():
 		return 1
 	var total := 1
-	for raw in selected_die.get("mods", []):
+	for raw in die.get("mods", []):
 		var mod: Dictionary = raw
 		if mod.has("op") and str(mod["op"]) != op:
 			continue
@@ -5420,6 +5627,83 @@ func _die_op_multiplier(op: String, timing: String) -> int:
 			continue
 		total *= int(mod.get("x", 1))
 	return total
+
+# --- what a die *would* do, for the first tap ---------------------------
+# The preview has to answer with the same arithmetic the move itself will
+# use, or the second tap becomes a surprise. Everything below reads the
+# considered die instead of the spent one; nothing here mutates state.
+
+func _previewed_die() -> Dictionary:
+	if state != "player" or not dice_rolled:
+		return {}
+	if preview_die_index < 0 or preview_die_index >= hand.size():
+		return {}
+	return hand[preview_die_index]
+
+# The value a die's own spend-time effects will have added to a counter by
+# the time the board is read. These fire before the piece moves, so they are
+# part of what the player is being shown, not a later surprise.
+func _spend_gain(die: Dictionary, op: String) -> int:
+	var total := 0
+	for raw in die.get("effects", []):
+		var eff: Dictionary = raw
+		if str(eff.get("on", "stop")) != "spend" or str(eff["op"]) != op:
+			continue
+		var amount := int(eff.get("amount", 0))
+		var scale := str(eff.get("scale", ""))
+		if scale == "roll":
+			amount *= int(die.get("roll", 0))
+		total += amount * _mod_multiplier(die, op, "spend")
+	return total
+
+# A counter as it will read once this die has been spent. Only what is
+# knowable at the moment of the tap: the die's own spend effects and the
+# combo point every die is worth. What the walk itself piles on along the
+# way (連鎖路 and friends) is deliberately not predicted — the board would
+# then promise a number that depends on squares the player has not reached.
+func _projected_counter(scale: String, die: Dictionary, crossed: int) -> int:
+	var roll := int(die.get("roll", 0))
+	match scale:
+		"combo":
+			return combo + 1 + _spend_gain(die, "combo")
+		"charge":
+			return charge + _spend_gain(die, "charge")
+		"shield":
+			return player_shield + _spend_gain(die, "shield")
+		"poison":
+			return _enemy_poison() + _spend_gain(die, "poison")
+		"roll":
+			return roll
+		"crossed":
+			return crossed
+	return 1
+
+# The same gate _cond_ok applies, answered against the projected counters
+# instead of the live ones — so a square whose condition this die cannot
+# meet says so before the die is spent rather than after.
+func _projected_cond_ok(cond: Dictionary, die: Dictionary, crossed: int) -> bool:
+	if cond.is_empty():
+		return true
+	var roll := int(die.get("roll", 0))
+	if cond.has("min_roll") and roll < int(cond["min_roll"]):
+		return false
+	if cond.has("max_roll") and roll > int(cond["max_roll"]):
+		return false
+	if cond.has("min_combo") and _projected_counter("combo", die, crossed) < int(cond["min_combo"]):
+		return false
+	if cond.has("min_charge") and _projected_counter("charge", die, crossed) < int(cond["min_charge"]):
+		return false
+	if cond.has("min_poison") and _projected_counter("poison", die, crossed) < int(cond["min_poison"]):
+		return false
+	if cond.has("action") and action_index + 1 != int(cond["action"]):
+		return false
+	if cond.has("has_shield") and _projected_counter("shield", die, crossed) <= 0:
+		return false
+	if cond.has("hp_below"):
+		var ratio := float(player_hp) / float(max(player_max_hp, 1))
+		if ratio > float(cond["hp_below"]):
+			return false
+	return true
 
 # Runs every effect in a list whose timing matches, in the order written —
 # so "attack scaled by charge" followed by "spend charge" reads and behaves
@@ -5804,6 +6088,7 @@ func _on_cell_pressed(index: int) -> void:
 			preview_place_pos = pos
 			sfx.emit("step")
 			_set_banner(tr("ここに置く？ もう一度タップで確定"))
+			_set_log(_place_preview_text(pos))
 			_refresh_board()
 			return
 		permanent_board[pos.y][pos.x] = pending_reward_type
@@ -5816,7 +6101,39 @@ func _on_cell_pressed(index: int) -> void:
 			_set_log(tr("%s を配置しました。") % pending_reward_name)
 			_show_map()
 	elif ring_index_map.has(pos):
+		# Tapping the board is also how a considered die is put back down:
+		# the hand has no empty space to tap, and the board is the thing the
+		# player is looking at while deciding.
+		if preview_die_index >= 0:
+			preview_die_index = -1
+			_hide_banner()
+			sfx.emit("step")
+			# Restores the resting log line before the cell info borrows it,
+			# so the temporary tooltip does not expire back into a sentence
+			# about a die the player just put down.
+			_set_log(tr("ダイスを戻しました。もう一度ダイスを選んでください。"))
+			_refresh_all()
 		_show_cell_info(pos)
+
+# The placement equivalent of _die_preview_text. The board only has twelve
+# squares and a tile stays for the rest of the run, so the one thing the
+# first tap has to answer is what this square is being spent on — including
+# what is already standing there, because dropping a tile onto an occupied
+# square destroys it and the old build did that silently.
+func _place_preview_text(pos: Vector2i) -> String:
+	var tile: Dictionary = tile_defs[pending_reward_type]
+	var parts := []
+	parts.append("%s %s：%s" % [
+		_t(tile["name"]), _trigger_label(str(tile["trigger"])), _t(tile["effect"])])
+	var existing: String = str(permanent_board[pos.y][pos.x])
+	if existing != "empty":
+		parts.append("⚠ ここにある「%s」を壊して置き換えます" % _t(tile_defs[existing]["name"]))
+	else:
+		parts.append("空きマスに置きます")
+	var ahead := _steps_ahead(pos)
+	if ahead > 0:
+		parts.append("現在地から%dマス先" % ahead)
+	return " / ".join(parts)
 
 # Tile details go to the fixed log line instead of a popup card over the
 # board — the old card covered the lookahead row it was meant to explain.
@@ -5913,11 +6230,14 @@ func _pos_for_step(step: int) -> Vector2i:
 func _track_index(pos: Vector2i) -> int:
 	return int(ring_index_map.get(pos, 0))
 
-# Where a roll of this size actually finishes, following 跳躍路 the same
-# way the move itself will.
-func _landing_cell_for(roll: int) -> Vector2i:
+# Every square a roll of this size would touch, in order, following 跳躍路
+# the same way the move itself will. The last entry is where the action ends.
+# A warp face does not walk, so its route is the single square it jumps to.
+func _route_for_roll(roll: int) -> Array[Vector2i]:
+	var route: Array[Vector2i] = []
 	if _is_warp_face(roll):
-		return _pos_for_step(_warp_face_step(roll))
+		route.append(_pos_for_step(_warp_face_step(roll)))
+		return route
 	var step := player_step
 	var dir := -1 if roll < 0 else 1
 	var remaining := absi(roll)
@@ -5927,6 +6247,7 @@ func _landing_cell_for(roll: int) -> Vector2i:
 		step = _normalize_step(step + dir)
 		remaining -= 1
 		var p := _pos_for_step(step)
+		route.append(p)
 		var tile: Dictionary = tile_defs[str(permanent_board[p.y][p.x])]
 		# 跳躍路's "one more step" only extends a forward sweep — walking
 		# back through it should not also start stretching the walk.
@@ -5935,7 +6256,14 @@ func _landing_cell_for(roll: int) -> Vector2i:
 				var eff: Dictionary = raw
 				if str(eff.get("on", "stop")) == "pass" and str(eff["op"]) == "step":
 					remaining += int(eff.get("amount", 0))
-	return _pos_for_step(step)
+	if route.is_empty():
+		route.append(_pos_for_step(step))
+	return route
+
+# Where a roll of this size actually finishes.
+func _landing_cell_for(roll: int) -> Vector2i:
+	var route := _route_for_roll(roll)
+	return route[route.size() - 1]
 
 func _steps_ahead(pos: Vector2i) -> int:
 	var idx := preview_path.find(pos)
@@ -5948,9 +6276,20 @@ func _start_pos() -> Vector2i:
 		return Vector2i.ZERO
 	return ring_cells[0]
 
+# With no die under consideration this is the plain six-square lookahead —
+# "what is coming up". Once a die is being considered it narrows to that
+# die's actual route, so the lookahead row and the "+n" labels stop
+# describing the road in general and start describing this move.
 func _rebuild_preview_path() -> void:
 	preview_path = []
+	preview_warp = false
 	if state != "player":
+		return
+	var die := _previewed_die()
+	if not die.is_empty():
+		var roll := int(die.get("roll", 0))
+		preview_warp = _is_warp_face(roll)
+		preview_path = _route_for_roll(roll)
 		return
 	for i in range(1, 7):
 		preview_path.append(_pos_for_step(player_step + i))
