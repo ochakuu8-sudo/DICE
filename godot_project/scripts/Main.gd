@@ -43,6 +43,36 @@ const WARP_FACES := {
 # size and card width carries over without retuning.
 const DESIGN_SIZE := Vector2i(1024, 576)
 
+# --- art slots ----------------------------------------------------------
+# No filename appears anywhere else in this script. Code asks for a *slot*
+# — a category, an actor and a state — and the slot resolves to a path by
+# convention:
+#
+#     res://art/<category>/<actor>_<state>.png          a still
+#     res://art/<category>/<actor>_<state>_0.png, _1…   an animation
+#
+# So installing art is copying files into a folder; nothing here has to be
+# edited to accept them, and a slot that has no file yet draws a magenta
+# placeholder carrying its own id rather than silently drawing nothing.
+#
+# Actors are named by the "art" field on enemy_defs / hero_defs / event_defs
+# rather than by their display name, so renaming a character in Japanese
+# does not orphan its art.
+const ART_ROOT := "res://art"
+const ART_KINDS := {
+	# The standing figure on the battle stage. Tall — roughly 3:4 or
+	# narrower — because it shares the screen with the board.
+	"stage": {"dir": "stage", "fps": 10.0},
+	# Full-frame scene art shown when a fight is decided. 16:9.
+	"cg": {"dir": "cg", "fps": 8.0},
+}
+# States a stage actor can be in. "hit" is the one that plays on being
+# struck; the others idle.
+const ART_STAGE_STATES := ["idle", "hit", "down", "win"]
+const ART_CG_STATES := ["win", "lose"]
+# How far the loader probes for numbered frames before giving up.
+const ART_MAX_FRAMES := 24
+
 # --- palette -----------------------------------------------------------
 # A lit tabletop rather than a dark dungeon: light ground, saturated pieces,
 # and an ink outline on everything that is a "piece". The outline is what
@@ -533,6 +563,99 @@ class BurstEffect:
 			var dir := Vector2(cos(ang), sin(ang))
 			draw_line(center + dir * token * 0.25, center + dir * ring_r, Color(tint.r, tint.g, tint.b, a), token * 0.06, true)
 
+# Draws one art slot. It is deliberately dumb: it holds a list of frames
+# and a name, and when the frames are missing it says so at the top of its
+# voice. A pretty fallback would hide the fact that a slot is still empty,
+# and with a few hundred slots to fill that is the one failure mode worth
+# engineering against.
+class SpriteView:
+	extends Control
+
+	var frames: Array = []
+	var fps: float = 12.0
+	var loop := true
+	var slot := ""              # the id the missing art would have had
+	var finished := true
+	var flash: float = 0.0:
+		set(v):
+			flash = v
+			queue_redraw()
+	var _time := 0.0
+
+	func _ready() -> void:
+		clip_contents = true
+		set_process(true)
+
+	func play(new_frames: Array, new_slot: String, new_fps: float = 12.0, new_loop: bool = true) -> void:
+		frames = new_frames
+		slot = new_slot
+		fps = max(new_fps, 0.001)
+		loop = new_loop
+		_time = 0.0
+		finished = frames.size() <= 1
+		queue_redraw()
+
+	# How long one pass of this clip lasts, so a caller can wait for it
+	# without knowing how many frames the artist ended up drawing.
+	func duration() -> float:
+		return float(max(frames.size(), 1)) / max(fps, 0.001)
+
+	func _process(delta: float) -> void:
+		if frames.size() <= 1 or finished:
+			return
+		_time += delta
+		if not loop and _time >= duration():
+			_time = duration() - 0.0001
+			finished = true
+		queue_redraw()
+
+	func _frame() -> Texture2D:
+		if frames.is_empty():
+			return null
+		var i := int(_time * fps)
+		i = posmod(i, frames.size()) if loop else clampi(i, 0, frames.size() - 1)
+		return frames[i]
+
+	func _draw() -> void:
+		if size.x <= 1.0 or size.y <= 1.0:
+			return
+		var tex := _frame()
+		if tex == null:
+			_draw_missing()
+			return
+		var source := Vector2(float(tex.get_width()), float(tex.get_height()))
+		if source.x <= 0.0 or source.y <= 0.0:
+			return
+		# Fit, never crop: art is authored at whatever size suits it and the
+		# frame it lands in changes with the window.
+		var factor: float = min(size.x / source.x, size.y / source.y)
+		var span := source * factor
+		var at := ((size - span) * 0.5).floor()
+		draw_texture_rect(tex, Rect2(at, span), false)
+		if flash > 0.0:
+			draw_rect(Rect2(at, span), Color(1.0, 1.0, 1.0, clampf(flash, 0.0, 1.0) * 0.55))
+
+	func _draw_missing() -> void:
+		draw_rect(Rect2(Vector2.ZERO, size), Color(1.0, 0.0, 0.85))
+		var stripe := Color(0.10, 0.0, 0.10, 0.5)
+		var x: float = -size.y
+		while x < size.x:
+			draw_line(Vector2(x, size.y), Vector2(x + size.y, 0.0), stripe, 7.0)
+			x += 26.0
+		var font: Font = ThemeDB.fallback_font
+		if font == null:
+			return
+		var mid: float = size.y * 0.5
+		draw_string(font, Vector2(9.0, mid - 4.0), "NO ART",
+			HORIZONTAL_ALIGNMENT_LEFT, size.x - 18.0, 19, Color.WHITE)
+		draw_string(font, Vector2(9.0, mid + 15.0), slot,
+			HORIZONTAL_ALIGNMENT_LEFT, size.x - 18.0, 12, Color.WHITE)
+		# The frame it would have filled, so whoever is generating the art
+		# can read the target shape straight off the screen.
+		draw_string(font, Vector2(9.0, mid + 32.0),
+			"%d x %d  (%.2f)" % [int(size.x), int(size.y), size.x / max(size.y, 1.0)],
+			HORIZONTAL_ALIGNMENT_LEFT, size.x - 18.0, 12, Color(1, 1, 1, 0.8))
+
 # The hero's own face, big enough to actually read, with a silhouette that
 # differs per class instead of one shared circle.
 class HeroPortrait:
@@ -586,61 +709,6 @@ class HeroPortrait:
 					c + Vector2(0.0, -0.30) * s, c + Vector2(-0.12, -0.40) * s,
 					c + Vector2(-0.40, -0.40) * s,
 				]), ink)
-
-# The enemy, drawn as a figure on a plinth rather than a row in a table.
-# Carries its own hit flash and idle bob so damage lands on the character
-# instead of on a progress bar somewhere else on screen.
-class EnemyFigure:
-	extends Control
-
-	var kind := "enemy_grunt":
-		set(v):
-			kind = v
-			if glyph != null:
-				glyph.set_kind(v)
-	var body_color := Color("#C2453A"):
-		set(v):
-			body_color = v
-			_tint()
-	var flash: float = 0.0:
-		set(v):
-			flash = v
-			_tint()
-	var bob := 0.0
-	var glyph: IconGlyph
-
-	func _ready() -> void:
-		glyph = IconGlyph.new()
-		glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		glyph.kind = kind
-		add_child(glyph)
-		_tint()
-		set_process(true)
-
-	func _tint() -> void:
-		if glyph != null:
-			glyph.glyph_color = body_color.lerp(Color.WHITE, flash)
-			glyph.queue_redraw()
-
-	func _process(delta: float) -> void:
-		bob = fmod(bob + delta, TAU)
-		_place()
-		queue_redraw()
-
-	func _place() -> void:
-		if glyph == null or size.x <= 0.0:
-			return
-		var s: float = min(size.x, size.y)
-		var lift: float = sin(bob * 1.8) * s * 0.025
-		glyph.size = Vector2(s, s)
-		glyph.position = Vector2(size.x * 0.5 - s * 0.5, size.y * 0.52 + lift - s * 0.5)
-
-	func _draw() -> void:
-		if size.x <= 0.0 or size.y <= 0.0:
-			return
-		var s: float = min(size.x, size.y)
-		# Ground shadow, so the figure sits on the table instead of floating.
-		draw_circle(Vector2(size.x * 0.5, size.y * 0.86), s * 0.24, Color(0.16, 0.12, 0.08, 0.10))
 
 # The run as six stations with the boss at the end, so "how far in am I"
 # is a picture instead of the number in the header.
@@ -922,12 +990,14 @@ var backdrop_view: Backdrop
 var sfx: Sfx
 
 var zone_top: Control
+var zone_hero: Control
 var zone_enemy: Control
 var zone_board: Control
 var zone_hand: Control
 var zone_cmd: Control
 var zone_log: Control
 var zone_map: Control
+var zone_gallery: Control
 
 var run_track: RunTrack
 var run_label: Label
@@ -948,8 +1018,12 @@ var combo_chip: PanelContainer
 var combo_label: Label
 var action_pip_box: HBoxContainer
 
+var hero_panel: PanelContainer
+var hero_sprite: SpriteView
+var hero_stage_name: Label
+
 var enemy_panel: Control
-var enemy_figure: EnemyFigure
+var enemy_sprite: SpriteView
 var enemy_name_label: Label
 var enemy_hp_bar: GaugeBar
 var enemy_hp_label: Label
@@ -984,7 +1058,21 @@ var overlay: Control
 var overlay_card: VBoxContainer
 var overlay_title: Label
 var overlay_body: Label
+var overlay_art: SpriteView
 var overlay_list: VBoxContainer
+
+# The full-frame scene layer: one image over everything, dismissed by a
+# tap. It is its own layer rather than a mode of the overlay because it
+# must cover the card too when a scene plays into a result screen.
+var scene_layer: Control
+var scene_sprite: SpriteView
+var scene_caption: Label
+var scene_hint: Label
+var scene_after := Callable()
+
+var gallery_grid: GridContainer
+var gallery_scroll: ScrollContainer
+var gallery_title: Label
 
 var ui_font: Font
 var ui_font_heavy: Font
@@ -1049,6 +1137,10 @@ var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
 var catalog_return_state := "title"
 var settings_return_state := "title"
+var gallery_return_state := "title"
+# A fight resolves once, so its scene plays once — a win that arrives
+# through two different code paths must not show the CG twice.
+var scene_played_this_fight := false
 # The hand is rolled once, up front, and the faces then stay put: the
 # player picks which of the known results to walk. Rolling at the moment a
 # die is chosen meant the stop-type tiles could never be aimed at, which
@@ -1422,6 +1514,7 @@ var reward_pool := [
 var hero_defs := {
 	"knight": {
 		"name": "剣士",
+		"art": "knight",
 		"hp": 36,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
@@ -1510,6 +1603,11 @@ func _build_ui() -> void:
 	add_child(zone_top)
 	_build_top_zone()
 
+	zone_hero = Control.new()
+	zone_hero.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(zone_hero)
+	_build_hero_zone()
+
 	zone_enemy = Control.new()
 	zone_enemy.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(zone_enemy)
@@ -1541,6 +1639,12 @@ func _build_ui() -> void:
 	add_child(zone_map)
 	_build_map_zone()
 
+	zone_gallery = Control.new()
+	zone_gallery.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	zone_gallery.visible = false
+	add_child(zone_gallery)
+	_build_gallery_zone()
+
 	# A tap anywhere over the board and hand throws the dice. It sits above
 	# the cells, so while the hand is unrolled the whole play area is one
 	# big "roll" button, and it disappears the moment they are thrown.
@@ -1552,6 +1656,7 @@ func _build_ui() -> void:
 	add_child(roll_catcher)
 
 	_build_overlay()
+	_build_scene_layer()
 
 func _build_top_zone() -> void:
 	var col := VBoxContainer.new()
@@ -1583,7 +1688,7 @@ func _build_top_zone() -> void:
 	col.add_child(stat_row)
 
 	hero_portrait = HeroPortrait.new()
-	hero_portrait.custom_minimum_size = Vector2(48, 48)
+	hero_portrait.custom_minimum_size = Vector2(34, 34)
 	hero_portrait.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hero_portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stat_row.add_child(hero_portrait)
@@ -1604,7 +1709,14 @@ func _build_top_zone() -> void:
 	hp_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	hp_row.add_child(hp_label)
 
-	var chip_row := stat_row
+	# The chips get their own row rather than sharing the HP row. The status
+	# strip now lives in the character column, which is narrow, and five
+	# widgets abreast there ran off the end.
+	var chip_row := HBoxContainer.new()
+	chip_row.add_theme_constant_override("separation", 8)
+	chip_row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	chip_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(chip_row)
 
 	# Shield is a chip, not a bar: it has no maximum, so a bar's tick marks
 	# never meant anything. A number with a shield on it always does.
@@ -1651,6 +1763,11 @@ func _build_top_zone() -> void:
 	gold_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	gold_inner.add_child(gold_label)
 
+	var chip_spacer := Control.new()
+	chip_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	chip_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chip_row.add_child(chip_spacer)
+
 	var action_caption := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT)
 	action_caption.text = tr("行動")
 	action_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -1663,30 +1780,53 @@ func _build_top_zone() -> void:
 	action_pip_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	chip_row.add_child(action_pip_box)
 
+# The player's own stage: their figure at the size the art is drawn for,
+# with the status strip parked beneath it. This is where the hit animation
+# plays, so it has to be big enough for that to read as an event rather
+# than as a flicker — it is the single largest thing on the screen.
+func _build_hero_zone() -> void:
+	hero_panel = PanelContainer.new()
+	hero_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hero_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 6, 6))
+	hero_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	zone_hero.add_child(hero_panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hero_panel.add_child(col)
+
+	hero_sprite = SpriteView.new()
+	hero_sprite.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hero_sprite.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	hero_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(hero_sprite)
+
+	hero_stage_name = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	hero_stage_name.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(hero_stage_name)
+
 func _build_enemy_zone() -> void:
 	enemy_panel = PanelContainer.new()
 	enemy_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
-	enemy_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 10, 8))
+	enemy_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 8, 8))
 	enemy_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	zone_enemy.add_child(enemy_panel)
 
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 10)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	enemy_panel.add_child(row)
-
-	enemy_figure = EnemyFigure.new()
-	enemy_figure.custom_minimum_size = Vector2(96, 96)
-	enemy_figure.size_flags_vertical = Control.SIZE_FILL
-	enemy_figure.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(enemy_figure)
-
+	# Figure above, dossier below. The old side-by-side row capped the
+	# figure at 96px, which is a token, not a character.
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	col.add_theme_constant_override("separation", 5)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(col)
+	enemy_panel.add_child(col)
+
+	enemy_sprite = SpriteView.new()
+	enemy_sprite.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	enemy_sprite.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	enemy_sprite.custom_minimum_size = Vector2(0, 120)
+	enemy_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(enemy_sprite)
 
 	enemy_name_label = _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
 	enemy_name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -1737,10 +1877,12 @@ func _build_enemy_zone() -> void:
 	intent_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	intent_inner.add_child(intent_label)
 
+	# The sentence wraps under the badge instead of beside it: the column is
+	# narrow now, and "行動を終えた時に光ったマスにいると当たる" beside a badge
+	# was two words per line.
 	intent_note = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
 	intent_note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	intent_note.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	intent_row.add_child(intent_note)
+	col.add_child(intent_note)
 
 func _build_board_zone() -> void:
 	board_view = BoardView.new()
@@ -1980,9 +2122,101 @@ func _build_overlay() -> void:
 	overlay_body = _make_label(FS_BODY, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
 	overlay_card.add_child(overlay_body)
 
+	# An illustration slot on the card itself, for the screens that are a
+	# moment rather than a menu — events, mostly. Hidden unless a caller
+	# asks for it, so every other overlay looks exactly as it did.
+	overlay_art = SpriteView.new()
+	overlay_art.visible = false
+	overlay_art.custom_minimum_size = Vector2(0, 180)
+	overlay_art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay_card.add_child(overlay_art)
+
 	overlay_list = VBoxContainer.new()
 	overlay_list.add_theme_constant_override("separation", 10)
 	overlay_card.add_child(overlay_list)
+
+# The scene layer sits above everything, including the overlay card, so a
+# resolution scene can play *into* the result screen rather than beside it.
+func _build_scene_layer() -> void:
+	scene_layer = Control.new()
+	scene_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scene_layer.visible = false
+	scene_layer.z_index = 60
+	add_child(scene_layer)
+
+	var shade := ColorRect.new()
+	shade.color = Color(0.05, 0.03, 0.04, 1.0)
+	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scene_layer.add_child(shade)
+
+	scene_sprite = SpriteView.new()
+	scene_sprite.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scene_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scene_layer.add_child(scene_sprite)
+
+	var col := VBoxContainer.new()
+	col.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	col.add_theme_constant_override("separation", 4)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	scene_layer.add_child(col)
+
+	scene_caption = _make_label(FS_HEAD, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	scene_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(scene_caption)
+
+	scene_hint = _make_label(FS_SMALL, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER)
+	scene_hint.text = tr("画面をタップで進む")
+	scene_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(scene_hint)
+
+	# A transparent button over the whole layer, so anywhere is "continue".
+	var catcher := Button.new()
+	catcher.flat = true
+	catcher.focus_mode = Control.FOCUS_NONE
+	catcher.set_anchors_preset(Control.PRESET_FULL_RECT)
+	catcher.pressed.connect(Callable(self, "_dismiss_scene"))
+	scene_layer.add_child(catcher)
+
+# The recollection room. A grid of every scene the game can show, with the
+# ones this profile has not reached still locked — so the count of empty
+# frames is the "how much is left" the player is playing toward.
+func _build_gallery_zone() -> void:
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 10, 8))
+	zone_gallery.add_child(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	panel.add_child(col)
+
+	gallery_title = _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	gallery_title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(gallery_title)
+
+	gallery_scroll = ScrollContainer.new()
+	gallery_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	gallery_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(gallery_scroll)
+
+	gallery_grid = GridContainer.new()
+	gallery_grid.columns = 4
+	gallery_grid.add_theme_constant_override("h_separation", 8)
+	gallery_grid.add_theme_constant_override("v_separation", 8)
+	gallery_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gallery_scroll.add_child(gallery_grid)
+
+	var close_button := Button.new()
+	close_button.text = tr("閉じる")
+	close_button.focus_mode = Control.FOCUS_NONE
+	close_button.custom_minimum_size = Vector2(0, 42)
+	close_button.add_theme_font_size_override("font_size", FS_BODY)
+	_style_button(close_button, COL_GOLD, COL_INK)
+	close_button.add_theme_color_override("font_color", COL_INK)
+	close_button.pressed.connect(Callable(self, "_close_gallery"))
+	col.add_child(close_button)
 
 # --- layout ------------------------------------------------------------
 
@@ -2001,48 +2235,64 @@ func _layout_screen() -> void:
 
 	var margin := 10.0
 	var gap := 8.0
-	# The map takes the whole frame below the status strip: it is its own
-	# screen, not a panel sharing space with the board.
-	if zone_map != null:
-		var map_top: float = margin + 74.0 + gap
-		_place(zone_map, Rect2(margin, map_top, vp.x - margin * 2.0, vp.y - map_top - margin))
+	# The map and the gallery are their own screens rather than panels
+	# sharing space with the board, so they take the whole frame.
+	var full := Rect2(margin, margin, vp.x - margin * 2.0, vp.y - margin * 2.0)
+	_place(zone_map, full)
+	_place(zone_gallery, full)
 	if _is_landscape():
-		# Two columns: the board keeps the left, everything the player reads
-		# or presses stacks on the right — so the end-turn button can never
-		# be pushed off the bottom of a wide window the way it used to be.
-		var board_w: float = min(vp.x * 0.56, vp.y * 1.05)
-		var right_x: float = margin + board_w + gap
-		var right_w: float = vp.x - right_x - margin
-		_place(zone_board, Rect2(margin, margin, board_w, vp.y - margin * 2.0))
+		# Three columns. The two outer ones are the characters — this is a
+		# game whose art is the point, so the art gets a little over half
+		# the frame and the board is sized to fit what is left, not the
+		# other way round. The centre column stacks board, hand, buttons,
+		# log at fixed heights so nothing that appears mid-turn can shift
+		# anything else.
+		var body_h: float = vp.y - margin * 2.0
+		var hero_w: float = clamp(vp.x * 0.28, 220.0, 320.0)
+		var enemy_w: float = clamp(vp.x * 0.245, 200.0, 288.0)
+		var mid_x: float = margin + hero_w + gap
+		var mid_w: float = vp.x - margin - enemy_w - gap - mid_x
+
+		# Left: the player's figure, with their own status strip beneath it.
+		var top_h := 100.0
+		_place(zone_hero, Rect2(margin, margin, hero_w, body_h - top_h - gap))
+		_place(zone_top, Rect2(margin, margin + body_h - top_h, hero_w, top_h))
+
+		# Right: the enemy's figure and dossier, one full-height column.
+		_place(zone_enemy, Rect2(vp.x - margin - enemy_w, margin, enemy_w, body_h))
+
+		# Centre: the game.
+		var cmd_h := 42.0
+		var log_h := 32.0
+		var hand_h: float = clamp(body_h * 0.21, 104.0, 136.0)
+		var board_h: float = max(body_h - hand_h - cmd_h - log_h - gap * 3.0, 180.0)
 		var y: float = margin
-		var top_h := 74.0
-		var enemy_h := 126.0
-		var cmd_h := 46.0
-		var log_h := 38.0
-		var hand_h: float = clamp(vp.y - margin * 2.0 - top_h - enemy_h - cmd_h - log_h - gap * 4.0, 120.0, 200.0)
-		_place(zone_top, Rect2(right_x, y, right_w, top_h))
-		y += top_h + gap
-		_place(zone_enemy, Rect2(right_x, y, right_w, enemy_h))
-		y += enemy_h + gap
-		_place(zone_hand, Rect2(right_x, y, right_w, hand_h))
+		_place(zone_board, Rect2(mid_x, y, mid_w, board_h))
+		y += board_h + gap
+		_place(zone_hand, Rect2(mid_x, y, mid_w, hand_h))
 		y += hand_h + gap
-		_place(zone_cmd, Rect2(right_x, y, right_w, cmd_h))
+		_place(zone_cmd, Rect2(mid_x, y, mid_w, cmd_h))
 		y += cmd_h + gap
-		_place(zone_log, Rect2(right_x, y, right_w, log_h))
+		_place(zone_log, Rect2(mid_x, y, mid_w, log_h))
 	else:
+		# Portrait is no longer the shipping shape, but it still has to be
+		# playable in a window someone drags narrow. The two figures share
+		# one band under the status strip instead of taking columns.
 		var width: float = vp.x - margin * 2.0
 		var top_h := 74.0
-		var enemy_h := 122.0
+		var stage_h: float = clamp(vp.y * 0.24, 150.0, 220.0)
 		var cmd_h := 46.0
 		var log_h := 34.0
 		var hand_h: float = clamp(vp.y * 0.19, 128.0, 168.0)
-		var used: float = top_h + enemy_h + hand_h + cmd_h + log_h + gap * 5.0 + margin * 2.0
+		var used: float = top_h + stage_h + hand_h + cmd_h + log_h + gap * 5.0 + margin * 2.0
 		var board_h: float = max(vp.y - used, 200.0)
 		var y: float = margin
 		_place(zone_top, Rect2(margin, y, width, top_h))
 		y += top_h + gap
-		_place(zone_enemy, Rect2(margin, y, width, enemy_h))
-		y += enemy_h + gap
+		var hero_w: float = (width - gap) * 0.42
+		_place(zone_hero, Rect2(margin, y, hero_w, stage_h))
+		_place(zone_enemy, Rect2(margin + hero_w + gap, y, width - hero_w - gap, stage_h))
+		y += stage_h + gap
 		_place(zone_board, Rect2(margin, y, width, board_h))
 		y += board_h + gap
 		_place(zone_hand, Rect2(margin, y, width, hand_h))
@@ -2061,6 +2311,11 @@ func _layout_screen() -> void:
 	if overlay != null:
 		overlay.size = vp
 		_layout_overlay()
+	if scene_layer != null:
+		scene_layer.position = Vector2.ZERO
+		scene_layer.size = vp
+	if gallery_grid != null:
+		gallery_grid.columns = clampi(int((vp.x - 60.0) / 168.0), 2, 6)
 	_layout_board_buttons()
 
 func _place(node: Control, rect: Rect2) -> void:
@@ -2224,11 +2479,20 @@ func _process(delta: float) -> void:
 
 func _refresh_all() -> void:
 	_refresh_top()
+	_refresh_hero_stage()
 	_refresh_enemy()
 	_refresh_board()
 	_refresh_hand()
 	_refresh_command()
 	_refresh_map()
+	if zone_gallery != null:
+		zone_gallery.visible = state == "gallery"
+
+# The screens that show the two figures. The map, the gallery and the title
+# each take the whole frame instead.
+func _in_battle_view() -> bool:
+	return state != "title" and state != "map" and state != "node_event" \
+		and state != "gallery" and state != "settings"
 
 func _set_log(text: String) -> void:
 	log_hold = text
@@ -2237,7 +2501,7 @@ func _set_log(text: String) -> void:
 		log_label.text = text
 
 func _refresh_top() -> void:
-	var in_run: bool = state != "title"
+	var in_run: bool = state != "title" and state != "gallery"
 	zone_top.visible = in_run
 	if not in_run:
 		return
@@ -2288,15 +2552,34 @@ func _animate_gauge(bar: GaugeBar) -> void:
 	var tween := create_tween()
 	tween.tween_property(bar, "display_value", target, 0.28).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
+# While a hit clip is playing, the idle refresh must keep its hands off the
+# sprite — a _refresh_all landing mid-animation would otherwise snap the
+# figure back to idle a frame after it was struck.
+var _hero_clip_lock := false
+var _enemy_clip_lock := false
+
+func _refresh_hero_stage() -> void:
+	if zone_hero == null:
+		return
+	zone_hero.visible = _in_battle_view()
+	if not zone_hero.visible or _hero_clip_lock:
+		return
+	hero_stage_name.text = hero_name
+	# A badly hurt character stands differently. If only an idle has been
+	# drawn, "down" falls through to it and nothing looks broken.
+	var hurt: bool = float(player_hp) / float(max(player_max_hp, 1)) <= 0.35
+	_show_art(hero_sprite, "stage", _hero_art_id(),
+		["down", "idle"] if hurt else ["idle"])
+
 func _refresh_enemy() -> void:
 	var show: bool = state != "title" and not enemies.is_empty()
-	zone_enemy.visible = state != "title" and state != "map" and state != "node_event"
+	zone_enemy.visible = _in_battle_view()
 	enemy_panel.modulate = Color(1, 1, 1, 1.0 if show else 0.0)
 	if not show:
 		return
 	var enemy: Dictionary = enemies[0]
-	enemy_figure.kind = _enemy_icon_kind(str(enemy["type"]))
-	enemy_figure.body_color = COL_ENEMY if str(enemy["type"]) != "ボス" else Color("#8E2F6B")
+	if not _enemy_clip_lock:
+		_show_art(enemy_sprite, "stage", _enemy_art_id(), ["idle"])
 	enemy_name_label.text = "%s%s" % [str(enemy["type"]), "（ボス）" if str(enemy["type"]) == "ボス" else ""]
 	enemy_hp_bar.max_value = int(enemy["max_hp"])
 	enemy_hp_bar.value = max(int(enemy["hp"]), 0)
@@ -2839,7 +3122,7 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color, big: bool =
 	tween.chain().tween_callback(label.queue_free)
 
 func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
-	if enemy_figure == null or not is_instance_valid(enemy_figure):
+	if enemy_sprite == null or not is_instance_valid(enemy_sprite):
 		return
 	var label := Label.new()
 	label.text = text
@@ -2852,8 +3135,8 @@ func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
 	label.z_index = 30
 	add_child(label)
 	label.pivot_offset = label.size / 2.0
-	var anchor: Vector2 = enemy_figure.get_global_transform_with_canvas().origin
-	label.position = anchor + Vector2(enemy_figure.size.x * 0.5 - 20.0, -10.0)
+	var anchor: Vector2 = enemy_sprite.get_global_transform_with_canvas().origin
+	label.position = anchor + Vector2(enemy_sprite.size.x * 0.5 - 20.0, enemy_sprite.size.y * 0.32)
 	label.scale = Vector2(0.4, 0.4)
 	var base_y: float = label.position.y
 	var tween := create_tween()
@@ -2864,20 +3147,49 @@ func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
 	tween.chain().tween_callback(label.queue_free)
 
 func _lunge_enemy() -> void:
-	if enemy_figure == null or not is_instance_valid(enemy_figure):
+	if zone_enemy == null or not is_instance_valid(zone_enemy):
 		return
-	var base: Vector2 = enemy_figure.position
+	# The whole column lunges, not the figure inside it: the figure is laid
+	# out by a container, which would fight the tween for its position.
+	var base: Vector2 = zone_enemy.position
 	var tween := create_tween()
-	tween.tween_property(enemy_figure, "position", base + Vector2(0, 12), 0.10).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tween.tween_property(enemy_figure, "position", base, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(zone_enemy, "position", base + Vector2(-14, 6), 0.10).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_property(zone_enemy, "position", base, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	await tween.finished
 
 func _flash_enemy() -> void:
-	if enemy_figure == null:
+	if enemy_sprite == null:
 		return
 	var tween := create_tween()
-	tween.tween_property(enemy_figure, "flash", 1.0, 0.04)
-	tween.tween_property(enemy_figure, "flash", 0.0, 0.22)
+	tween.tween_property(enemy_sprite, "flash", 1.0, 0.04)
+	tween.tween_property(enemy_sprite, "flash", 0.0, 0.22)
+
+# --- being hit ----------------------------------------------------------
+# The one animation that plays in the middle of the board rather than over
+# it. A fight runs twenty-odd turns, so this cannot be a full-screen
+# interruption; it is the stage figure changing clip for under a second
+# while play continues around it.
+
+func _play_hit_clip(view: SpriteView, actor: String, lock_hero: bool) -> void:
+	if view == null or not is_instance_valid(view):
+		return
+	if lock_hero:
+		_hero_clip_lock = true
+	else:
+		_enemy_clip_lock = true
+	_show_art(view, "stage", actor, ["hit", "idle"], false)
+	view.flash = 0.9
+	var tween := create_tween()
+	tween.tween_property(view, "flash", 0.0, 0.20)
+	# A clip that is only one frame long still has to hold the screen long
+	# enough to be seen, so the floor is the beat, not the frame count.
+	await get_tree().create_timer(max(view.duration(), 0.5)).timeout
+	if lock_hero:
+		_hero_clip_lock = false
+		_refresh_hero_stage()
+	else:
+		_enemy_clip_lock = false
+		_refresh_enemy()
 
 # Only a heavy hit shakes the screen. If everything shakes, nothing reads
 # as heavy.
@@ -2900,12 +3212,12 @@ func _punch(node: Control, scale_to: float = 1.1) -> void:
 	tween.tween_property(node, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 func _spawn_burst_at_enemy() -> void:
-	if enemy_figure == null:
+	if enemy_sprite == null:
 		return
 	var burst := BurstEffect.new()
 	burst.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	burst.set_anchors_preset(Control.PRESET_FULL_RECT)
-	burst.center = enemy_figure.get_global_transform_with_canvas().origin + enemy_figure.size * 0.5
+	burst.center = enemy_sprite.get_global_transform_with_canvas().origin + enemy_sprite.size * 0.5
 	burst.token = 60.0
 	burst.z_index = 28
 	add_child(burst)
@@ -2920,7 +3232,18 @@ func _open_overlay(title: String, body: String) -> void:
 	overlay_title.text = title
 	overlay_body.text = body
 	overlay_body.visible = body != ""
+	if overlay_art != null:
+		overlay_art.visible = false
 	_clear_children(overlay_list)
+
+# Put an illustration on the card that is already open. Opening a card
+# clears it again, so a screen has to ask for its picture every time —
+# which is what keeps a stale image from following the player around.
+func _open_overlay_art(kind: String, actor: String, art_state: String) -> void:
+	if overlay_art == null or not _has_art(kind, actor, art_state):
+		return
+	_show_art(overlay_art, kind, actor, [art_state])
+	overlay_art.visible = true
 
 func _close_overlay() -> void:
 	overlay.visible = false
@@ -3224,6 +3547,12 @@ func _show_title() -> void:
 			Callable(self, "_start_run").bind(key)
 		)
 	_add_overlay_option("図鑑", "マスとダイスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
+	var seen := 0
+	for raw in _gallery_entries():
+		if _is_unlocked(str((raw as Dictionary)["key"])):
+			seen += 1
+	_add_overlay_option("回想", "見た場面をもう一度。%d / %d" % [seen, _gallery_entries().size()],
+		Color("#9C3A6B"), "warp", Callable(self, "_show_gallery"))
 	_add_overlay_option("設定", "音量を調整します。", COL_TEXT_SOFT, "dice", Callable(self, "_show_settings"))
 	_layout_overlay()
 
@@ -3299,7 +3628,15 @@ func _show_victory() -> void:
 	_layout_overlay()
 	_play_result_flourish(Color(1.0, 0.85, 0.45, 0.45))
 
-func _show_game_over(reason: String) -> void:
+# `by_enemy` is what separates "the enemy finished you" from "you walked
+# onto one poison square too many". Only the first has a scene, because
+# only the first has someone standing over you at the end of it.
+func _show_game_over(reason: String, by_enemy: bool = false) -> void:
+	if by_enemy and not scene_played_this_fight:
+		scene_played_this_fight = true
+		_play_scene(encounter_art, "lose", tr("%s に敗れた") % encounter_name,
+			Callable(self, "_show_game_over").bind(reason, false))
+		return
 	state = "game_over"
 	_delete_run_save()
 	_bump_lifetime("losses")
@@ -3437,20 +3774,24 @@ const ENEMY_TRAIT_TEXT := {
 	"thorns": "棘%d：攻撃するたびこちらが%dダメージ受ける",
 }
 
+# "art" is the actor id its stage figure and its scene art resolve under —
+# res://art/stage/scout_idle.png, res://art/cg/scout_lose.png and so on. It
+# is a separate field from "name" so the Japanese name can be rewritten
+# without touching a single filename.
 var enemy_defs := [
-	{"name": "はぐれ兵", "hp": 20, "damage": 5, "kind": "cell",
+	{"name": "はぐれ兵", "art": "stray", "hp": 20, "damage": 5, "kind": "cell",
 		"mode": "relative", "cells": [2], "gold": 12},
-	{"name": "斥候", "hp": 28, "damage": 6, "kind": "cell",
+	{"name": "斥候", "art": "scout", "hp": 28, "damage": 6, "kind": "cell",
 		"mode": "relative", "cells": [2, 5], "gold": 15},
-	{"name": "射手", "hp": 36, "damage": 7, "kind": "guaranteed",
+	{"name": "射手", "art": "archer", "hp": 36, "damage": 7, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "gold": 18},
-	{"name": "重装", "hp": 44, "damage": 8, "kind": "cell",
+	{"name": "重装", "art": "heavy", "hp": 44, "damage": 8, "kind": "cell",
 		"mode": "fixed", "cells": [2, 6, 10], "armor": 3, "gold": 21},
-	{"name": "疫病持ち", "hp": 46, "damage": 8, "kind": "cell",
+	{"name": "疫病持ち", "art": "plague", "hp": 46, "damage": 8, "kind": "cell",
 		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22},
-	{"name": "隊長", "hp": 52, "damage": 9, "kind": "cell",
+	{"name": "隊長", "art": "captain", "hp": 52, "damage": 9, "kind": "cell",
 		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2, "gold": 25},
-	{"name": "ボス", "hp": 62, "damage": 10, "kind": "guaranteed",
+	{"name": "ボス", "art": "boss", "hp": 62, "damage": 10, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40},
 ]
 
@@ -3761,8 +4102,13 @@ func _remove_die(index: int, price: int) -> void:
 func _resolve_event_node() -> void:
 	state = "node_event"
 	var ids: Array = event_defs.keys()
-	var event: Dictionary = event_defs[str(ids[rng.randi_range(0, ids.size() - 1)])]
+	var event_id := str(ids[rng.randi_range(0, ids.size() - 1)])
+	var event: Dictionary = event_defs[event_id]
 	_open_overlay(_t(event["name"]), _t(event["body"]))
+	# An event is a place, so it gets a picture of one when there is a file
+	# for it: res://art/cg/<event id>_scene.png. Nothing changes if there
+	# is not — the card is the same card it has always been.
+	_open_overlay_art("cg", str(event.get("art", event_id)), "scene")
 	for raw in event["choices"]:
 		var choice: Dictionary = raw
 		_add_overlay_option(
@@ -3980,6 +4326,135 @@ func _close_settings() -> void:
 	else:
 		_refresh_all()
 
+# --- scenes and the gallery ---------------------------------------------
+# A fight ends in a picture. That is the whole contract: the board decides
+# who won, and the scene layer shows what that meant, once, full frame.
+# Everything below is the plumbing for that one sentence — which slot to
+# show, remembering that it was shown, and letting the player see it again
+# afterwards.
+
+const CG_STATE_TEXT := {"win": "勝利", "lose": "敗北"}
+
+# The art id and display name of the fight in progress, kept separately from
+# `enemies` because the scene plays *after* the loser has been cleared off
+# the board.
+var encounter_art := "unknown"
+var encounter_name := ""
+
+func _play_scene(actor: String, art_state: String, caption: String, after: Callable) -> void:
+	scene_after = after
+	# Reaching a scene is what unlocks it, whether or not its file exists
+	# yet — so once art lands, a player's gallery already reflects every
+	# fight they have actually finished.
+	if _unlock("cg:%s:%s" % [actor, art_state]):
+		_bump_lifetime("scenes")
+	scene_caption.text = caption
+	_show_art(scene_sprite, "cg", actor, [art_state], false)
+	scene_layer.visible = true
+
+func _dismiss_scene() -> void:
+	if scene_layer == null or not scene_layer.visible:
+		return
+	scene_layer.visible = false
+	var next := scene_after
+	scene_after = Callable()
+	if next.is_valid():
+		next.call()
+
+# Every scene the game can contain, unlocked or not. Derived from the enemy
+# table rather than listed by hand, so a new enemy brings its gallery rows
+# with it.
+func _gallery_entries() -> Array:
+	var out := []
+	for raw in enemy_defs:
+		var def: Dictionary = raw
+		for art_state in ART_CG_STATES:
+			out.append({
+				"actor": str(def.get("art", "unknown")),
+				"state": str(art_state),
+				"name": _t(def["name"]),
+				"key": "cg:%s:%s" % [str(def.get("art", "unknown")), str(art_state)],
+			})
+	return out
+
+func _show_gallery() -> void:
+	gallery_return_state = state
+	state = "gallery"
+	_close_overlay()
+	var entries := _gallery_entries()
+	var found := 0
+	for raw in entries:
+		if _is_unlocked(str((raw as Dictionary)["key"])):
+			found += 1
+	gallery_title.text = tr("回想　%d / %d") % [found, entries.size()]
+	_clear_children(gallery_grid)
+	for raw in entries:
+		gallery_grid.add_child(_make_gallery_cell(raw))
+	_refresh_all()
+
+func _make_gallery_cell(entry: Dictionary) -> Control:
+	var open: bool = _is_unlocked(str(entry["key"]))
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(160, 122)
+	panel.add_theme_stylebox_override("panel",
+		_flat_style(COL_PANEL_SUNK if open else Color("#C4B394"), COL_INK, 2, 5, 5))
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 3)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(col)
+
+	if open:
+		var thumb := SpriteView.new()
+		thumb.custom_minimum_size = Vector2(0, 84)
+		thumb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(thumb)
+		_show_art(thumb, "cg", str(entry["actor"]), [str(entry["state"])], false)
+	else:
+		# A locked cell is a blank plate, not a dimmed picture: the point of
+		# the grid is that the player can count what they have not seen.
+		var blank := PanelContainer.new()
+		blank.custom_minimum_size = Vector2(0, 84)
+		blank.add_theme_stylebox_override("panel", _flat_style(Color("#8E7F66"), COL_INK, 2, 0, 0))
+		blank.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(blank)
+		var lock := _make_label(FS_HEAD, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, true)
+		lock.text = "？"
+		lock.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		lock.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		blank.add_child(lock)
+
+	var caption := _make_label(FS_SMALL, COL_TEXT if open else COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	caption.text = _scene_title(entry) if open else tr("未開放")
+	col.add_child(caption)
+
+	if open:
+		var hit := Button.new()
+		hit.flat = true
+		hit.focus_mode = Control.FOCUS_NONE
+		hit.pressed.connect(Callable(self, "_replay_scene").bind(entry))
+		panel.add_child(hit)
+	return panel
+
+func _scene_title(entry: Dictionary) -> String:
+	var art_state := str(entry["state"])
+	return "%s・%s" % [str(entry["name"]), _t(CG_STATE_TEXT.get(art_state, art_state))]
+
+func _replay_scene(entry: Dictionary) -> void:
+	_play_scene(str(entry["actor"]), str(entry["state"]), _scene_title(entry), Callable())
+
+func _close_gallery() -> void:
+	state = gallery_return_state
+	if state == "title":
+		_show_title()
+		return
+	if state == "map":
+		_show_map()
+		return
+	_refresh_all()
+
 # --- localisation -------------------------------------------------------
 # Every string bound for the screen goes through _t. The Japanese text is
 # its own translation key, so an untranslated build returns it unchanged —
@@ -3993,6 +4468,71 @@ func _close_settings() -> void:
 # hero_defs, and any content added later is localisable for free.
 func _t(value) -> String:
 	return tr(str(value))
+
+# --- art loading ---------------------------------------------------------
+# Slots resolve to files here and nowhere else. Results are cached — both
+# hits and misses — because the answer cannot change while the game runs
+# and a miss otherwise costs a filesystem probe every frame a placeholder
+# is on screen.
+
+var _art_cache: Dictionary = {}
+
+func _art_slot(kind: String, actor: String, state: String) -> String:
+	return "%s/%s/%s" % [kind, actor, state]
+
+func _art_frames(kind: String, actor: String, state: String) -> Array:
+	var slot := _art_slot(kind, actor, state)
+	if _art_cache.has(slot):
+		return _art_cache[slot]
+	var dir := str((ART_KINDS.get(kind, {}) as Dictionary).get("dir", kind))
+	var base := "%s/%s/%s_%s" % [ART_ROOT, dir, actor, state]
+	var frames := []
+	# A still and a numbered sequence are the same thing to the caller; a
+	# lone "<slot>.png" is just a one-frame clip.
+	if ResourceLoader.exists("%s.png" % base, "Texture2D"):
+		frames.append(load("%s.png" % base))
+	else:
+		for i in range(ART_MAX_FRAMES):
+			var path := "%s_%d.png" % [base, i]
+			if not ResourceLoader.exists(path, "Texture2D"):
+				break
+			frames.append(load(path))
+	_art_cache[slot] = frames
+	return frames
+
+func _has_art(kind: String, actor: String, state: String) -> bool:
+	return not _art_frames(kind, actor, state).is_empty()
+
+func _art_fps(kind: String) -> float:
+	return float((ART_KINDS.get(kind, {}) as Dictionary).get("fps", 12.0))
+
+# Show a slot in a view, falling back down a chain of states so a character
+# with only an idle drawn still animates *something* rather than flipping
+# to a placeholder the moment it is hit.
+func _show_art(view: SpriteView, kind: String, actor: String, states: Array, loop: bool = true) -> void:
+	if view == null:
+		return
+	for state in states:
+		var frames := _art_frames(kind, actor, str(state))
+		if not frames.is_empty():
+			view.play(frames, _art_slot(kind, actor, str(state)), _art_fps(kind), loop)
+			return
+	# Nothing in the chain exists: name the state that was actually wanted,
+	# not the last one tried, so the placeholder points at the art to draw.
+	view.play([], _art_slot(kind, actor, str(states[0])), _art_fps(kind), loop)
+
+# The actor id for whatever the player is currently fighting, and for the
+# player themselves. Both fall back to a fixed id so a half-filled data
+# table still resolves to a slot instead of to an empty string.
+func _enemy_art_id() -> String:
+	if enemies.is_empty():
+		return encounter_art
+	return str((enemies[0] as Dictionary).get("art", encounter_art))
+
+func _hero_art_id() -> String:
+	if hero_key == "" or not hero_defs.has(hero_key):
+		return "hero"
+	return str((hero_defs[hero_key] as Dictionary).get("art", "hero"))
 
 # --- persistence --------------------------------------------------------
 # Two files, because they have different lifetimes. The profile outlives
@@ -4372,6 +4912,13 @@ func _setup_encounter() -> void:
 	var enemy := _make_enemy(
 		_t(def["name"]), int(def["hp"]), int(def["damage"]),
 		_t(def["kind"]), str(def["mode"]), def["cells"])
+	# The art id travels with the fight, so the stage and the resolution
+	# scene both know who is on screen without re-deriving it from a
+	# translated display name.
+	enemy["art"] = str(def.get("art", "unknown"))
+	encounter_art = str(enemy["art"])
+	encounter_name = str(enemy["type"])
+	scene_played_this_fight = false
 	for trait_key in ["armor", "regen", "thorns", "gold"]:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
@@ -4667,9 +5214,15 @@ func _finish_encounter() -> void:
 	_cleanup_dead_enemies()
 	_hide_banner()
 	_set_log(tr("敵を倒した。マスの毒も消えた。") if last_cleanse_count > 0 else "敵を倒した。")
-	# Long enough to watch the enemy actually die before the reward card
-	# covers the board.
+	# Long enough to watch the enemy actually die before the screen changes.
 	await get_tree().create_timer(1.2).timeout
+	# The picture comes before the loot. A fight resolves once, so this
+	# fires once even if two code paths both notice the enemy is dead.
+	if not scene_played_this_fight:
+		scene_played_this_fight = true
+		_play_scene(encounter_art, "win", tr("%s を下した") % encounter_name,
+			Callable(self, "_show_reward"))
+		return
 	_show_reward()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
@@ -4912,7 +5465,11 @@ func _take_damage(amount: int) -> int:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#FF6A4D"), hp_loss >= 6)
 		sfx.emit("hurt")
 		_shake(zone_board, 5.0)
+		_shake(zone_hero, 6.0)
 		_punch(hero_portrait, 1.18)
+		# Fired, not awaited: the turn does not stop for it, which is the
+		# whole reason this plays on the stage instead of over the screen.
+		_play_hit_clip(hero_sprite, _hero_art_id(), true)
 	elif blocked > 0:
 		_spawn_floating_text(player_pos, "盾で防いだ", COL_SHIELD)
 		sfx.emit("shield")
@@ -4949,7 +5506,10 @@ func _damage_enemy(enemy: Dictionary, amount: int) -> void:
 		_take_damage(thorns)
 	run_damage_dealt += amount
 	_spawn_enemy_popup("-%d" % amount, Color("#FFE0CF"), amount >= 6)
-	_flash_enemy()
+	if amount >= 6 and _has_art("stage", _enemy_art_id(), "hit"):
+		_play_hit_clip(enemy_sprite, _enemy_art_id(), false)
+	else:
+		_flash_enemy()
 	sfx.emit("hit")
 	if amount >= 6:
 		_shake(zone_enemy, 4.0)
@@ -5066,7 +5626,7 @@ func _enemy_turn() -> void:
 	_hide_banner()
 	_cleanup_dead_enemies()
 	if player_hp <= 0:
-		_show_game_over("敵の攻撃で倒れました。")
+		_show_game_over("敵の攻撃で倒れました。", true)
 		return
 	if enemies.is_empty():
 		_finish_encounter()
@@ -5405,16 +5965,6 @@ func _hero_dice_names(hero: Dictionary) -> String:
 	for die_id in hero["dice"]:
 		names.append(str(dice_defs[str(die_id)]["name"]))
 	return "・".join(names)
-
-func _enemy_icon_kind(type_name: String) -> String:
-	match type_name:
-		"射手":
-			return "enemy_archer"
-		"重装":
-			return "enemy_heavy"
-		"ボス":
-			return "enemy_boss"
-	return "enemy_grunt"
 
 func _clear_children(node: Node) -> void:
 	if node == null:

@@ -25,12 +25,18 @@ FIELD = re.compile(
     r'"(?:name|effect|detail|label|desc|body|short|kind)"\s*:\s*"((?:[^"\\]|\\.)*)"'
 )
 WRAPPED = re.compile(r'\btr\(\s*"((?:[^"\\]|\\.)*)"')
+# Any Japanese value in any dictionary literal. Broader than FIELD on
+# purpose: small lookup tables (CG_STATE_TEXT, ENEMY_TRAIT_TEXT) keep being
+# added, and enumerating their key names here means every new one is
+# silently untranslatable until someone remembers to. A false positive
+# costs one unused row; a miss costs a string that can never be localised.
+DICT_VALUE = re.compile(r':\s*"((?:[^"\\]|\\.)*)"')
 
 
 def collect(text):
     found = []
     seen = set()
-    for pattern in (FIELD, WRAPPED):
+    for pattern in (FIELD, WRAPPED, DICT_VALUE):
         for match in pattern.finditer(text):
             literal = match.group(1)
             if not JP.search(literal):
