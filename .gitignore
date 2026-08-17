@@ -13,3 +13,6 @@ godot_project/builds/
 .DS_Store
 Thumbs.db
 *.tmp
+
+# Godot compiles these from i18n/strings.csv on import
+godot_project/i18n/*.translation

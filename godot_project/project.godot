@@ -21,3 +21,8 @@ window/stretch/aspect="expand"
 
 renderer/rendering_method="mobile"
 renderer/rendering_method.mobile="mobile"
+
+[internationalization]
+
+locale/translations=PackedStringArray("res://i18n/strings.en.translation", "res://i18n/strings.ja.translation")
+locale/fallback="ja"

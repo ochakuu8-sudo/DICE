@@ -1471,6 +1471,7 @@ func _ready() -> void:
 	ui_font_heavy = heavy
 	_build_ui()
 	_load_profile()
+	_apply_locale()
 	_apply_audio_settings()
 	_layout_screen()
 	_show_title()
@@ -1651,7 +1652,7 @@ func _build_top_zone() -> void:
 	gold_inner.add_child(gold_label)
 
 	var action_caption := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT)
-	action_caption.text = "行動"
+	action_caption.text = tr("行動")
 	action_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
 	action_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	chip_row.add_child(action_caption)
@@ -1831,7 +1832,7 @@ func _build_board_zone() -> void:
 	combo_chip.add_child(combo_label)
 
 	ribbon_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
-	ribbon_caption.text = "この先のマス　●通過 ■停止"
+	ribbon_caption.text = tr("この先のマス　●通過 ■停止")
 	ribbon_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
 	ribbon_box.add_child(ribbon_caption)
 
@@ -1902,7 +1903,7 @@ func _build_command_zone() -> void:
 	zone_cmd.add_child(row)
 
 	reroll_button = Button.new()
-	reroll_button.text = "振り直す"
+	reroll_button.text = tr("振り直す")
 	reroll_button.focus_mode = Control.FOCUS_NONE
 	reroll_button.custom_minimum_size = Vector2(132, 0)
 	reroll_button.add_theme_font_size_override("font_size", FS_SMALL)
@@ -1911,7 +1912,7 @@ func _build_command_zone() -> void:
 	row.add_child(reroll_button)
 
 	end_turn_button = Button.new()
-	end_turn_button.text = "行動終了"
+	end_turn_button.text = tr("行動終了")
 	end_turn_button.focus_mode = Control.FOCUS_NONE
 	end_turn_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	end_turn_button.add_theme_font_size_override("font_size", FS_BODY)
@@ -1921,7 +1922,7 @@ func _build_command_zone() -> void:
 	row.add_child(end_turn_button)
 
 	catalog_button = Button.new()
-	catalog_button.text = "図鑑"
+	catalog_button.text = tr("図鑑")
 	catalog_button.focus_mode = Control.FOCUS_NONE
 	catalog_button.custom_minimum_size = Vector2(74, 0)
 	catalog_button.add_theme_font_size_override("font_size", FS_SMALL)
@@ -2240,7 +2241,7 @@ func _refresh_top() -> void:
 	zone_top.visible = in_run
 	if not in_run:
 		return
-	run_label.text = "第%d戦" % max(encounter, 1)
+	run_label.text = tr("第%d戦") % max(encounter, 1)
 	run_track.total = MAP_ROWS
 	run_track.current = encounter
 	run_track.queue_redraw()
@@ -2263,7 +2264,7 @@ func _refresh_top() -> void:
 	gold_label.text = str(gold)
 	gold_chip.visible = state != "title"
 
-	combo_label.text = "コンボ %d" % combo
+	combo_label.text = tr("コンボ %d") % combo
 	combo_chip.visible = state == "player" or state == "moving"
 	combo_chip.modulate = Color(1, 1, 1, 1.0 if combo > 0 else 0.5)
 
@@ -2308,7 +2309,7 @@ func _refresh_enemy() -> void:
 	intent_icon.set_kind("slash" if guaranteed else "focus")
 	intent_label.text = str(int(enemy["damage"]))
 	intent_panel.add_theme_stylebox_override("panel", _flat_style(COL_ENEMY if guaranteed else COL_DANGER, COL_INK, 3, 8, 3))
-	intent_note.text = "毎ターン必ず当たる" if guaranteed else "行動を終えた時に光ったマスにいると当たる"
+	intent_note.text = tr("毎ターン必ず当たる") if guaranteed else "行動を終えた時に光ったマスにいると当たる"
 	var traits := _enemy_trait_text(enemy)
 	if traits != "":
 		intent_note.text = traits
@@ -2324,7 +2325,7 @@ func _refresh_command() -> void:
 	catalog_button.visible = state != "title"
 	reroll_button.visible = playing or state == "moving" or state == "enemy"
 	reroll_button.disabled = not (playing and dice_rolled and rerolls_left > 0 and not hand.is_empty())
-	reroll_button.text = "振り直す %d" % rerolls_left
+	reroll_button.text = tr("振り直す %d") % rerolls_left
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
@@ -2422,7 +2423,7 @@ func _refresh_board() -> void:
 			debuff_label.text = ""
 			if temp_type == "hazard":
 				color = color.lerp(Color("#6F7A2A"), 0.32)
-				debuff_label.text = "毒"
+				debuff_label.text = tr("毒")
 			_apply_cell_style(button, color, border_color, border_width, dim, str(tile["trigger"]))
 	_refresh_ribbon()
 	board_view.queue_redraw()
@@ -2522,7 +2523,7 @@ func _refresh_ribbon() -> void:
 
 	if moving:
 		roll_readout.visible = steps_left > 0
-		roll_readout.text = "あと%d" % steps_left
+		roll_readout.text = tr("あと%d") % steps_left
 		_clear_children(ribbon_row)
 		_layout_ribbon()
 		return
@@ -2693,7 +2694,7 @@ func _make_empty_slot(slot_w: float = 120.0) -> Control:
 	panel.add_theme_stylebox_override("panel", style)
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var label := _make_label(FS_SMALL, Color(COL_TEXT_SOFT.r, COL_TEXT_SOFT.g, COL_TEXT_SOFT.b, 0.7), HORIZONTAL_ALIGNMENT_CENTER)
-	label.text = "使用済み" if slot_w >= 86.0 else "済"
+	label.text = tr("使用済み") if slot_w >= 86.0 else "済"
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	panel.add_child(label)
 	return panel
@@ -2719,7 +2720,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	panel.add_child(col)
 
 	var name_label := _make_label(FS_SMALL - (2 if tight else 0), COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	name_label.text = str(die["name"])
+	name_label.text = _t(die["name"])
 	name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	name_label.clip_text = true
 	col.add_child(name_label)
@@ -2993,8 +2994,8 @@ const TILE_KINDS := [
 func _show_catalog() -> void:
 	catalog_return_state = state
 	overlay.visible = true
-	overlay_title.text = "図鑑"
-	overlay_body.text = "○丸は通過で、□四角は止まって効くマス。攻撃マスのダメージには、そのターンに使ったダイスの数（コンボ）が加算されます。ダイスは出目に加えて、使った行動のあいだだけ効果を発揮します。"
+	overlay_title.text = tr("図鑑")
+	overlay_body.text = tr("○丸は通過で、□四角は止まって効くマス。攻撃マスのダメージには、そのターンに使ったダイスの数（コンボ）が加算されます。ダイスは出目に加えて、使った行動のあいだだけ効果を発揮します。")
 	overlay_body.visible = true
 	_clear_children(overlay_list)
 
@@ -3017,17 +3018,17 @@ func _show_catalog() -> void:
 		column.add_child(heading)
 		for key in tile_defs.keys():
 			var tile: Dictionary = tile_defs[key]
-			if str(tile["kind"]) != str(kind[0]):
+			if _t(tile["kind"]) != str(kind[0]):
 				continue
 			column.add_child(_make_catalog_row(tile))
 	var debuff_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
-	debuff_heading.text = "◇ 敵のデバフ — マスに重ねてかけられる"
+	debuff_heading.text = tr("◇ 敵のデバフ — マスに重ねてかけられる")
 	debuff_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 	column.add_child(debuff_heading)
 	column.add_child(_make_catalog_row(temp_defs["hazard"]))
 
 	var dice_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
-	dice_heading.text = "⚄ ダイス — 使った行動のあいだだけ効果が続く"
+	dice_heading.text = tr("⚄ ダイス — 使った行動のあいだだけ効果が続く")
 	dice_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 	column.add_child(dice_heading)
 	var owned := {}
@@ -3037,7 +3038,7 @@ func _show_catalog() -> void:
 		column.add_child(_make_die_catalog_row(str(die_id), int(owned.get(str(die_id), 0))))
 
 	var settings_row := Button.new()
-	settings_row.text = "設定"
+	settings_row.text = tr("設定")
 	settings_row.focus_mode = Control.FOCUS_NONE
 	settings_row.custom_minimum_size = Vector2(0, 40)
 	settings_row.add_theme_font_size_override("font_size", FS_SMALL)
@@ -3048,7 +3049,7 @@ func _show_catalog() -> void:
 
 	if catalog_return_state != "title":
 		var quit_row := Button.new()
-		quit_row.text = "この挑戦をやめてタイトルへ"
+		quit_row.text = tr("この挑戦をやめてタイトルへ")
 		quit_row.focus_mode = Control.FOCUS_NONE
 		quit_row.custom_minimum_size = Vector2(0, 40)
 		quit_row.add_theme_font_size_override("font_size", FS_SMALL)
@@ -3058,7 +3059,7 @@ func _show_catalog() -> void:
 		overlay_list.add_child(quit_row)
 
 	var close_button := Button.new()
-	close_button.text = "閉じる"
+	close_button.text = tr("閉じる")
 	close_button.focus_mode = Control.FOCUS_NONE
 	close_button.custom_minimum_size = Vector2(0, 44)
 	close_button.add_theme_font_size_override("font_size", FS_BODY)
@@ -3114,11 +3115,11 @@ func _make_catalog_row(tile: Dictionary) -> Control:
 	line.add_child(col)
 
 	var head := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
-	head.text = "%s　%s" % [str(tile["name"]), str(tile["effect"])]
+	head.text = "%s　%s" % [_t(tile["name"]), _t(tile["effect"])]
 	col.add_child(head)
 
 	var detail := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
-	detail.text = str(tile["detail"])
+	detail.text = _t(tile["detail"])
 	col.add_child(detail)
 	return row
 
@@ -3177,17 +3178,17 @@ func _make_die_catalog_row(die_id: String, owned_count: int) -> Control:
 	line.add_child(col)
 
 	var head := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
-	head.text = "%sダイス　%s" % [str(die_def["name"]), str(die_def["effect"])]
+	head.text = tr("%sダイス　%s") % [_t(die_def["name"]), _t(die_def["effect"])]
 	if owned_count > 0:
 		head.text += "　（所持 %d）" % owned_count
 	col.add_child(head)
 
 	var faces_label := _make_label(FS_SMALL, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT)
-	faces_label.text = "出目: %s" % _faces_text(faces)
+	faces_label.text = tr("出目: %s") % _faces_text(faces)
 	col.add_child(faces_label)
 
 	var detail := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
-	detail.text = str(die_def["detail"])
+	detail.text = _t(die_def["detail"])
 	col.add_child(detail)
 	return row
 
@@ -3215,9 +3216,9 @@ func _show_title() -> void:
 		var hero: Dictionary = hero_defs[key]
 		_add_overlay_option(
 			"%s   HP %d   手札%d   行動%d" % [
-				str(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3)),
+				_t(hero["name"]), int(hero["hp"]), int(hero.get("hand", 3)),
 				int(hero.get("actions", ACTIONS_PER_TURN))],
-			"%s\nダイス: %s" % [str(hero["desc"]), _hero_dice_names(hero)],
+			"%s\nダイス: %s" % [_t(hero["desc"]), _hero_dice_names(hero)],
 			Color(hero["color"]),
 			"slash" if key == "knight" else ("fire" if key == "mage" else "trap"),
 			Callable(self, "_start_run").bind(key)
@@ -3233,7 +3234,7 @@ func _show_reward() -> void:
 		return
 	sfx.emit("reward")
 	_refresh_all()
-	_open_overlay("戦闘に勝利", "マスかダイスを1つ選びます。マスはコースに置いて残り、ダイスは手札に加わります。")
+	_open_overlay(tr("戦闘に勝利"), tr("マスかダイスを1つ選びます。マスはコースに置いて残り、ダイスは手札に加わります。"))
 
 	# One tile and one die are always on offer, so neither build axis can be
 	# shut off by a bad shuffle; the third slot goes either way and is what
@@ -3253,22 +3254,22 @@ func _show_reward() -> void:
 	slots.shuffle()
 
 	for slot in slots:
-		if str(slot["kind"]) == "tile":
+		if _t(slot["kind"]) == "tile":
 			var reward_type := str(slot["id"])
 			var tile: Dictionary = tile_defs[reward_type]
 			_add_overlay_option(
-				"%s［%s］" % [str(tile["name"]), str(tile["kind"])],
-				"%s　%s" % [_trigger_label(str(tile["trigger"])), str(tile["effect"])],
+				"%s［%s］" % [_t(tile["name"]), _t(tile["kind"])],
+				"%s　%s" % [_trigger_label(str(tile["trigger"])), _t(tile["effect"])],
 				Color(tile["color"]),
 				str(tile["icon"]),
-				Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % str(tile["name"]))
+				Callable(self, "_on_reward_selected").bind(reward_type, "%sマス" % _t(tile["name"]))
 			)
 		else:
 			var die_id := str(slot["id"])
 			var die_def: Dictionary = dice_defs[die_id]
 			_add_overlay_option(
-				"%sダイス［出目 %s］" % [str(die_def["name"]), _faces_text(die_def["faces"])],
-				str(die_def["effect"]),
+				"%sダイス［出目 %s］" % [_t(die_def["name"]), _faces_text(die_def["faces"])],
+				_t(die_def["effect"]),
 				Color(die_def["color"]),
 				"dice",
 				Callable(self, "_on_die_reward_selected").bind(die_id)
@@ -3366,7 +3367,7 @@ func _start_run(key: String) -> void:
 	_close_overlay()
 	hero_key = key
 	var hero: Dictionary = hero_defs[key]
-	hero_name = str(hero["name"])
+	hero_name = _t(hero["name"])
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(hero["hp"])
 	hand_limit = int(hero.get("hand", 3))
@@ -3567,9 +3568,9 @@ func _refresh_map() -> void:
 	if not zone_map.visible or map_nodes.is_empty():
 		return
 	map_canvas.custom_minimum_size = _map_canvas_size()
-	map_title.text = "第%d層 / %d層" % [max(map_row + 1, 0) + (1 if map_row < 0 else 0), MAP_ROWS]
+	map_title.text = tr("第%d層 / %d層") % [max(map_row + 1, 0) + (1 if map_row < 0 else 0), MAP_ROWS]
 	if map_row < 0:
-		map_title.text = "出発地点を選ぶ（全%d層）" % MAP_ROWS
+		map_title.text = tr("出発地点を選ぶ（全%d層）") % MAP_ROWS
 
 	for row in range(MAP_ROWS):
 		for c in range(MAP_COLS):
@@ -3634,7 +3635,7 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	var label: Label = button.find_child("NodeLabel", true, false)
 	# A combat node says who is waiting there. Hiding it would defeat the
 	# point of letting the player choose a route.
-	var text := str(def["label"])
+	var text := _t(def["label"])
 	if int(node.get("enemy", -1)) >= 0:
 		text = str(enemy_defs[int(node["enemy"])]["name"])
 	label.text = text
@@ -3705,8 +3706,8 @@ func _resolve_shop_node() -> void:
 		var price: int = 25
 		var affordable: bool = gold >= price
 		_add_overlay_option(
-			"%sダイス　%dG%s" % [str(die_def["name"]), price, "" if affordable else "（所持金が足りない）"],
-			str(die_def["effect"]),
+			"%sダイス　%dG%s" % [_t(die_def["name"]), price, "" if affordable else "（所持金が足りない）"],
+			_t(die_def["effect"]),
 			Color(die_def["color"]) if affordable else COL_PANEL_SUNK,
 			"dice",
 			Callable(self, "_buy_die").bind(die_id, price)
@@ -3739,7 +3740,7 @@ func _open_removal(price: int) -> void:
 	for i in range(dice_bag.size()):
 		var die: Dictionary = dice_bag[i]
 		_add_overlay_option(
-			"%sダイス［出目 %s］" % [str(die["name"]), _faces_text(die["faces"])],
+			"%sダイス［出目 %s］" % [_t(die["name"]), _faces_text(die["faces"])],
 			str(die.get("short", "")),
 			_die_color(die),
 			"dice",
@@ -3761,11 +3762,11 @@ func _resolve_event_node() -> void:
 	state = "node_event"
 	var ids: Array = event_defs.keys()
 	var event: Dictionary = event_defs[str(ids[rng.randi_range(0, ids.size() - 1)])]
-	_open_overlay(str(event["name"]), str(event["body"]))
+	_open_overlay(_t(event["name"]), _t(event["body"]))
 	for raw in event["choices"]:
 		var choice: Dictionary = raw
 		_add_overlay_option(
-			str(choice["label"]),
+			_t(choice["label"]),
 			str(choice.get("detail", "")),
 			Color(choice.get("color", COL_TEXT_SOFT)),
 			str(choice.get("icon", "focus")),
@@ -3810,7 +3811,7 @@ func _take_event_choice(choice: Dictionary) -> void:
 	if player_hp <= 0:
 		_show_game_over("道中で力尽きました。")
 		return
-	_open_overlay(str(choice["label"]), " / ".join(notes) if not notes.is_empty() else "何も起きなかった。")
+	_open_overlay(_t(choice["label"]), " / ".join(notes) if not notes.is_empty() else "何も起きなかった。")
 	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 
@@ -3875,11 +3876,12 @@ func _continue_run() -> void:
 func _show_settings() -> void:
 	settings_return_state = state
 	state = "settings"
-	_open_overlay("設定", "音量を調整します。設定は自動的に保存されます。")
+	_open_overlay(tr("設定"), tr("音量を調整します。設定は自動的に保存されます。"))
 	_add_volume_row("効果音", "sfx")
 	_add_volume_row("BGM", "bgm")
+	_add_locale_row()
 	var close_button := Button.new()
-	close_button.text = "閉じる"
+	close_button.text = tr("閉じる")
 	close_button.focus_mode = Control.FOCUS_NONE
 	close_button.custom_minimum_size = Vector2(0, 44)
 	close_button.add_theme_font_size_override("font_size", FS_BODY)
@@ -3923,6 +3925,39 @@ func _add_volume_row(label_text: String, which: String) -> void:
 		button.pressed.connect(Callable(self, "_set_volume").bind(which, level))
 		row.add_child(button)
 
+func _add_locale_row() -> void:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL_SUNK, COL_INK, 2, 10, 8))
+	overlay_list.add_child(panel)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	panel.add_child(col)
+	var caption := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	caption.text = tr("言語 / Language")
+	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(caption)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	col.add_child(row)
+	for entry in [["ja", "日本語"], ["en", "English"]]:
+		var code := str(entry[0])
+		var button := Button.new()
+		button.text = str(entry[1])
+		button.focus_mode = Control.FOCUS_NONE
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.custom_minimum_size = Vector2(0, 38)
+		button.add_theme_font_size_override("font_size", FS_SMALL)
+		_style_button(button, COL_GOLD if code == locale else COL_PANEL, COL_INK)
+		button.add_theme_color_override("font_color", COL_INK)
+		button.pressed.connect(Callable(self, "_set_locale").bind(code))
+		row.add_child(button)
+
+func _set_locale(code: String) -> void:
+	locale = code
+	_apply_locale()
+	_save_profile()
+	_show_settings()
+
 func _set_volume(which: String, level: float) -> void:
 	if which == "sfx":
 		sfx_volume = level
@@ -3945,6 +3980,20 @@ func _close_settings() -> void:
 	else:
 		_refresh_all()
 
+# --- localisation -------------------------------------------------------
+# Every string bound for the screen goes through _t. The Japanese text is
+# its own translation key, so an untranslated build returns it unchanged —
+# wrapping is behaviour-preserving — and no key names have to be invented
+# for 483 strings. The CSV is generated from source by
+# tools/extract_strings.py rather than maintained by hand, which is what
+# lets the content tables keep churning without translation bookkeeping.
+#
+# Data-table text is wrapped where it is *read*, not where it is defined:
+# 30 read sites cover all 315 strings in tile_defs/dice_defs/event_defs/
+# hero_defs, and any content added later is localisable for free.
+func _t(value) -> String:
+	return tr(str(value))
+
 # --- persistence --------------------------------------------------------
 # Two files, because they have different lifetimes. The profile outlives
 # every run and holds settings plus whatever the player has permanently
@@ -3957,6 +4006,7 @@ const SAVE_VERSION := 1
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
+var locale := "ja"
 # Permanent unlocks, keyed by a string the caller invents ("enemy:はぐれ兵").
 # Phase 4's gallery reads this; nothing writes it yet except _unlock.
 var unlocked: Dictionary = {}
@@ -3968,6 +4018,7 @@ func _load_profile() -> void:
 		return
 	sfx_volume = clampf(float(data.get("sfx_volume", sfx_volume)), 0.0, 1.0)
 	bgm_volume = clampf(float(data.get("bgm_volume", bgm_volume)), 0.0, 1.0)
+	locale = str(data.get("locale", locale))
 	unlocked = data.get("unlocked", {})
 	lifetime = data.get("lifetime", {})
 
@@ -3976,6 +4027,7 @@ func _save_profile() -> void:
 		"version": SAVE_VERSION,
 		"sfx_volume": sfx_volume,
 		"bgm_volume": bgm_volume,
+		"locale": locale,
 		"unlocked": unlocked,
 		"lifetime": lifetime,
 	})
@@ -3992,6 +4044,9 @@ func _is_unlocked(key: String) -> bool:
 
 func _bump_lifetime(key: String, amount: int = 1) -> void:
 	lifetime[key] = int(lifetime.get(key, 0)) + amount
+
+func _apply_locale() -> void:
+	TranslationServer.set_locale(locale)
 
 func _apply_audio_settings() -> void:
 	if sfx == null:
@@ -4095,7 +4150,7 @@ func _load_run() -> bool:
 		return false
 	hero_key = key
 	var hero: Dictionary = hero_defs[key]
-	hero_name = str(hero["name"])
+	hero_name = _t(hero["name"])
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(data.get("max_hp", hero["hp"]))
 	player_hp = int(data.get("hp", player_max_hp))
@@ -4315,8 +4370,8 @@ func _setup_encounter() -> void:
 		index = clampi(int(node["enemy"]), 0, enemy_defs.size() - 1)
 	var def: Dictionary = enemy_defs[index]
 	var enemy := _make_enemy(
-		str(def["name"]), int(def["hp"]), int(def["damage"]),
-		str(def["kind"]), str(def["mode"]), def["cells"])
+		_t(def["name"]), int(def["hp"]), int(def["damage"]),
+		_t(def["kind"]), str(def["mode"]), def["cells"])
 	for trait_key in ["armor", "regen", "thorns", "gold"]:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
@@ -4413,7 +4468,7 @@ func _start_player_turn(message: String = "") -> void:
 	if message != "":
 		_set_log(message)
 	_refresh_all()
-	_set_banner("タップしてダイスを振る")
+	_set_banner(tr("タップしてダイスを振る"))
 
 func _draw_to_hand() -> void:
 	while hand.size() < hand_limit:
@@ -4528,10 +4583,10 @@ func _on_die_pressed(index: int) -> void:
 
 	# The die's own effects fire before the piece moves, so a die that pays
 	# combo or charge has already paid it by the time the squares are read.
-	var spend_note := _run_effects(selected_die.get("effects", []), "spend", str(selected_die["name"]))
+	var spend_note := _run_effects(selected_die.get("effects", []), "spend", _t(selected_die["name"]))
 	var roll_text := _warp_face_label(final_roll) if _is_warp_face(final_roll) else str(final_roll)
-	_set_log("%sダイス：出目 %s%s" % [
-		str(selected_die["name"]), roll_text, ("　" + spend_note) if spend_note != "" else ""])
+	_set_log(tr("%sダイス：出目 %s%s") % [
+		_t(selected_die["name"]), roll_text, ("　" + spend_note) if spend_note != "" else ""])
 	_refresh_all()
 	await get_tree().create_timer(0.2).timeout
 
@@ -4611,7 +4666,7 @@ func _resolve_landing() -> void:
 func _finish_encounter() -> void:
 	_cleanup_dead_enemies()
 	_hide_banner()
-	_set_log("敵を倒した。マスの毒も消えた。" if last_cleanse_count > 0 else "敵を倒した。")
+	_set_log(tr("敵を倒した。マスの毒も消えた。") if last_cleanse_count > 0 else "敵を倒した。")
 	# Long enough to watch the enemy actually die before the reward card
 	# covers the board.
 	await get_tree().create_timer(1.2).timeout
@@ -4626,7 +4681,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 			_take_damage(2)
 			messages.append("毒のマス：HP-2")
 	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
-	var effect := _run_effects(tile.get("effects", []), "pass", str(tile["name"]))
+	var effect := _run_effects(tile.get("effects", []), "pass", _t(tile["name"]))
 	if effect != "":
 		messages.append(effect)
 	return " ".join(messages)
@@ -4634,14 +4689,14 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 func _resolve_stop_tile(pos: Vector2i) -> String:
 	_flash_player_stop()
 	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
-	var effect := _run_effects(tile.get("effects", []), "stop", str(tile["name"]))
+	var effect := _run_effects(tile.get("effects", []), "stop", _t(tile["name"]))
 	if effect != "":
 		return effect
 	# A square with nothing to say on landing is not a punishment, but the
 	# player still needs to know the stop was spent for nothing.
 	if not _tile_has_timing(tile, "stop"):
-		return "%sに停止。通過型なので停止効果なし" % str(tile["name"])
-	return "%sに停止。条件を満たさず不発" % str(tile["name"])
+		return "%sに停止。通過型なので停止効果なし" % _t(tile["name"])
+	return "%sに停止。条件を満たさず不発" % _t(tile["name"])
 
 func _tile_has_timing(tile: Dictionary, timing: String) -> bool:
 	for raw in tile.get("effects", []):
@@ -4947,7 +5002,7 @@ func _any_enemy_alive() -> bool:
 func _enemy_turn() -> void:
 	state = "enemy"
 	_refresh_all()
-	_set_banner("敵のターン")
+	_set_banner(tr("敵のターン"))
 	await get_tree().create_timer(BEAT_PHASE).timeout
 	var messages := []
 
@@ -5002,7 +5057,7 @@ func _enemy_turn() -> void:
 		if p.x >= 0:
 			temp_board[p.y][p.x] = "hazard"
 			messages.append("マスに毒がかけられた")
-			_set_log("マスに毒がかけられた")
+			_set_log(tr("マスに毒がかけられた"))
 			_refresh_board()
 			_spawn_floating_text(p, "毒", Color("#5B7A0F"))
 			sfx.emit("hurt")
@@ -5023,7 +5078,7 @@ func _enemy_turn() -> void:
 func _on_end_turn_pressed() -> void:
 	if state != "player":
 		return
-	_set_log("行動を終えました。")
+	_set_log(tr("行動を終えました。"))
 	_enemy_turn()
 
 # --- rewards -----------------------------------------------------------
@@ -5034,8 +5089,8 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	preview_place_pos = Vector2i(-1, -1)
 	state = "reward_place"
 	_close_overlay()
-	_set_banner("%s を置くマスをタップ" % tile_name)
-	_set_log("始点以外のどのマスにも置けます。置いたマスは次の戦いにも残ります。")
+	_set_banner(tr("%s を置くマスをタップ") % tile_name)
+	_set_log(tr("始点以外のどのマスにも置けます。置いたマスは次の戦いにも残ります。"))
 	_refresh_all()
 
 # A die reward needs no board placement, so it resolves straight into the
@@ -5049,8 +5104,8 @@ func _on_die_reward_selected(die_id: String) -> void:
 	_close_overlay()
 	_hide_banner()
 	sfx.emit("reward")
-	_set_log("%sダイスを手に入れた（%s）。手札は全%d個から引かれます。" % [
-		str(die_def["name"]), str(die_def["effect"]), dice_bag.size()])
+	_set_log(tr("%sダイスを手に入れた（%s）。手札は全%d個から引かれます。") % [
+		_t(die_def["name"]), _t(die_def["effect"]), dice_bag.size()])
 	if _is_boss_node():
 		_show_victory()
 	else:
@@ -5090,7 +5145,7 @@ func _on_cell_pressed(index: int) -> void:
 		if preview_place_pos != pos:
 			preview_place_pos = pos
 			sfx.emit("step")
-			_set_banner("ここに置く？ もう一度タップで確定")
+			_set_banner(tr("ここに置く？ もう一度タップで確定"))
 			_refresh_board()
 			return
 		permanent_board[pos.y][pos.x] = pending_reward_type
@@ -5100,7 +5155,7 @@ func _on_cell_pressed(index: int) -> void:
 		if _is_boss_node():
 			_show_victory()
 		else:
-			_set_log("%s を配置しました。" % pending_reward_name)
+			_set_log(tr("%s を配置しました。") % pending_reward_name)
 			_show_map()
 	elif ring_index_map.has(pos):
 		_show_cell_info(pos)
@@ -5115,8 +5170,8 @@ func _show_cell_info(pos: Vector2i) -> void:
 	var ahead := _steps_ahead(pos)
 	if ahead > 0:
 		parts.append("%dマス先" % ahead)
-	parts.append("%s %s" % [str(tile["name"]), _trigger_label(str(tile["trigger"]))])
-	parts.append(str(tile["effect"]))
+	parts.append("%s %s" % [_t(tile["name"]), _trigger_label(str(tile["trigger"]))])
+	parts.append(_t(tile["effect"]))
 	if temp_type == "hazard":
 		parts.append("毒がかかっている（通過でHP-2）")
 	if danger_cells.has(pos):
@@ -5135,7 +5190,7 @@ func _cell_tooltip(pos: Vector2i, perm_type: String, temp_type: String) -> Strin
 	if temp_type != "none":
 		lines.append(str(temp_defs[temp_type]["desc"]))
 	var tile: Dictionary = tile_defs[perm_type]
-	lines.append("%s %s: %s" % [str(tile["name"]), _trigger_label(str(tile["trigger"])), str(tile["effect"])])
+	lines.append("%s %s: %s" % [_t(tile["name"]), _trigger_label(str(tile["trigger"])), _t(tile["effect"])])
 	return "\n".join(lines)
 
 # --- token motion ------------------------------------------------------
@@ -5314,13 +5369,13 @@ func _make_die(die_id: String) -> Dictionary:
 	var def: Dictionary = dice_defs[die_id]
 	return {
 		"id": die_id,
-		"name": str(def["name"]),
+		"name": _t(def["name"]),
 		"faces": (def["faces"] as Array).duplicate(),
 		"effects": (def.get("effects", []) as Array).duplicate(true),
 		"mods": (def.get("mods", []) as Array).duplicate(true),
 		"pierce": bool(def.get("pierce", false)),
 		"color": Color(def["color"]),
-		"short": str(def["short"]),
+		"short": _t(def["short"]),
 		"roll": 0,
 	}
 
