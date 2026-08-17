@@ -58,13 +58,23 @@ const DESIGN_SIZE := Vector2i(1024, 576)
 # Actors are named by the "art" field on enemy_defs / hero_defs / event_defs
 # rather than by their display name, so renaming a character in Japanese
 # does not orphan its art.
+# A slot either *must* be filled or merely *may* be. The difference is
+# whether something already does that job: a missing standing figure leaves
+# a hole nothing else can cover, so it shouts; a missing background leaves
+# the painted table top that the game shipped with, which is real art and
+# not a gap. "placeholder" is that distinction, and it is the only reason
+# the loud magenta does not appear everywhere.
 const ART_ROOT := "res://art"
 const ART_KINDS := {
 	# The standing figure on the battle stage. Tall — roughly 3:4 or
 	# narrower — because it shares the screen with the board.
-	"stage": {"dir": "stage", "fps": 10.0},
+	"stage": {"dir": "stage", "fps": 10.0, "placeholder": true},
 	# Full-frame scene art shown when a fight is decided. 16:9.
-	"cg": {"dir": "cg", "fps": 8.0},
+	"cg": {"dir": "cg", "fps": 8.0, "placeholder": true},
+	# Behind everything. 16:9. Falls back to the drawn table top.
+	"bg": {"dir": "bg", "fps": 6.0, "placeholder": false},
+	# Square crops for the map nodes. Falls back to the vector icon.
+	"face": {"dir": "face", "fps": 6.0, "placeholder": false},
 }
 # States a stage actor can be in. "hit" is the one that plays on being
 # struck; the others idle.
@@ -575,6 +585,11 @@ class SpriteView:
 	var fps: float = 12.0
 	var loop := true
 	var slot := ""              # the id the missing art would have had
+	# Fit (the default) shows the whole image and lets the ground show at
+	# the edges — right for a figure or a scene, where cropping loses the
+	# subject. Cover fills the frame and lets the edges fall outside, which
+	# is what a background wants when the window is not 16:9.
+	var cover := false
 	var finished := true
 	var flash: float = 0.0:
 		set(v):
@@ -626,9 +641,10 @@ class SpriteView:
 		var source := Vector2(float(tex.get_width()), float(tex.get_height()))
 		if source.x <= 0.0 or source.y <= 0.0:
 			return
-		# Fit, never crop: art is authored at whatever size suits it and the
-		# frame it lands in changes with the window.
-		var factor: float = min(size.x / source.x, size.y / source.y)
+		# Art is authored at whatever size suits it and the frame it lands
+		# in changes with the window, so one of the two axes always gives.
+		var factor: float = max(size.x / source.x, size.y / source.y) if cover \
+			else min(size.x / source.x, size.y / source.y)
 		var span := source * factor
 		var at := ((size - span) * 0.5).floor()
 		draw_texture_rect(tex, Rect2(at, span), false)
@@ -987,6 +1003,7 @@ var rng := RandomNumberGenerator.new()
 
 # --- nodes -------------------------------------------------------------
 var backdrop_view: Backdrop
+var bg_view: SpriteView
 var sfx: Sfx
 
 var zone_top: Control
@@ -1594,6 +1611,15 @@ func _build_ui() -> void:
 	backdrop_view = Backdrop.new()
 	backdrop_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(backdrop_view)
+
+	# The painted background, over the drawn one. Where a scene has art it
+	# covers the table top completely; where it has none it is invisible
+	# and the table top is what the player sees, exactly as before.
+	bg_view = SpriteView.new()
+	bg_view.cover = true
+	bg_view.visible = false
+	bg_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(bg_view)
 
 	sfx = Sfx.new()
 	add_child(sfx)
@@ -2230,6 +2256,10 @@ func _layout_screen() -> void:
 		backdrop_view.position = Vector2.ZERO
 		backdrop_view.size = vp
 		backdrop_view.queue_redraw()
+	if bg_view != null:
+		bg_view.position = Vector2.ZERO
+		bg_view.size = vp
+		bg_view.queue_redraw()
 	if zone_top == null:
 		return
 
@@ -2485,8 +2515,45 @@ func _refresh_all() -> void:
 	_refresh_hand()
 	_refresh_command()
 	_refresh_map()
+	_refresh_backdrop()
 	if zone_gallery != null:
 		zone_gallery.visible = state == "gallery"
+
+# Which background this screen is standing in. Returned as a fallback chain
+# so a project with one painting still looks intentional: bg/default alone
+# covers every screen, and each id added after that carves a place out of
+# it. 強敵 and ボス borrow the ordinary battle background until they are
+# given their own.
+func _backdrop_chain() -> Array:
+	match state:
+		"title", "game_over", "victory":
+			return ["title", "default"]
+		"map":
+			return ["map", "default"]
+		"gallery":
+			return ["gallery", "map", "default"]
+	var node = _map_node_at(map_row, map_col)
+	var kind: String = "battle" if node == null else str(node.get("type", "battle"))
+	if kind == "elite" or kind == "boss":
+		return [kind, "battle", "default"]
+	return [kind, "default"]
+
+# Only swap the painting when the chain actually changes — _refresh_all
+# runs many times a turn, and re-playing a clip every time would pin an
+# animated background to its first frame forever.
+var _bg_chain_key := ""
+
+func _refresh_backdrop() -> void:
+	if bg_view == null:
+		return
+	var chain := _backdrop_chain()
+	var key := "|".join(PackedStringArray(chain))
+	if key == _bg_chain_key:
+		return
+	_bg_chain_key = key
+	# The chain is walked as states of one actor, so every background lives
+	# in art/bg/scene_<id>.png and there is no second naming rule to learn.
+	_show_art(bg_view, "bg", "scene", chain)
 
 # The screens that show the two figures. The map, the gallery and the title
 # each take the whole frame instead.
@@ -3950,6 +4017,21 @@ func _make_map_node_button(row: int, c: int) -> Button:
 	icon.offset_bottom = -18
 	button.add_child(icon)
 
+	# Choosing a route is choosing who to meet, so a node shows a face when
+	# there is one to show. Without it the icon carries the node, which is
+	# what happened before this existed.
+	var face := SpriteView.new()
+	face.name = "NodeFace"
+	face.cover = true
+	face.visible = false
+	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	face.set_anchors_preset(Control.PRESET_FULL_RECT)
+	face.offset_left = 4
+	face.offset_top = 3
+	face.offset_right = -4
+	face.offset_bottom = -17
+	button.add_child(face)
+
 	var label := _make_label(FS_SMALL - 2, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
 	label.name = "NodeLabel"
 	label.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -3972,6 +4054,13 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	icon.set_kind(str(def["icon"]))
 	icon.glyph_color = COL_TEXT_ON_DARK
 	icon.outline_color = COL_INK
+
+	# A fight is identified by who is in it; everything else by what it is.
+	var face: SpriteView = button.find_child("NodeFace", true, false)
+	var face_id := kind
+	if int(node.get("enemy", -1)) >= 0:
+		face_id = str((enemy_defs[int(node["enemy"])] as Dictionary).get("art", kind))
+	icon.visible = not _show_art(face, "face", face_id, ["node"])
 
 	var label: Label = button.find_child("NodeLabel", true, false)
 	# A combat node says who is waiting there. Hiding it would defeat the
@@ -4509,17 +4598,26 @@ func _art_fps(kind: String) -> float:
 # Show a slot in a view, falling back down a chain of states so a character
 # with only an idle drawn still animates *something* rather than flipping
 # to a placeholder the moment it is hit.
-func _show_art(view: SpriteView, kind: String, actor: String, states: Array, loop: bool = true) -> void:
-	if view == null:
-		return
+func _show_art(view: SpriteView, kind: String, actor: String, states: Array, loop: bool = true) -> bool:
+	if view == null or states.is_empty():
+		return false
 	for state in states:
 		var frames := _art_frames(kind, actor, str(state))
 		if not frames.is_empty():
 			view.play(frames, _art_slot(kind, actor, str(state)), _art_fps(kind), loop)
-			return
-	# Nothing in the chain exists: name the state that was actually wanted,
-	# not the last one tried, so the placeholder points at the art to draw.
-	view.play([], _art_slot(kind, actor, str(states[0])), _art_fps(kind), loop)
+			view.visible = true
+			return true
+	# Nothing in the chain exists. A slot that must be filled says so at the
+	# top of its voice, naming the state that was actually wanted rather
+	# than the last one tried; a slot that has a standing fallback simply
+	# gets out of the way and lets the fallback show through.
+	if bool((ART_KINDS.get(kind, {}) as Dictionary).get("placeholder", true)):
+		view.play([], _art_slot(kind, actor, str(states[0])), _art_fps(kind), loop)
+		view.visible = true
+	else:
+		view.play([], "", _art_fps(kind), loop)
+		view.visible = false
+	return false
 
 # The actor id for whatever the player is currently fighting, and for the
 # player themselves. Both fall back to a fixed id so a half-filled data

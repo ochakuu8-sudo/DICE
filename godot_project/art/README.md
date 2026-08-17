@@ -18,10 +18,21 @@ Otherwise the loader collects `_0`, `_1`, … until a number is missing, and
 plays them as a loop. So an animation is a numbered run with no gaps — a
 gap silently truncates the clip.
 
-Any slot with no file draws a magenta placeholder with the slot id written
-across it. That is deliberate: a missing picture should be impossible to
-miss in a screenshot, and a prettier fallback would hide how much art is
-still outstanding.
+`MANIFEST.md` next to this file lists every slot the game can ask for, with
+its priority and a tick for the ones that exist. It is generated — run
+`python3 tools/art_manifest.py` after adding content, don't edit it.
+
+## Two kinds of missing
+
+A slot with **no fallback** — a standing figure, a scene — draws a magenta
+placeholder carrying its own id and target frame size. That is deliberate:
+a missing picture should be impossible to miss in a screenshot, and a
+prettier fallback would hide how much art is still outstanding.
+
+A slot that **does** have a fallback — a background, a map face — simply
+stays hidden, and what the game already draws by hand shows through. Those
+fallbacks are real art rather than a stand-in for missing art, so shouting
+about them would be shouting about nothing.
 
 ## Categories
 
@@ -57,6 +68,37 @@ Authored at **16:9**, 1920×1080 or larger.
 
 A fight shows at most one scene, so `win` and `lose` are mutually exclusive
 within a single encounter.
+
+### `bg/` — the background behind everything
+
+Authored at **16:9**, 1920×1080 or larger, opaque. Cropped to fill rather
+than fitted, so keep the subject away from the edges — a window that is not
+16:9 loses them.
+
+Every background is a state of one actor, `scene`, and they resolve down a
+chain, so **`bg/scene_default.png` alone covers the entire game** and each
+id added after that carves a screen out of it.
+
+| file | screen | falls back to |
+| ---- | ------ | ------------- |
+| `scene_default.png` | everywhere | the drawn table top |
+| `scene_title.png` | title, and both result screens | `default` |
+| `scene_map.png` | the node map | `default` |
+| `scene_battle.png` | ordinary fights | `default` |
+| `scene_elite.png` | 強敵 fights | `battle` |
+| `scene_boss.png` | the boss | `battle` |
+| `scene_rest.png` `scene_shop.png` `scene_event.png` | those nodes | `default` |
+| `scene_gallery.png` | the recollection room | `map` |
+
+### `face/` — map node portraits
+
+Square, **256×256**, transparent. Shown on the map node itself, so a route
+is chosen by who is on it rather than by reading names.
+
+The state is always `node`. The actor is the enemy's art id for a fight
+(`stray_node.png`), or the node type for everything else (`shop_node.png`,
+`rest_node.png`, `event_node.png`). Without a file the node keeps its
+vector icon.
 
 ## Actor ids
 
