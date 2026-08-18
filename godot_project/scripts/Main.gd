@@ -1,13 +1,14 @@
 extends Control
 
-const BOARD_W := 4
-const BOARD_H := 4
+const BOARD_W := 5
+const BOARD_H := 5
 const ACTIONS_PER_TURN := 2
 const REROLLS_PER_TURN := 1
 # How many squares an enemy can keep fouled at once. Uncapped, a long
 # fight ended with most of the ring poisoned and the player's own board
-# invisible underneath it.
-const MAX_DEBUFFS := 4
+# invisible underneath it. Scaled with the ring: five of sixteen leaves the
+# same proportion of the board readable as four of twelve did.
+const MAX_DEBUFFS := 5
 # Cards on screen at once. The fractional part is deliberate: it leaves a
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
@@ -18,7 +19,7 @@ const HAND_GAP := 7.0
 # walking it. Sentinels far outside any real rolled distance (±1-8) so
 # they can never collide with one, mapped to the ring step each warps to
 # and the short label its face and log line show instead of a number.
-# RING's four corners are steps 0/3/6/9 — see _build_track_graph.
+# RING's four corners are steps 0/4/8/12 — see _build_track_graph.
 const RESET_FACE := 99
 const CORNER_TL := 90
 const CORNER_TR := 91
@@ -27,9 +28,9 @@ const CORNER_BL := 93
 const WARP_FACES := {
 	RESET_FACE: {"label": "帰", "step": 0},
 	CORNER_TL: {"label": "左上", "step": 0},
-	CORNER_TR: {"label": "右上", "step": 3},
-	CORNER_BR: {"label": "右下", "step": 6},
-	CORNER_BL: {"label": "左下", "step": 9},
+	CORNER_TR: {"label": "右上", "step": 4},
+	CORNER_BR: {"label": "右下", "step": 8},
+	CORNER_BL: {"label": "左下", "step": 12},
 }
 
 # Every size in this file is authored in these units, and the window's
@@ -858,10 +859,12 @@ class BoardView:
 	func _draw_debuff_rings() -> void:
 		var token: float = main._board_token_size()
 		for cell in main.ring_cells:
-			if str(main.temp_board[cell.y][cell.x]) != "hazard":
+			var deb: Dictionary = main._debuff_at(cell)
+			if deb.is_empty():
 				continue
 			var p: Vector2 = main._board_cell_center(cell)
-			draw_arc(p, token * 0.5 - 3.0, 0.0, TAU, 30, Color("#D9F27A"), 3.0, true)
+			draw_arc(p, token * 0.5 - 3.0, 0.0, TAU, 30,
+				Color(deb["color"]).lightened(0.35), 3.0, true)
 
 	func _draw_player_marker() -> void:
 		if not main.player_visual_ready:
@@ -1388,14 +1391,99 @@ var tile_defs := {
 # on top of whatever tile is already there: the tile keeps its colour, its
 # icon and its effect, and picks up a cost for walking over it. Killing the
 # enemy that cast them clears the board.
+#
+# Like tiles and dice, a debuff is data. Four flags cover everything the
+# roster does, and they compose, so a new one is a row here rather than a
+# branch in the movement code:
+#
+#   damage / on   HP lost on entering ("pass") or on ending there ("stop")
+#   nullify       the square underneath does not fire at all
+#   halt          entering ends the move here, whatever the die rolled
+#   clear_on      "stop" / "halt" — when the square shakes the debuff off
+#
+# "mark" is the one character the board prints in the corner of a fouled
+# square. It has to be one character: the square is already carrying its
+# own icon and number.
 var temp_defs := {
 	"none": {"short": "", "color": Color("#00000000"), "desc": ""},
-	"hazard": {"name": "毒", "icon": "poison", "color": Color("#9BC53D"), "value": 2,
-		"trigger": "pass", "effect": "通過するとHP-2",
-		"desc": "毒: 通過するとHP-2。敵がマスにかける。倒せば消える",
-		"detail": "敵がマスにかけるデバフ。マス自体の効果はそのまま残り、通るたびにHPを2失う。かけた敵を倒すと盤面から全て消える。"},
+
+	# The two that simply cost HP, split by when they charge it. 炎上 is the
+	# old hazard under a name that says what it does: it punishes the long
+	# sweeping rolls that 疾走 builds live on. 毒 is its opposite number and
+	# punishes the aimed landing, so between them there is no roll that is
+	# safe by default.
+	"burn": {"name": "炎上", "icon": "fire", "color": Color("#E2701F"), "mark": "炎",
+		"damage": 2, "on": "pass",
+		"trigger": "pass", "effect": "通過ごとにHP-2",
+		"desc": "炎上: 通過するとHP-2。踏み抜くほど痛い",
+		"detail": "敵がマスにかける。マスの効果はそのまま残るが、通過するたびにHPを2失う。大きい出目で何枚も踏み抜く走り方ほど損をする。かけた敵を倒すと全て消える。"},
+	"venom": {"name": "毒", "icon": "poison", "color": Color("#7FA82B"), "mark": "毒",
+		"damage": 4, "on": "stop",
+		"trigger": "stop", "effect": "止まるとHP-4",
+		"desc": "毒: 止まるとHP-4。通過するだけなら無傷",
+		"detail": "敵がマスにかける。通り抜けるぶんには何も起きないが、そこで行動を終えるとHPを4失う。狙って止まりたいマスに乗ると、着地そのものに値段がつく。かけた敵を倒すと全て消える。"},
+
+	# 凍結 costs no HP at all. It takes the square away — which against a
+	# board the player spent the whole run building is the more expensive
+	# of the two things an enemy can do to them.
+	"freeze": {"name": "凍結", "icon": "shock", "color": Color("#4E9BD6"), "mark": "氷",
+		"nullify": true, "clear_on": "stop",
+		"trigger": "both", "effect": "マスの効果を無効化。止まると溶ける",
+		"desc": "凍結: そのマスの効果が出ない。止まれば溶ける",
+		"detail": "凍りついたマスは、通過効果も停止効果も一切発動しない。ダメージは受けないが、盛り上げた盤面の一番おいしい一枚を黙らせてくる。そこに止まると溶けて、次からはまた働く — 効果を1回捨てて直す形になる。かけた敵を倒しても消える。"},
+
+	# 茨 spends the player's distance instead of their HP. It is the only
+	# debuff that makes the preview's landing square move, which is why the
+	# route has to know about it (see _route_for_roll) — a preview that
+	# promised a landing the briar will not allow would be a lie.
+	"briar": {"name": "茨", "icon": "trap", "color": Color("#8E5A9C"), "mark": "茨",
+		"halt": true, "clear_on": "halt",
+		"trigger": "pass", "effect": "出目に関わらずここで止まる",
+		"desc": "茨: 踏むと出目に関わらずそこで止まる。踏み倒すと消える",
+		"detail": "足を取られ、残りの歩数を捨ててそのマスで行動が終わる。止まった扱いなのでそのマスの停止効果は出るが、狙っていた着地点には届かない。踏み倒すと茨自体は消える。かけた敵を倒しても消える。"},
+
 	"block": {"name": "壁", "color": Color("#4A4038"), "desc": "通れない"}
 }
+
+# The board holds debuff ids; everything that has to know how one behaves
+# asks here rather than naming a type. "none" and "block" are not debuffs
+# with behaviour, so they answer empty and every caller falls through.
+func _debuff_at(pos: Vector2i) -> Dictionary:
+	var id := str(temp_board[pos.y][pos.x])
+	if id == "none" or id == "block" or not temp_defs.has(id):
+		return {}
+	return temp_defs[id]
+
+# HP a fouled square charges for entering it ("pass") or for ending the
+# action on it ("stop"). 軽業 pays neither: its pierce is written against
+# the damage half of the system, not against 凍結 or 茨, which cost no HP
+# and so have nothing for it to ignore.
+func _debuff_damage(pos: Vector2i, timing: String, die: Dictionary) -> int:
+	var deb := _debuff_at(pos)
+	if deb.is_empty() or int(deb.get("damage", 0)) <= 0:
+		return 0
+	if str(deb.get("on", "pass")) != timing:
+		return 0
+	if bool(die.get("pierce", false)):
+		return 0
+	return int(deb["damage"])
+
+func _debuff_nullifies(pos: Vector2i) -> bool:
+	return bool(_debuff_at(pos).get("nullify", false))
+
+func _debuff_halts(pos: Vector2i) -> bool:
+	return bool(_debuff_at(pos).get("halt", false))
+
+# A debuff that has done its job gets shaken off. Returns the name it went
+# by so the log can say so.
+func _consume_debuff(pos: Vector2i, reason: String) -> String:
+	var deb := _debuff_at(pos)
+	if deb.is_empty() or str(deb.get("clear_on", "")) != reason:
+		return ""
+	temp_board[pos.y][pos.x] = "none"
+	_spawn_floating_text(pos, "解除", COL_HP)
+	_refresh_board()
+	return _t(deb["name"])
 
 # A die is three things: the faces say how far this action reaches,
 # "effects" fire the moment it is spent, and "mods" multiply what the
@@ -1490,9 +1578,9 @@ var dice_defs := {
 			{"on": "spend", "op": "combo", "amount": 3}],
 		"detail": "HPを払ってコンボを買う。出目も大きく、連鎖ビルドの主力になるが、払い続けると保たない。"},
 	"nimble": {"name": "軽業", "faces": [1, 1, 2, 2, 3, 4],
-		"color": Color("#9BC53D"), "short": "毒無効", "effect": "毒のマスを踏んでもダメージを受けない",
+		"color": Color("#9BC53D"), "short": "毒炎無効", "effect": "毒と炎上のダメージを受けない",
 		"pierce": true,
-		"detail": "毒だらけになった盤面を平気で渡り歩ける。敵が毒を撒き始める中盤以降で価値が上がる。"},
+		"detail": "毒と炎上でHPを失わなくなる。荒らされた盤面を平気で渡り歩けるが、無効になるのはダメージだけ — 凍結でマスが黙るのも、茨で足を取られるのも防げない。"},
 
 	# --- 移動そのものを変える ---
 	"reverse": {"name": "逆走", "faces": [-1, -2, -3, -4, -5, -6],
@@ -1551,8 +1639,10 @@ var hero_defs := {
 		# The starting board is deliberately almost empty: the player should
 		# be the author of the ring, not the editor of someone else's.
 		"dice": ["normal", "normal", "blade", "guard_die"],
+		# Steps 3, 7 and 11 of sixteen — the same even thirds of the lap the
+		# twelve-square ring put them on.
 		"tiles": [
-			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
+			[3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
 		]
 	},
 }
@@ -1566,13 +1656,13 @@ var hero_defs := {
 #		"name": "魔導士", "hp": 28, "hand": 3, "color": Color("#7C4DD6"),
 #		"desc": "溜めて撃ち抜く。チャージの芯と、四隅へ飛ぶテレポートを持つ。",
 #		"dice": ["normal", "normal", "charger", "teleport"],
-#		"tiles": [[2, 0, "battery"], [3, 2, "aim"], [1, 3, "spring"]]
+#		"tiles": [[3, 0, "battery"], [4, 3, "aim"], [1, 4, "spring"]]
 #	},
 #	"rogue": {
 #		"name": "盗賊", "hp": 22, "hand": 4, "color": Color("#5B8C2A"),
 #		"desc": "手札4枚。HPは全キャラ最低だが、とにかく手数で押し切る。",
 #		"dice": ["normal", "normal", "tempo", "nimble", "gamble"],
-#		"tiles": [[2, 0, "slash"], [3, 2, "volley"], [1, 3, "chain"]]
+#		"tiles": [[3, 0, "slash"], [4, 3, "volley"], [1, 4, "chain"]]
 #	}
 
 func _ready() -> void:
@@ -2410,7 +2500,7 @@ func _layout_ribbon() -> void:
 	var wanted: Vector2 = ribbon_box.get_combined_minimum_size()
 	ribbon_box.size = wanted
 	var step := _board_spacing()
-	var center := _board_origin() + Vector2(1.5, 1.5) * step
+	var center := _board_origin() + Vector2(float(BOARD_W - 1), float(BOARD_H - 1)) * 0.5 * step
 	ribbon_box.position = (center - wanted * 0.5).floor()
 
 func _is_stop_cell(pos: Vector2i) -> bool:
@@ -2678,10 +2768,16 @@ func _refresh_enemy() -> void:
 	intent_icon.set_kind("slash" if guaranteed else "focus")
 	intent_label.text = str(int(enemy["damage"]))
 	intent_panel.add_theme_stylebox_override("panel", _flat_style(COL_ENEMY if guaranteed else COL_DANGER, COL_INK, 3, 8, 3))
-	intent_note.text = tr("毎ターン必ず当たる") if guaranteed else "行動を終えた時に光ったマスにいると当たる"
+	var note_lines := []
+	note_lines.append(tr("毎ターン必ず当たる") if guaranteed else "行動を終えた時に光ったマスにいると当たる")
+	var kind := str(enemy.get("debuff", ""))
+	if kind != "" and temp_defs.has(kind):
+		note_lines.append("%s をマスにかける（%s）" % [
+			_t(temp_defs[kind]["name"]), _t(temp_defs[kind]["effect"])])
 	var traits := _enemy_trait_text(enemy)
 	if traits != "":
-		intent_note.text = traits
+		note_lines.append(traits)
+	intent_note.text = "\n".join(note_lines)
 
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
@@ -2823,9 +2919,14 @@ func _refresh_board() -> void:
 			# shape and icon: the board a player built stays legible under
 			# whatever the enemy throws at it.
 			debuff_label.text = ""
-			if temp_type == "hazard":
-				color = color.lerp(Color("#6F7A2A"), 0.32)
-				debuff_label.text = tr("毒")
+			var cell_debuff := _debuff_at(pos)
+			if not cell_debuff.is_empty():
+				# Pulled toward the debuff's own colour rather than one
+				# shared murk, so four kinds of trouble are four colours.
+				color = color.lerp(Color(cell_debuff["color"]).darkened(0.25), 0.42)
+				debuff_label.text = str(cell_debuff["mark"])
+				debuff_label.add_theme_color_override(
+					"font_color", Color(cell_debuff["color"]).lightened(0.45))
 			_apply_cell_style(button, color, border_color, border_width, dim, trigger)
 	_refresh_ribbon()
 	board_view.queue_redraw()
@@ -2845,6 +2946,10 @@ const OP_GLYPHS := {
 # and its combo point counted, and its conditions already answered. Squares
 # the die cannot reach keep printing their plain face value.
 func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictionary:
+	# Frozen squares print nothing, whether or not a die is being weighed:
+	# the number they used to advertise is exactly what they will not pay.
+	if pos.x >= 0 and _debuff_nullifies(pos):
+		return {"text": "×", "scaled": false, "blocked": true}
 	var die := _readout_die
 	var on_route: bool = not die.is_empty() and pos.x >= 0 and _readout_route.has(pos)
 	var lands: bool = on_route and pos == _readout_route[_readout_route.size() - 1]
@@ -2969,7 +3074,7 @@ func _apply_cell_style(button: Button, color: Color, border_color: Color, border
 func _refresh_ribbon() -> void:
 	if ribbon_box == null:
 		return
-	var interior: float = _board_spacing() * 2.0 - _board_token_size() - 12.0
+	var interior: float = _board_spacing() * float(BOARD_W - 2) - _board_token_size() - 12.0
 	var moving: bool = state == "moving"
 	ribbon_caption.visible = state == "player" and dice_rolled and interior >= 96.0
 	ribbon_row.visible = ribbon_caption.visible
@@ -3006,8 +3111,9 @@ func _make_ribbon_chip(pos: Vector2i, step_index: int, chip: float) -> Control:
 	var tile: Dictionary = tile_defs[perm_type]
 	var color: Color = tile["color"]
 	var kind: String = str(tile["icon"])
-	if temp_type == "hazard":
-		color = color.lerp(Color("#6F7A2A"), 0.42)
+	var chip_debuff := _debuff_at(pos)
+	if not chip_debuff.is_empty():
+		color = color.lerp(Color(chip_debuff["color"]).darkened(0.25), 0.5)
 
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 1)
@@ -3535,7 +3641,8 @@ func _show_catalog() -> void:
 	debuff_heading.text = tr("◇ 敵のデバフ — マスに重ねてかけられる")
 	debuff_heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 	column.add_child(debuff_heading)
-	column.add_child(_make_catalog_row(temp_defs["hazard"]))
+	for debuff_key in ["burn", "venom", "freeze", "briar"]:
+		column.add_child(_make_catalog_row(temp_defs[debuff_key]))
 
 	var dice_heading := _make_label(FS_BODY, COL_TEXT, HORIZONTAL_ALIGNMENT_LEFT, true)
 	dice_heading.text = tr("⚄ ダイス — 使った行動のあいだだけ効果が続く")
@@ -3965,21 +4072,36 @@ const ENEMY_TRAIT_TEXT := {
 # res://art/stage/scout_idle.png, res://art/cg/scout_lose.png and so on. It
 # is a separate field from "name" so the Japanese name can be rewritten
 # without touching a single filename.
+# "debuff" is the second half of an enemy's attack pattern: the swing it
+# telegraphs, and the mess it leaves on the board between swings. Which
+# kind it leaves is as much of its identity as its damage number — 疫病持ち
+# charges for landing, 射手 charges for running, 重装 takes the square away
+# and 斥候 takes the distance — so the same board asks a different question
+# depending on who is standing across it. "foul" is the percent chance per
+# enemy turn; an enemy with no debuff never fouls anything, which is what
+# keeps the opening fight a place to learn the rules rather than survive
+# them.
 var enemy_defs := [
 	{"name": "はぐれ兵", "art": "stray", "hp": 20, "damage": 5, "kind": "cell",
 		"mode": "relative", "cells": [2], "gold": 12},
 	{"name": "斥候", "art": "scout", "hp": 28, "damage": 6, "kind": "cell",
-		"mode": "relative", "cells": [2, 5], "gold": 15},
+		"mode": "relative", "cells": [2, 5], "gold": 15,
+		"debuff": "briar", "foul": 35},
 	{"name": "射手", "art": "archer", "hp": 36, "damage": 7, "kind": "guaranteed",
-		"mode": "relative", "cells": [], "armor": 2, "gold": 18},
+		"mode": "relative", "cells": [], "armor": 2, "gold": 18,
+		"debuff": "burn", "foul": 45},
 	{"name": "重装", "art": "heavy", "hp": 44, "damage": 8, "kind": "cell",
-		"mode": "fixed", "cells": [2, 6, 10], "armor": 3, "gold": 21},
+		"mode": "fixed", "cells": [2, 6, 10, 14], "armor": 3, "gold": 21,
+		"debuff": "freeze", "foul": 40},
 	{"name": "疫病持ち", "art": "plague", "hp": 46, "damage": 8, "kind": "cell",
-		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22},
+		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22,
+		"debuff": "venom", "foul": 55},
 	{"name": "隊長", "art": "captain", "hp": 52, "damage": 9, "kind": "cell",
-		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2, "gold": 25},
+		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2, "gold": 25,
+		"debuff": "burn", "foul": 50},
 	{"name": "ボス", "art": "boss", "hp": 62, "damage": 10, "kind": "guaranteed",
-		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40},
+		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40,
+		"debuff": "freeze", "foul": 55},
 ]
 
 # --- map screen ---------------------------------------------------------
@@ -4760,7 +4882,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 1
+const SAVE_VERSION := 2
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5137,9 +5259,10 @@ func _setup_encounter() -> void:
 	encounter_art = str(enemy["art"])
 	encounter_name = str(enemy["type"])
 	scene_played_this_fight = false
-	for trait_key in ["armor", "regen", "thorns", "gold"]:
+	for trait_key in ["armor", "regen", "thorns", "gold", "foul"]:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
+	enemy["debuff"] = str(def.get("debuff", ""))
 	if node != null and str(node.get("type", "")) == "elite":
 		enemy["max_hp"] = int(enemy["max_hp"]) * 3 / 2
 		enemy["hp"] = int(enemy["max_hp"])
@@ -5148,10 +5271,15 @@ func _setup_encounter() -> void:
 		enemy["type"] = "%s（強敵）" % str(enemy["type"])
 	enemies.append(enemy)
 
-	for n in range(clamp(map_row / 3, 0, MAX_DEBUFFS - 1)):
-		var p := _random_empty_cell()
-		if p.x >= 0:
-			temp_board[p.y][p.x] = "hazard"
+	# The board starts already fouled deeper into the run, in whatever the
+	# enemy standing there deals — so a fight's terrain reads as belonging
+	# to that enemy from the first turn rather than only after it acts.
+	var seed_kind := str(enemies[0].get("debuff", "")) if not enemies.is_empty() else ""
+	if seed_kind != "":
+		for n in range(clamp(map_row / 3, 0, MAX_DEBUFFS - 1)):
+			var p := _random_empty_cell()
+			if p.x >= 0:
+				temp_board[p.y][p.x] = seed_kind
 
 	for e in enemies:
 		_generate_telegraph(e)
@@ -5427,18 +5555,43 @@ func _die_preview_text(index: int) -> String:
 			stop_note = "%s → %s" % [_t(tile["effect"]), str(readout["text"])]
 	parts.append("着地：%s（%s）" % [_t(tile["name"]), stop_note])
 
-	# The cost of the walk itself. A hazard crossed is HP gone before the
-	# landing square ever pays out, and 軽業 is the one die that ignores it.
-	if not warp:
-		var fouled := 0
-		for cell in route:
-			if str(temp_board[cell.y][cell.x]) == "hazard":
-				fouled += 1
-		if fouled > 0:
-			if bool(die.get("pierce", false)):
-				parts.append("毒マス%d通過（無効）" % fouled)
-			else:
-				parts.append("毒マス%d通過 HP-%d" % [fouled, fouled * 2])
+	# The cost of the walk itself, totalled per debuff so three burning
+	# squares read as one number rather than three warnings. The landing
+	# square is charged at its stop rate and every earlier square at its
+	# pass rate, which is the same split the move will actually apply.
+	var toll := {}
+	var ignored := {}
+	for i in range(route.size()):
+		var cell: Vector2i = route[i]
+		var deb := _debuff_at(cell)
+		if deb.is_empty():
+			continue
+		# The square an action ends on fires both halves — the walk enters
+		# it and the action stops on it — so it is charged at whichever
+		# rate its debuff uses. A warp never enters anything, so its one
+		# square is charged at the stop rate alone.
+		var timings := []
+		if not warp:
+			timings.append("pass")
+		if i == route.size() - 1:
+			timings.append("stop")
+		for timing in timings:
+			var hurt := _debuff_damage(cell, str(timing), die)
+			if hurt > 0:
+				toll[_t(deb["name"])] = int(toll.get(_t(deb["name"]), 0)) + hurt
+			elif int(deb.get("damage", 0)) > 0 and str(deb.get("on", "pass")) == str(timing):
+				ignored[_t(deb["name"])] = true
+	for name in toll.keys():
+		parts.append("%s HP-%d" % [str(name), int(toll[name])])
+	for name in ignored.keys():
+		parts.append("%s（無効化）" % str(name))
+	# 茨 already shortened the route, so saying so explains why the landing
+	# is not where the die's number pointed.
+	if _debuff_halts(landing) and not warp:
+		var unobstructed := _route_for_roll(roll, true).size()
+		if unobstructed > route.size():
+			parts.append("⚠ %sで停止（残り%d歩を失う）" % [
+				_t(_debuff_at(landing)["name"]), unobstructed - route.size()])
 	if danger_cells.has(landing):
 		parts.append("⚠ 敵の攻撃予告マス（%dダメージ）" % _telegraph_damage())
 	if crossed > 0:
@@ -5467,6 +5620,24 @@ func _advance_player() -> void:
 		if not _any_enemy_alive():
 			_finish_encounter()
 			return
+		# 茨 spends the rest of the roll. The square still resolves as a
+		# stop — the piece did end its action here — so this drops straight
+		# into the same tail every other move ends on.
+		if _debuff_halts(player_pos):
+			var lost := steps_left
+			var trampled := _consume_debuff(player_pos, "halt")
+			if trampled == "":
+				trampled = "茨"
+			steps_left = 0
+			# Landing on one exactly is still trampling it; there were just
+			# no steps left for it to take.
+			if lost > 0:
+				_set_log("%sに足を取られた。残り%d歩を失う" % [trampled, lost])
+			else:
+				_set_log("%sを踏み倒した" % trampled)
+			_refresh_all()
+			await get_tree().create_timer(BEAT_EFFECT).timeout
+			break
 	await _resolve_landing()
 
 # A warp face (帰還's "帰", テレポート's four corners) skips the walk
@@ -5525,13 +5696,19 @@ func _finish_encounter() -> void:
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
 	var messages := []
-	if str(temp_board[pos.y][pos.x]) == "hazard":
-		if bool(selected_die.get("pierce", false)):
-			messages.append("%s：毒を無効化" % str(selected_die.get("name", "")))
-		else:
-			_take_damage(2)
-			messages.append("毒のマス：HP-2")
+	var deb := _debuff_at(pos)
+	var burn := _debuff_damage(pos, "pass", selected_die)
+	if burn > 0:
+		_take_damage(burn)
+		messages.append("%sのマス：HP-%d" % [_t(deb["name"]), burn])
+	elif not deb.is_empty() and int(deb.get("damage", 0)) > 0 \
+			and str(deb.get("on", "pass")) == "pass" and bool(selected_die.get("pierce", false)):
+		messages.append("%s：%sを無効化" % [str(selected_die.get("name", "")), _t(deb["name"])])
 	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
+	# A frozen square is not there as far as the walk is concerned.
+	if _debuff_nullifies(pos):
+		messages.append("%s：%sで効果が出ない" % [_t(tile["name"]), _t(deb["name"])])
+		return " ".join(messages)
 	var effect := _run_effects(tile.get("effects", []), "pass", _t(tile["name"]))
 	if effect != "":
 		messages.append(effect)
@@ -5539,15 +5716,34 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
 	_flash_player_stop()
+	var messages := []
+	var deb := _debuff_at(pos)
+	var venom := _debuff_damage(pos, "stop", selected_die)
+	if venom > 0:
+		_take_damage(venom)
+		messages.append("%sのマス：HP-%d" % [_t(deb["name"]), venom])
 	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
-	var effect := _run_effects(tile.get("effects", []), "stop", _t(tile["name"]))
-	if effect != "":
-		return effect
-	# A square with nothing to say on landing is not a punishment, but the
-	# player still needs to know the stop was spent for nothing.
-	if not _tile_has_timing(tile, "stop"):
-		return "%sに停止。通過型なので停止効果なし" % _t(tile["name"])
-	return "%sに停止。条件を満たさず不発" % _t(tile["name"])
+	# Read before the thaw: stopping on a frozen square is what melts it,
+	# but the stop being melted is the price, so this landing still gets
+	# nothing out of the square.
+	var frozen := _debuff_nullifies(pos)
+	if frozen:
+		messages.append("%s：%sで効果が出ない" % [_t(tile["name"]), _t(deb["name"])])
+	else:
+		var effect := _run_effects(tile.get("effects", []), "stop", _t(tile["name"]))
+		if effect != "":
+			messages.append(effect)
+		elif not _tile_has_timing(tile, "stop"):
+			# A square with nothing to say on landing is not a punishment,
+			# but the player still needs to know the stop was spent for
+			# nothing.
+			messages.append("%sに停止。通過型なので停止効果なし" % _t(tile["name"]))
+		else:
+			messages.append("%sに停止。条件を満たさず不発" % _t(tile["name"]))
+	var thawed := _consume_debuff(pos, "stop")
+	if thawed != "":
+		messages.append("%sが解けた" % thawed)
+	return " ".join(messages)
 
 func _tile_has_timing(tile: Dictionary, timing: String) -> bool:
 	for raw in tile.get("effects", []):
@@ -5990,16 +6186,30 @@ func _enemy_turn() -> void:
 		_set_log(messages[messages.size() - 1])
 		await get_tree().create_timer(BEAT_PHASE).timeout
 
-	if encounter >= 3 and not enemies.is_empty() and _debuff_count() < MAX_DEBUFFS and rng.randi_range(0, 100) < 45:
+	# Fouling the board is the enemy's other move, and which kind it leaves
+	# is read off the enemy rather than fixed here — so 疫病持ち poisons
+	# where 重装 freezes, from one branch. The encounter gate is gone: an
+	# enemy that fouls does so from its first turn, because a debuff the
+	# player only meets in the back half of a run never gets learned.
+	for enemy in enemies:
+		if int(enemy["hp"]) <= 0:
+			continue
+		var kind := str(enemy.get("debuff", ""))
+		if kind == "" or _debuff_count() >= MAX_DEBUFFS:
+			continue
+		if rng.randi_range(0, 99) >= int(enemy.get("foul", 0)):
+			continue
 		var p := _random_empty_cell()
-		if p.x >= 0:
-			temp_board[p.y][p.x] = "hazard"
-			messages.append("マスに毒がかけられた")
-			_set_log(tr("マスに毒がかけられた"))
-			_refresh_board()
-			_spawn_floating_text(p, "毒", Color("#5B7A0F"))
-			sfx.emit("hurt")
-			await get_tree().create_timer(BEAT_EFFECT).timeout
+		if p.x < 0:
+			continue
+		var deb: Dictionary = temp_defs[kind]
+		temp_board[p.y][p.x] = kind
+		messages.append("マスに%sがかけられた" % _t(deb["name"]))
+		_set_log(messages[messages.size() - 1])
+		_refresh_board()
+		_spawn_floating_text(p, str(deb["mark"]), Color(deb["color"]).darkened(0.2))
+		sfx.emit("hurt")
+		await get_tree().create_timer(BEAT_EFFECT).timeout
 
 	_hide_banner()
 	_cleanup_dead_enemies()
@@ -6143,8 +6353,9 @@ func _show_cell_info(pos: Vector2i) -> void:
 		parts.append("%dマス先" % ahead)
 	parts.append("%s %s" % [_t(tile["name"]), _trigger_label(str(tile["trigger"]))])
 	parts.append(_t(tile["effect"]))
-	if temp_type == "hazard":
-		parts.append("毒がかかっている（通過でHP-2）")
+	var info_debuff := _debuff_at(pos)
+	if not info_debuff.is_empty():
+		parts.append("%s：%s" % [_t(info_debuff["name"]), _t(info_debuff["effect"])])
 	if danger_cells.has(pos):
 		parts.append("敵の攻撃予告あり（そこで行動を終えると被弾）")
 	if log_label != null:
@@ -6200,11 +6411,16 @@ func _flash_player_stop() -> void:
 # --- board graph -------------------------------------------------------
 
 func _build_track_graph() -> void:
+	# The perimeter of the 5x5 grid, clockwise from the top-left start.
+	# Sixteen squares rather than twelve: the extra four are the room the
+	# debuffs need to land in without burying the board the player built,
+	# and they push the far side of the ring out past a single 6 so a lap
+	# is a journey rather than two good rolls.
 	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0),
-		Vector2i(3, 1), Vector2i(3, 2), Vector2i(3, 3),
-		Vector2i(2, 3), Vector2i(1, 3), Vector2i(0, 3),
-		Vector2i(0, 2), Vector2i(0, 1),
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
+		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3),
+		Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4),
+		Vector2i(0, 4), Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
 	]
 	ring_index_map = {}
 	ring_forward = {}
@@ -6229,7 +6445,7 @@ func _track_index(pos: Vector2i) -> int:
 # Every square a roll of this size would touch, in order, following 跳躍路
 # the same way the move itself will. The last entry is where the action ends.
 # A warp face does not walk, so its route is the single square it jumps to.
-func _route_for_roll(roll: int) -> Array[Vector2i]:
+func _route_for_roll(roll: int, ignore_halt: bool = false) -> Array[Vector2i]:
 	var route: Array[Vector2i] = []
 	if _is_warp_face(roll):
 		route.append(_pos_for_step(_warp_face_step(roll)))
@@ -6244,10 +6460,17 @@ func _route_for_roll(roll: int) -> Array[Vector2i]:
 		remaining -= 1
 		var p := _pos_for_step(step)
 		route.append(p)
+		# 茨 ends the move where it sits, so the route ends there too. The
+		# preview is built on this function; if it walked past a briar the
+		# board would ring a landing square the move can never reach.
+		if _debuff_halts(p) and not ignore_halt:
+			break
 		var tile: Dictionary = tile_defs[str(permanent_board[p.y][p.x])]
 		# 跳躍路's "one more step" only extends a forward sweep — walking
-		# back through it should not also start stretching the walk.
-		if dir > 0:
+		# back through it should not also start stretching the walk. A
+		# frozen 跳躍路 does not extend it either, for the same reason it
+		# does nothing else.
+		if dir > 0 and not _debuff_nullifies(p):
 			for raw in tile.get("effects", []):
 				var eff: Dictionary = raw
 				if str(eff.get("on", "stop")) == "pass" and str(eff["op"]) == "step":
