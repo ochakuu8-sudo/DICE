@@ -47,12 +47,15 @@ PowerShellからまとめて書き出す場合:
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_preview.gd
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_readout.gd
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_debuffs.gd
+& "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_newcontent.gd
 ```
 
 - `test_preview.gd`: ダイスの1タップ目が情報表示だけで、2タップ目で確定することを確認します。
 - `test_readout.gd`: マスに表示される数字と、実際に与えるダメージが一致することを確認します。
-- `test_debuffs.gd`: 16マスのリング形状と、敵デバフ4種（毒・炎上・凍結・茨）の挙動を確認します。
-  予告した被害と実際の被害、止まる位置が一致することまで見ます。
+- `test_debuffs.gd`: 16マスのリング形状、敵デバフ4種（毒・炎上・凍結・茨）の挙動、
+  チャージが「撃たずに待ったターン数」として動くことを確認します。
+- `test_newcontent.gd`: 条件付きマス（出目上限・盾所持・毒閾値・手番）と、
+  1〜6の外に面を持つダイス（居合の0、大車輪の7〜9）を確認します。
 
 どちらも失敗が0なら終了コード0を返します。
 

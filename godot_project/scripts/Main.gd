@@ -549,8 +549,21 @@ class DiceFace:
 				return [Vector2(l, t), Vector2(r, t), Vector2(l, b), Vector2(r, b)]
 			5:
 				return [Vector2(l, t), Vector2(r, t), Vector2(c, m), Vector2(l, b), Vector2(r, b)]
-			_:
+			6:
 				return [Vector2(l, t), Vector2(r, t), Vector2(l, m), Vector2(r, m), Vector2(l, b), Vector2(r, b)]
+			# 大車輪 rolls past six, and three faces that all drew as a six
+			# would make it unreadable. The pattern keeps growing the same
+			# way rather than switching to a printed numeral.
+			7:
+				return [Vector2(l, t), Vector2(r, t), Vector2(l, m), Vector2(r, m),
+					Vector2(l, b), Vector2(r, b), Vector2(c, m)]
+			8:
+				return [Vector2(l, t), Vector2(c, t), Vector2(r, t), Vector2(l, m),
+					Vector2(r, m), Vector2(l, b), Vector2(c, b), Vector2(r, b)]
+			_:
+				return [Vector2(l, t), Vector2(c, t), Vector2(r, t),
+					Vector2(l, m), Vector2(c, m), Vector2(r, m),
+					Vector2(l, b), Vector2(c, b), Vector2(r, b)]
 
 class BurstEffect:
 	extends Control
@@ -1276,6 +1289,31 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "attack", "amount": 9, "add_scale": "roll", "add_scale_sign": -1}],
 		"detail": "突進の裏返し。小さい出目、あるいは逆走で辿り着くほど重くなる — 大きく動いた勢いそのままでは弱く、抑えて止まるか押し戻されて初めて活きる。"},
 
+	# --- 小刻み: 小さい出目でだけ開く。疾走の裏返し ---
+	# Every die in the game wants to roll big, so a 1 was purely an
+	# accident. These make the small half of the range the half you aim
+	# for. 逆走's faces are all negative and so satisfy every max_roll
+	# condition automatically — the two axes fit together without either
+	# knowing about the other.
+	"pinpoint": {"name": "寸止め", "kind": "小刻み", "color": Color("#2E7BD6"), "icon": "bow",
+		"trigger": "stop", "effect": "出目2以下なら18ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 18, "cond": {"max_roll": 2}}],
+		"detail": "刻んで踏み込んだときだけ火を噴く。大きい出目で辿り着いても完全な空振りで、狙いを絞るためのマス。逆走で入っても条件を満たす。"},
+	"shuffle": {"name": "摺り足", "kind": "小刻み", "color": Color("#4F8C8A"), "icon": "guard",
+		"trigger": "pass", "effect": "出目3以下なら通過ごとに盾+3",
+		"effects": [{"on": "pass", "op": "shield", "amount": 3, "cond": {"max_roll": 3}}],
+		"detail": "小さく動く限りは硬い。通過型なのに大きい出目で得をしない、数少ないマス。"},
+	"measure": {"name": "間合い", "kind": "小刻み", "color": Color("#5B8C2A"), "icon": "focus",
+		"trigger": "stop", "effect": "出目3以下ならダイス1枚、振り直し+1",
+		"effects": [{"on": "stop", "op": "draw", "amount": 1, "cond": {"max_roll": 3}},
+			{"on": "stop", "op": "reroll", "amount": 1, "cond": {"max_roll": 3}}],
+		"detail": "小さい目を事故から立て直しに変える。悪い手札を引いたターンほど価値が上がる。"},
+	"read": {"name": "見切り", "kind": "小刻み", "color": Color("#C9A227"), "icon": "dice",
+		"trigger": "stop", "effect": "出目1なら行動+1、コンボ+2",
+		"effects": [{"on": "stop", "op": "action", "amount": 1, "cond": {"max_roll": 1}},
+			{"on": "stop", "op": "combo", "amount": 2, "cond": {"max_roll": 1}}],
+		"detail": "1でしか開かない代わりに、その1が実質タダになる。盤上で唯一、最低の目が最高の目になるマス。"},
+
 	# --- 連鎖: コンボを積み、コンボを参照するマスで清算する ---
 	"chain": {"name": "連鎖路", "kind": "連鎖", "color": Color("#F2C230"), "icon": "chain",
 		"trigger": "pass", "effect": "通過ごとにコンボ+1",
@@ -1327,6 +1365,11 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "self_damage", "amount": 3},
 			{"on": "stop", "op": "attack", "amount": 16}],
 		"detail": "盤上で最も重い一撃だが、自分のHPを削って撃つ。押し切れる場面かどうかの判断を迫るマス。"},
+	"firststrike": {"name": "先手", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "bow",
+		"trigger": "stop", "effect": "1手目なら12ダメージ、行動+1",
+		"effects": [{"on": "stop", "op": "attack", "amount": 12, "cond": {"action": 1}},
+			{"on": "stop", "op": "action", "amount": 1, "cond": {"action": 1}}],
+		"detail": "そのターンの1手目で止まった時だけ働き、使った行動をそのまま返す。狙撃点が2手目を条件にするのに対し、こちらは1手目 — 両方を盤に置くと、ターンの組み立てそのものが道筋になる。"},
 	"snipe": {"name": "狙撃点", "kind": "狙撃", "color": Color("#A8791F"), "icon": "bow",
 		"trigger": "stop", "effect": "2回目の行動なら12ダメージ",
 		"effects": [{"on": "stop", "op": "attack", "amount": 12, "cond": {"action": 2}}],
@@ -1345,6 +1388,22 @@ var tile_defs := {
 		"trigger": "stop", "effect": "HP半分以下なら盾+12",
 		"effects": [{"on": "stop", "op": "shield", "amount": 12, "cond": {"hp_below": 0.5}}],
 		"detail": "追い詰められてから初めて働く。余裕のあるうちは死にマスで、劣勢でこそ盤面を支える。"},
+	# 棘壁 and 反射盤 turn shield into damage by spending its size. These
+	# three ask only that you have some, so they pay a flat rate and stack
+	# with the scaling ones instead of competing with them.
+	"shieldbash": {"name": "盾撃", "kind": "要塞", "color": Color("#2E5FA8"), "icon": "slash",
+		"trigger": "stop", "effect": "盾があれば14ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 14, "cond": {"has_shield": true}}],
+		"detail": "盾を減らさずに殴れる。1枚でも盾があれば満額なので、棘壁のように大量に貯める必要がない。"},
+	"rampart": {"name": "城壁路", "kind": "要塞", "color": Color("#3A72C2"), "icon": "shock",
+		"trigger": "pass", "effect": "盾があれば通過ごとに2ダメージ",
+		"effects": [{"on": "pass", "op": "attack", "amount": 2, "cond": {"has_shield": true}}],
+		"detail": "盾を持ったまま走ると刃になる。先に盾を作ってから踏むという、ターン内の順番が問われるマス。"},
+	"redoubt": {"name": "堅陣", "kind": "要塞", "color": Color("#16457C"), "icon": "guard",
+		"trigger": "stop", "effect": "盾があれば盾+8、HP+4",
+		"effects": [{"on": "stop", "op": "shield", "amount": 8, "cond": {"has_shield": true}},
+			{"on": "stop", "op": "heal", "amount": 4, "cond": {"has_shield": true}}],
+		"detail": "持っている者だけがさらに固くなる。盾ゼロで踏むと完全な空振りで、守りを切らさない立ち回りを要求する。"},
 	"reflect": {"name": "反射盤", "kind": "要塞", "color": Color("#3A72C2"), "icon": "guard",
 		"trigger": "both", "effect": "通過で盾+1／停止で盾の2倍ダメージ",
 		"effects": [{"on": "pass", "op": "shield", "amount": 1},
@@ -1389,6 +1448,16 @@ var tile_defs := {
 		"trigger": "stop", "effect": "HP35%以下なら25ダメージ",
 		"effects": [{"on": "stop", "op": "attack", "amount": 25, "cond": {"hp_below": 0.35}}],
 		"detail": "余裕のあるうちは完全な死にマス。本当に後がなくなってから初めて開く、盤上で最も重い一撃。"},
+
+	# Thresholds, so 毒 has a shape: slow to open, heavy once it does.
+	"plaguefang": {"name": "疫の刃", "kind": "毒", "color": Color("#4F7A16"), "icon": "slash",
+		"trigger": "stop", "effect": "毒5以上なら22ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 22, "cond": {"min_poison": 5}}],
+		"detail": "毒を5まで盛ってから初めて開く。毒沼ひとつでは届かず、撒く手段を揃えた盤面への報酬。毒は減らないので、盛り直さずに何度でも撃てる。"},
+	"fester": {"name": "腐敗路", "kind": "毒", "color": Color("#6F9C1F"), "icon": "poison",
+		"trigger": "pass", "effect": "毒4以上なら通過ごとに3ダメージ",
+		"effects": [{"on": "pass", "op": "attack", "amount": 3, "cond": {"min_poison": 4}}],
+		"detail": "毒が回りきった相手の上を走ると、通過そのものが打点になる。毒ビルドが疾走ビルドの走り方を手に入れるマス。"},
 
 	# --- 補助: 手札と行動そのものを増やす ---
 	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
@@ -1638,6 +1707,17 @@ var dice_defs := {
 		"color": Color("#D6812B"), "short": "行動+1", "effect": "使うと行動+1（実質タダで使える）",
 		"effects": [{"on": "spend", "op": "action", "amount": 1}],
 		"detail": "使った瞬間に行動が1回戻るので、実質タダで手札を1枚消費できる。出目も3か4としっかり進むので、コンボを積みながら移動そのものにも困らない。"},
+	"kodachi": {"name": "小太刀", "faces": [1, 1, 1, 2, 2, 2],
+		"color": Color("#2E7BD6"), "short": "停止攻撃2倍", "effect": "停止型マスのダメージが2倍・出目は2以下",
+		"mods": [{"op": "attack", "on": "stop", "x": 2}],
+		"detail": "攻撃ダイスと同じ倍率を、1か2でしか出ない面と引き換えに持つ。遠くへは運べないが、出目2以下を条件にするマスを常に満たせる唯一のダイス。"},
+	"iai": {"name": "居合", "faces": [0, 0, 1, 2, 3, 4],
+		"color": Color("#B5302A"), "short": "0で踏み直し", "effect": "「0」の目は動かず、今いるマスの停止効果をもう一度",
+		"detail": "6面のうち2面が0。動かないので歩数も距離も稼げないが、いま立っているマスの停止効果がもう一度発動する。重い停止型マスに乗ったまま、そこを撃ち続けるためのダイス。"},
+	"wheel": {"name": "大車輪", "faces": [7, 7, 8, 8, 9, 9],
+		"color": Color("#D6491F"), "short": "7〜9歩・HP-1", "effect": "使うとHP-1。7から9マス進む",
+		"effects": [{"on": "spend", "op": "self_damage", "amount": 1}],
+		"detail": "盤の半分以上を一息に走る。通過型マスを何枚も踏み抜けるが、振り回すたびにHPを1払う。止まりたいマスを狙うには大きすぎる、走るためだけのダイス。"},
 	"guard_die": {"name": "防御", "faces": [1, 1, 2, 2, 3, 4],
 		"color": Color("#2E7BD6"), "short": "出目ぶん盾", "effect": "使うと出目と同じ数だけ盾",
 		"effects": [{"on": "spend", "op": "shield", "amount": 1, "scale": "roll"}],
@@ -1650,7 +1730,8 @@ var die_reward_pool := [
 	"heavydie", "precise", "gamble",
 	"blade", "rush", "bulwark", "mend", "toxin", "dynamo", "tempest",
 	"chainb", "delve", "augur", "charger", "ember", "rally", "devote", "nimble",
-	"reverse", "vault", "reset", "tempo", "guard_die", "teleport"
+	"reverse", "vault", "reset", "tempo", "guard_die", "teleport",
+	"kodachi", "iai", "wheel"
 ]
 
 var reward_pool := [
@@ -1663,6 +1744,9 @@ var reward_pool := [
 	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
 	{"type": "lastblade"}, {"type": "unbowed"}, {"type": "bloodpath"}, {"type": "deathline"},
+	{"type": "pinpoint"}, {"type": "shuffle"}, {"type": "measure"}, {"type": "read"},
+	{"type": "shieldbash"}, {"type": "rampart"}, {"type": "redoubt"},
+	{"type": "plaguefang"}, {"type": "fester"}, {"type": "firststrike"},
 	{"type": "focus"}, {"type": "spring"}, {"type": "shock"},
 	{"type": "relay"}, {"type": "windfall"}, {"type": "one_more"}, {"type": "altar"}
 ]
@@ -2854,7 +2938,7 @@ func _refresh_board() -> void:
 	danger_cells = _telegraphed_cells()
 	_readout_die = _previewed_die()
 	_readout_route = preview_route
-	_readout_crossed = 0 if preview_warp else _readout_route.size()
+	_readout_crossed = _readout_route.size() if _preview_walks() else 0
 	var placing: bool = state == "reward_place"
 	for y in range(BOARD_H):
 		for x in range(BOARD_W):
@@ -3660,6 +3744,7 @@ const TILE_KINDS := [
 	["連鎖", "コンボを積み、コンボを参照するマスで清算する"],
 	["狙撃", "チャージを溜め、止まって撃ち切る"],
 	["要塞", "盾を集め、盾そのものを打点に変える"],
+	["小刻み", "小さい出目でだけ開く。疾走の裏返し"],
 	["毒", "毒を盛り、敵のターンごとに削る"],
 	["手負い", "失ったHPを打点と守りに変える"],
 	["移動", "移動そのものを変える"],
@@ -5591,7 +5676,10 @@ func _die_preview_text(index: int) -> String:
 	var warp: bool = _is_warp_face(roll)
 	var route := _route_for_roll(roll)
 	var landing: Vector2i = route[route.size() - 1]
-	var crossed: int = 0 if warp else route.size()
+	# 居合's 0 does not walk either: the action resolves on the square the
+	# piece is already standing on.
+	var walks: bool = not warp and roll != 0
+	var crossed: int = route.size() if walks else 0
 	# The readout context this text is about to ask questions against. The
 	# board refresh that follows sets the same three from the same source;
 	# doing it here means the sentence never reads a stale route.
@@ -5635,7 +5723,7 @@ func _die_preview_text(index: int) -> String:
 		# rate its debuff uses. A warp never enters anything, so its one
 		# square is charged at the stop rate alone.
 		var timings := []
-		if not warp:
+		if walks:
 			timings.append("pass")
 		if i == route.size() - 1:
 			timings.append("stop")
@@ -5651,7 +5739,7 @@ func _die_preview_text(index: int) -> String:
 		parts.append("%s（無効化）" % str(name))
 	# 茨 already shortened the route, so saying so explains why the landing
 	# is not where the die's number pointed.
-	if _debuff_halts(landing) and not warp:
+	if _debuff_halts(landing) and walks:
 		var unobstructed := _route_for_roll(roll, true).size()
 		if unobstructed > route.size():
 			parts.append("⚠ %sで停止（残り%d歩を失う）" % [
@@ -6598,6 +6686,14 @@ func _rebuild_preview_path() -> void:
 # The squares the considered die would actually run over, and whether it
 # gets there by jumping. Empty whenever nothing is being considered, which
 # is what makes every readout fall back to a square's resting value.
+# False for a warp (it jumps) and for 居合's 0 (it stands still). Both end
+# an action on a square without entering anything on the way, which is what
+# "crossed" counts and what a pass-timing effect needs.
+func _preview_walks() -> bool:
+	if _readout_die.is_empty() or preview_warp:
+		return false
+	return int(_readout_die.get("roll", 0)) != 0
+
 func _rebuild_preview_route() -> void:
 	preview_route = []
 	preview_warp = false
