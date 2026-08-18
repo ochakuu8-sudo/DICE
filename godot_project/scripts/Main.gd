@@ -1038,6 +1038,8 @@ var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
 var combo_chip: PanelContainer
 var combo_label: Label
+var charge_chip: PanelContainer
+var charge_label: Label
 var action_pip_box: HBoxContainer
 
 var hero_panel: PanelContainer
@@ -1197,7 +1199,12 @@ var rerolls_left := 0
 # and poison. That is what makes "a combo build" a choice instead of a tax
 # everyone pays, without also making the counter itself invisible to
 # anyone who never picked combo content up.
-var charge := 0             # survives the whole encounter; cash it in
+# Charge is time, not deposits. It climbs by one at the start of every
+# player turn and drops to nothing the moment something cashes it in, so
+# what it measures is how many turns you have gone without firing. The
+# squares that add to it are accelerants on top of that clock rather than
+# the only way to fill it.
+var charge := 0
 var action_index := 0       # 1st or 2nd action of this turn
 var crossed_this_action := 0
 
@@ -1294,15 +1301,15 @@ var tile_defs := {
 		"effects": [{"on": "pass", "op": "charge", "amount": 1},
 			{"on": "stop", "op": "attack", "amount": 4, "scale": "charge"},
 			{"on": "stop", "op": "spend_charge", "amount": 0}],
-		"detail": "踏むたびに溜まり、止まった瞬間に全部吐き出す。チャージは戦闘中ずっと残るので、いつ撃つかが判断になる。"},
+		"detail": "踏むたびに溜まり、止まった瞬間に全部吐き出す。チャージは撃たずに待ったターン数そのものなので、我慢するほど重い一発になり、撃った瞬間にゼロへ戻る。"},
 	"aim": {"name": "照準台", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "focus",
 		"trigger": "stop", "effect": "チャージ+3",
 		"effects": [{"on": "stop", "op": "charge", "amount": 3}],
-		"detail": "撃たずに溜めるだけのマス。単体では何も起きないが、チャージを参照するマスの威力を跳ね上げる。"},
+		"detail": "3ターン待ったのと同じだけ時計を進める。単体では何も起きないが、撃つターンを一気に手前へ引き寄せられる。"},
 	"lance": {"name": "貫通砲", "kind": "狙撃", "color": Color("#5B3AA8"), "icon": "bow",
 		"trigger": "stop", "effect": "チャージ×3ダメージ（消費しない）",
 		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "charge"}],
-		"detail": "溜めを消費せずに撃てる代わりに倍率が低い。何度も撃ちたいならこちら。"},
+		"detail": "時計を止めずに撃てる代わりに倍率が低い。チャージは減らないので、待ちながら毎ターン撃ち続けられる。"},
 	"heavy": {"name": "大斬撃", "kind": "狙撃", "color": Color("#B5302A"), "icon": "slash",
 		"trigger": "stop", "effect": "7ダメージ＋出目ぶん",
 		# One row, not two. Written as two attacks it landed as two hits and
@@ -1572,7 +1579,7 @@ var dice_defs := {
 	"dynamo": {"name": "蓄電", "faces": [2, 2, 3, 3, 4, 4],
 		"color": Color("#7C4DD6"), "short": "チャージ2倍", "effect": "得られるチャージが2倍",
 		"mods": [{"op": "charge", "x": 2}],
-		"detail": "溜める速度が倍になる。蓄積砲台や貫通砲を撃つターンではなく、その前のターンに使うダイス。"},
+		"detail": "マスから得るチャージが倍になる。自然に増える1は倍にならないので、照準台や蓄積砲台と組んで初めて効く。"},
 	"tempest": {"name": "嵐撃", "faces": [4, 5, 5, 6, 6, 6],
 		"color": Color("#B5302A"), "short": "通過攻撃3倍", "effect": "通過型マスのダメージが3倍",
 		"mods": [{"op": "attack", "on": "pass", "x": 3}],
@@ -1594,7 +1601,7 @@ var dice_defs := {
 	"charger": {"name": "充填", "faces": [1, 1, 2, 2, 3, 3],
 		"color": Color("#5B3AA8"), "short": "チャージ+3", "effect": "使うとチャージ+3",
 		"effects": [{"on": "spend", "op": "charge", "amount": 3}],
-		"detail": "盤面に頼らずチャージを積める。狙撃ビルドの立ち上がりを早くする一本。"},
+		"detail": "盤面に頼らず時計を3ターンぶん進める。撃ちたいターンに間に合わせるための一本。"},
 	"ember": {"name": "火種", "faces": [1, 2, 3, 4, 5, 6],
 		"color": Color("#8FB53A"), "short": "毒+3", "effect": "使うと敵に毒+3",
 		"effects": [{"on": "spend", "op": "poison", "amount": 3}],
@@ -2132,6 +2139,18 @@ func _build_board_zone() -> void:
 	combo_label = _make_label(FS_BODY, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
 	combo_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	combo_chip.add_child(combo_label)
+
+	# Charge climbs on its own now, so it is a clock the player has to be
+	# able to watch. It used to exist only as a floating number that
+	# appeared for half a second when a square added to it.
+	charge_chip = PanelContainer.new()
+	charge_chip.add_theme_stylebox_override("panel", _flat_style(Color("#7C4DD6"), COL_INK, 3, 10, 3))
+	charge_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	charge_chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	ribbon_box.add_child(charge_chip)
+	charge_label = _make_label(FS_BODY, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	charge_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	charge_chip.add_child(charge_label)
 
 	ribbon_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
 	ribbon_caption.text = tr("この先のマス　●通過 ■停止")
@@ -2740,6 +2759,10 @@ func _refresh_top() -> void:
 	combo_chip.visible = state == "player" or state == "moving"
 	combo_chip.modulate = Color(1, 1, 1, 1.0 if combo > 0 else 0.5)
 
+	charge_label.text = tr("チャージ %d") % charge
+	charge_chip.visible = combo_chip.visible
+	charge_chip.modulate = Color(1, 1, 1, 1.0 if charge > 0 else 0.5)
+
 	_clear_children(action_pip_box)
 	for i in range(actions_per_turn):
 		var pip := IconGlyph.new()
@@ -3124,6 +3147,8 @@ func _refresh_ribbon() -> void:
 	ribbon_box.visible = (state == "player" and dice_rolled) or moving
 	if combo_chip != null:
 		combo_chip.visible = ribbon_box.visible
+	if charge_chip != null:
+		charge_chip.visible = ribbon_box.visible
 
 	if moving:
 		roll_readout.visible = steps_left > 0
@@ -5390,6 +5415,8 @@ func _start_player_turn(message: String = "") -> void:
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
 	preview_die_index = -1
+	# One turn of waiting, banked. Turn 1 of a fight opens on 1.
+	charge += 1
 	hand_slots = []
 	if hand_scroll != null:
 		hand_scroll.scroll_horizontal = 0

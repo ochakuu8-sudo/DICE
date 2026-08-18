@@ -63,6 +63,9 @@ func _init() -> void:
 	# --- each enemy fouls in its own kind ------------------------------
 	enemy_debuff_case(main)
 
+	# --- charge counts turns, not deposits -----------------------------
+	charge_clock_case(main)
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
 
@@ -204,3 +207,30 @@ func _reset(main) -> void:
 	main.player_shield = 0
 	main.combo = 0
 	main.charge = 0
+
+# --- charge is a clock -------------------------------------------------
+# It climbs by one every player turn and drops to nothing when something
+# cashes it in, so what it reads is "turns since you last fired".
+func charge_clock_case(main) -> void:
+	# Deliberately not _reset(): that helper zeroes charge for the damage
+	# cases, which is exactly the value under test here.
+	main._start_run("knight")
+	main.map_row = 0
+	main.map_col = 0
+	main._start_encounter()
+	check("a fight opens on one turn of charge", main.charge, 1)
+	main._start_player_turn()
+	check("waiting a turn banks another", main.charge, 2)
+	main._start_player_turn()
+	main._start_player_turn()
+	check("and another, and another", main.charge, 4)
+
+	# 照準台 is an accelerant on top of the clock, not a separate supply.
+	main._apply_op("charge", 3, "照準台")
+	check("照準台 pushes the clock forward", main.charge, 7)
+
+	# Firing resets it.
+	main._apply_op("spend_charge", 0, "蓄積砲台")
+	check("cashing in empties it", main.charge, 0)
+	main._start_player_turn()
+	check("and the clock starts over", main.charge, 1)
