@@ -144,5 +144,5 @@ func _reset(main) -> void:
 	main.player_hp = main.player_max_hp
 	main.player_shield = 0
 	main.combo = 0
-	main.charge = 0
+	main.charge_map = {}
 	main.action_index = 0

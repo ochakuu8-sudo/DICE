@@ -206,31 +206,48 @@ func _reset(main) -> void:
 	main.player_hp = main.player_max_hp
 	main.player_shield = 0
 	main.combo = 0
-	main.charge = 0
+	main.charge_map = {}
 
 # --- charge is a clock -------------------------------------------------
 # It climbs by one every player turn and drops to nothing when something
 # cashes it in, so what it reads is "turns since you last fired".
 func charge_clock_case(main) -> void:
-	# Deliberately not _reset(): that helper zeroes charge for the damage
-	# cases, which is exactly the value under test here.
+	# Deliberately not _reset(): that helper clears the charge map, which is
+	# exactly the value under test here.
 	main._start_run("knight")
 	main.map_row = 0
 	main.map_col = 0
 	main._start_encounter()
-	check("a fight opens on one turn of charge", main.charge, 1)
-	main._start_player_turn()
-	check("waiting a turn banks another", main.charge, 2)
-	main._start_player_turn()
-	main._start_player_turn()
-	check("and another, and another", main.charge, 4)
+	var here: Vector2i = main.player_pos
+	var far: Vector2i = main._pos_for_step(main._track_index(here) + 8)
 
-	# 照準台 is an accelerant on top of the clock, not a separate supply.
-	main._apply_op("charge", 3, "照準台")
-	check("照準台 pushes the clock forward", main.charge, 7)
+	check("a fight opens with one turn on every square",
+		main._cell_charge(far), 1)
+	main._start_player_turn()
+	check("waiting a turn banks another", main._cell_charge(far), 2)
+	main._start_player_turn()
+	main._start_player_turn()
+	check("and another, and another", main._cell_charge(far), 4)
+	check("every square runs its own clock at the same rate",
+		main._cell_charge(here), main._cell_charge(far))
 
-	# Firing resets it.
+	# 照準台 loads the whole ring rather than the square it sits on.
+	main.charge_cell = here
+	main._apply_op("charge_all", 2, "照準台")
+	check("照準台 loads the far square too", main._cell_charge(far), 6)
+	check("...and the near one", main._cell_charge(here), 6)
+
+	# A square's own loading stays on that square.
+	main.charge_cell = here
+	main._apply_op("charge", 3, "蓄積砲台")
+	check("a square's own charge is its own", main._cell_charge(here), 9)
+	check("the far square is untouched by it", main._cell_charge(far), 6)
+
+	# Firing empties the square that fired, and only that one.
+	main.charge_cell = here
 	main._apply_op("spend_charge", 0, "蓄積砲台")
-	check("cashing in empties it", main.charge, 0)
+	check("cashing in empties the square that fired", main._cell_charge(here), 0)
+	check("the far square keeps its charge", main._cell_charge(far), 6)
 	main._start_player_turn()
-	check("and the clock starts over", main.charge, 1)
+	check("the emptied square starts over", main._cell_charge(here), 1)
+	check("the far square just keeps climbing", main._cell_charge(far), 7)

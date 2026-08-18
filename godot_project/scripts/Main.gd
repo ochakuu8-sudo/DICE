@@ -1049,10 +1049,6 @@ var map_canvas: Control
 var map_links: Control
 var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
-var combo_chip: PanelContainer
-var combo_label: Label
-var charge_chip: PanelContainer
-var charge_label: Label
 var action_pip_box: HBoxContainer
 
 var hero_panel: PanelContainer
@@ -1212,12 +1208,18 @@ var rerolls_left := 0
 # and poison. That is what makes "a combo build" a choice instead of a tax
 # everyone pays, without also making the counter itself invisible to
 # anyone who never picked combo content up.
-# Charge is time, not deposits. It climbs by one at the start of every
-# player turn and drops to nothing the moment something cashes it in, so
-# what it measures is how many turns you have gone without firing. The
-# squares that add to it are accelerants on top of that clock rather than
-# the only way to fill it.
-var charge := 0
+# Charge belongs to squares, not to the player. Every square on the ring
+# carries its own, climbing by one at the start of each player turn and
+# dropping to nothing when something on that square cashes it in — so what
+# a square's charge measures is how long it has been since anyone fired it.
+# Leaving the far side of the ring alone is what makes the far side worth
+# walking to.
+#
+# charge_cell is which square is being asked about: the one currently
+# resolving an effect, the one a readout is being drawn for, or the one the
+# piece is standing on while a die's spend effects run.
+var charge_map: Dictionary = {}
+var charge_cell := Vector2i(-1, -1)
 var action_index := 0       # 1st or 2nd action of this turn
 var crossed_this_action := 0
 
@@ -1341,9 +1343,9 @@ var tile_defs := {
 			{"on": "stop", "op": "spend_charge", "amount": 0}],
 		"detail": "踏むたびに溜まり、止まった瞬間に全部吐き出す。チャージは撃たずに待ったターン数そのものなので、我慢するほど重い一発になり、撃った瞬間にゼロへ戻る。"},
 	"aim": {"name": "照準台", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "focus",
-		"trigger": "stop", "effect": "チャージ+3",
-		"effects": [{"on": "stop", "op": "charge", "amount": 3}],
-		"detail": "3ターン待ったのと同じだけ時計を進める。単体では何も起きないが、撃つターンを一気に手前へ引き寄せられる。"},
+		"trigger": "stop", "effect": "盤上すべてのマスのチャージ+2",
+		"effects": [{"on": "stop", "op": "charge_all", "amount": 2}],
+		"detail": "盤上のすべてのマスを2ターンぶん進める。自分では何も撃たないが、砲台を何門も並べた盤面ほど見返りが大きくなる、狙撃ビルドの司令塔。"},
 	"lance": {"name": "貫通砲", "kind": "狙撃", "color": Color("#5B3AA8"), "icon": "bow",
 		"trigger": "stop", "effect": "チャージ×3ダメージ（消費しない）",
 		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "charge"}],
@@ -1647,8 +1649,8 @@ var dice_defs := {
 		"detail": "腐食路を走れば一度に大量の毒が乗る。毒は敵のターンごとに効くので、長引くほど得をする。"},
 	"dynamo": {"name": "蓄電", "faces": [2, 2, 3, 3, 4, 4],
 		"color": Color("#7C4DD6"), "short": "チャージ2倍", "effect": "得られるチャージが2倍",
-		"mods": [{"op": "charge", "x": 2}],
-		"detail": "マスから得るチャージが倍になる。自然に増える1は倍にならないので、照準台や蓄積砲台と組んで初めて効く。"},
+		"mods": [{"op": "charge", "x": 2}, {"op": "charge_all", "x": 2}],
+		"detail": "マスが与えるチャージが倍になる。毎ターン自然に増える1は倍にならないので、照準台や蓄積砲台と組んで初めて効く。"},
 	"tempest": {"name": "嵐撃", "faces": [4, 5, 5, 6, 6, 6],
 		"color": Color("#B5302A"), "short": "通過攻撃3倍", "effect": "通過型マスのダメージが3倍",
 		"mods": [{"op": "attack", "on": "pass", "x": 3}],
@@ -1668,9 +1670,9 @@ var dice_defs := {
 		"effects": [{"on": "spend", "op": "reroll", "amount": 1}],
 		"detail": "両極端な出目で当たり外れが激しいが、1手目に使えば残りの手札を振り直して2手目を選び直せる。"},
 	"charger": {"name": "充填", "faces": [1, 1, 2, 2, 3, 3],
-		"color": Color("#5B3AA8"), "short": "チャージ+3", "effect": "使うとチャージ+3",
-		"effects": [{"on": "spend", "op": "charge", "amount": 3}],
-		"detail": "盤面に頼らず時計を3ターンぶん進める。撃ちたいターンに間に合わせるための一本。"},
+		"color": Color("#5B3AA8"), "short": "全マス電+2", "effect": "使うと盤上すべてのマスのチャージ+2",
+		"effects": [{"on": "spend", "op": "charge_all", "amount": 2}],
+		"detail": "盤上のすべてのマスに2ターンぶん装填する。撃ちたい砲台に間に合わせるための一本で、砲台が多いほど得をする。"},
 	"ember": {"name": "火種", "faces": [1, 2, 3, 4, 5, 6],
 		"color": Color("#8FB53A"), "short": "毒+3", "effect": "使うと敵に毒+3",
 		"effects": [{"on": "spend", "op": "poison", "amount": 3}],
@@ -2215,27 +2217,9 @@ func _build_board_zone() -> void:
 	ribbon_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	board_view.add_child(ribbon_box)
 
-	combo_chip = PanelContainer.new()
-	combo_chip.add_theme_stylebox_override("panel", _flat_style(COL_GOLD, COL_INK, 3, 10, 3))
-	combo_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	combo_chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	ribbon_box.add_child(combo_chip)
-	combo_label = _make_label(FS_BODY, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	combo_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	combo_chip.add_child(combo_label)
-
-	# Charge climbs on its own now, so it is a clock the player has to be
-	# able to watch. It used to exist only as a floating number that
-	# appeared for half a second when a square added to it.
-	charge_chip = PanelContainer.new()
-	charge_chip.add_theme_stylebox_override("panel", _flat_style(Color("#7C4DD6"), COL_INK, 3, 10, 3))
-	charge_chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	charge_chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	ribbon_box.add_child(charge_chip)
-	charge_label = _make_label(FS_BODY, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	charge_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	charge_chip.add_child(charge_label)
-
+	# Neither combo nor charge gets a chip. Combo is spelled out by the
+	# squares that read it, and charge now lives on the squares themselves,
+	# so a single shared number would have been describing nothing.
 	ribbon_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
 	ribbon_caption.text = tr("この先のマス　●通過 ■停止")
 	ribbon_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -2839,14 +2823,6 @@ func _refresh_top() -> void:
 	gold_label.text = str(gold)
 	gold_chip.visible = state != "title"
 
-	combo_label.text = tr("コンボ %d") % combo
-	combo_chip.visible = state == "player" or state == "moving"
-	combo_chip.modulate = Color(1, 1, 1, 1.0 if combo > 0 else 0.5)
-
-	charge_label.text = tr("チャージ %d") % charge
-	charge_chip.visible = combo_chip.visible
-	charge_chip.modulate = Color(1, 1, 1, 1.0 if charge > 0 else 0.5)
-
 	_clear_children(action_pip_box)
 	for i in range(actions_per_turn):
 		var pip := IconGlyph.new()
@@ -3076,7 +3052,7 @@ func _refresh_board() -> void:
 # highlighted, because that value moves as the run's counters move.
 const OP_GLYPHS := {
 	"attack": "", "shield": "+", "heal": "+", "poison": "毒",
-	"charge": "電", "combo": "連", "step": "歩", "draw": "引",
+	"charge": "電", "charge_all": "電", "combo": "連", "step": "歩", "draw": "引",
 	"reroll": "振", "action": "行", "self_damage": "-",
 }
 
@@ -3085,6 +3061,10 @@ const OP_GLYPHS := {
 # and its combo point counted, and its conditions already answered. Squares
 # the die cannot reach keep printing their plain face value.
 func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictionary:
+	# Charge is a property of the square, so a readout has to ask about the
+	# square it is drawing rather than about a single shared counter.
+	if pos.x >= 0:
+		charge_cell = pos
 	# Frozen squares print nothing, whether or not a die is being weighed:
 	# the number they used to advertise is exactly what they will not pay.
 	if pos.x >= 0 and _debuff_nullifies(pos):
@@ -3101,6 +3081,11 @@ func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictio
 	var scaled_ops := {}
 	var order := []
 	var blocked := false
+	# A square's own effects run in written order, and 蓄積砲台 loads itself
+	# on the way in before firing on the stop. Reading its charge once at the
+	# top would under-report the shot by exactly that loading, so the walk
+	# through the rows carries the loading with it.
+	var charge_delta := 0
 	for raw in tile.get("effects", []):
 		var eff: Dictionary = raw
 		var op := str(eff["op"])
@@ -3121,6 +3106,8 @@ func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictio
 			var factor := _scale_value(scale)
 			if on_route:
 				factor = _projected_counter(scale, die, _readout_crossed)
+			if scale == "charge":
+				factor += charge_delta
 			amount *= factor
 		var add_scale := str(eff.get("add_scale", ""))
 		if add_scale != "":
@@ -3134,6 +3121,8 @@ func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictio
 		# that ignores it promises damage the square cannot deliver. It is
 		# applied per contributing row and floored at zero, exactly the way
 		# _damage_enemy applies it, so the board and the enemy agree.
+		if op == "charge" or op == "charge_all":
+			charge_delta += amount
 		if op == "attack":
 			# Mirrors _damage_enemy exactly, floor included. An attack that
 			# was already zero or negative before armour never swings at
@@ -3229,10 +3218,6 @@ func _refresh_ribbon() -> void:
 	ribbon_row.visible = ribbon_caption.visible
 	roll_readout.visible = moving
 	ribbon_box.visible = (state == "player" and dice_rolled) or moving
-	if combo_chip != null:
-		combo_chip.visible = ribbon_box.visible
-	if charge_chip != null:
-		charge_chip.visible = ribbon_box.visible
 
 	if moving:
 		roll_readout.visible = steps_left > 0
@@ -4183,7 +4168,7 @@ func _start_encounter() -> void:
 	steps_left = 0
 	route_path = []
 	combo = 0
-	charge = 0
+	charge_map = {}
 	temp_board = _make_empty_board("none")
 	enemies = []
 	_setup_encounter()
@@ -5500,8 +5485,11 @@ func _start_player_turn(message: String = "") -> void:
 	dice_rolled = false
 	rerolls_left = REROLLS_PER_TURN
 	preview_die_index = -1
-	# One turn of waiting, banked. Turn 1 of a fight opens on 1.
-	charge += 1
+	# Every square banks a turn of waiting. Squares that reference charge
+	# are the only ones that will ever spend it, but the clock runs on all
+	# of them so that walking away from a battery is what loads it.
+	for cell in ring_cells:
+		_set_cell_charge(cell, _cell_charge(cell) + 1)
 	hand_slots = []
 	if hand_scroll != null:
 		hand_scroll.scroll_horizontal = 0
@@ -5649,6 +5637,8 @@ func _on_die_pressed(index: int) -> void:
 
 	# The die's own effects fire before the piece moves, so a die that pays
 	# combo or charge has already paid it by the time the squares are read.
+	# Anything it charges lands on the square the piece is standing on.
+	charge_cell = player_pos
 	var spend_note := _run_effects(selected_die.get("effects", []), "spend", _t(selected_die["name"]))
 	var roll_text := _warp_face_label(final_roll) if _is_warp_face(final_roll) else str(final_roll)
 	_set_log(tr("%sダイス：出目 %s%s") % [
@@ -5847,6 +5837,7 @@ func _finish_encounter() -> void:
 	_show_reward()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
+	charge_cell = pos
 	var messages := []
 	var deb := _debuff_at(pos)
 	var burn := _debuff_damage(pos, "pass", selected_die)
@@ -5867,6 +5858,7 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:
+	charge_cell = pos
 	_flash_player_stop()
 	var messages := []
 	var deb := _debuff_at(pos)
@@ -5911,12 +5903,19 @@ func _tile_has_timing(tile: Dictionary, timing: String) -> bool:
 # A counter an effect can scale its amount by. These are the spines of the
 # build concepts — content that names one is content that belongs to that
 # build.
+func _cell_charge(cell: Vector2i) -> int:
+	return int(charge_map.get(cell, 0))
+
+func _set_cell_charge(cell: Vector2i, value: int) -> void:
+	if ring_index_map.has(cell):
+		charge_map[cell] = max(0, value)
+
 func _scale_value(scale: String) -> int:
 	match scale:
 		"combo":
 			return combo
 		"charge":
-			return charge
+			return _cell_charge(charge_cell)
 		"shield":
 			return player_shield
 		"roll":
@@ -5944,7 +5943,7 @@ func _cond_ok(cond: Dictionary) -> bool:
 		return false
 	if cond.has("min_combo") and combo < int(cond["min_combo"]):
 		return false
-	if cond.has("min_charge") and charge < int(cond["min_charge"]):
+	if cond.has("min_charge") and _cell_charge(charge_cell) < int(cond["min_charge"]):
 		return false
 	if cond.has("min_poison") and _enemy_poison() < int(cond["min_poison"]):
 		return false
@@ -6016,7 +6015,10 @@ func _projected_counter(scale: String, die: Dictionary, crossed: int) -> int:
 		"combo":
 			return combo + 1 + _spend_gain(die, "combo")
 		"charge":
-			return charge + _spend_gain(die, "charge")
+			# A die's own 充填-style loading reaches every square, so it is
+			# counted here; charge granted to one square is not, because the
+			# square being drawn is usually not the one being stood on.
+			return _cell_charge(charge_cell) + _spend_gain(die, "charge_all")
 		"shield":
 			return player_shield + _spend_gain(die, "shield")
 		"poison":
@@ -6131,15 +6133,26 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 		"charge":
 			if amount <= 0:
 				return ""
-			charge += amount
-			_spawn_floating_text(player_pos, "チャージ+%d" % amount, Color("#A87CE0"))
-			return "%s：チャージ+%d（今%d）" % [label, amount, charge]
-		"spend_charge":
-			if charge <= 0:
+			_set_cell_charge(charge_cell, _cell_charge(charge_cell) + amount)
+			_spawn_floating_text(charge_cell, "チャージ+%d" % amount, Color("#A87CE0"))
+			return "%s：このマスのチャージ+%d（今%d）" % [
+				label, amount, _cell_charge(charge_cell)]
+		"charge_all":
+			# 照準台 and 充填 load the whole ring rather than the one square
+			# under the piece. With charge living on squares that is what
+			# "溜める" has to mean to be worth anything.
+			if amount <= 0:
 				return ""
-			var spent := charge
-			charge = 0
-			return "%s：チャージ%dを消費" % [label, spent]
+			for cell in ring_cells:
+				_set_cell_charge(cell, _cell_charge(cell) + amount)
+			_refresh_board()
+			return "%s：盤上すべてのマスのチャージ+%d" % [label, amount]
+		"spend_charge":
+			var spent := _cell_charge(charge_cell)
+			if spent <= 0:
+				return ""
+			_set_cell_charge(charge_cell, 0)
+			return "%s：このマスのチャージ%dを消費" % [label, spent]
 		"poison":
 			if amount <= 0:
 				return ""

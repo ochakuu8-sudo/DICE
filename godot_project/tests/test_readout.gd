@@ -61,6 +61,15 @@ func _init() -> void:
 	await run_case(main, "lastblade", "normal", 3, 10, 0, false, 2, 12)
 	# Unhurt, the square is worth nothing — it is a payoff, not a source.
 	await run_case(main, "lastblade", "normal", 3, 0, 0, false, 0, 0)
+	# --- charge now belongs to the square ------------------------------
+	# 蓄積砲台 loads itself on the way in (pass) and fires on the stop, so a
+	# square sitting on 5 turns of charge is walked onto at 6 and pays 4x6.
+	await run_case(main, "battery", "normal", 3, 24, 0, false, 0, 0, 5)
+	# An untouched square that has only banked its own turns still pays.
+	await run_case(main, "battery", "normal", 3, 8, 0, false, 0, 0, 1)
+	# 貫通砲 reads the same square charge but does not empty it.
+	await run_case(main, "lance", "normal", 3, 15, 0, false, 0, 0, 5)
+
 	# 死線 only opens below 35%: 36 max, 20 lost leaves 44%, still shut.
 	await run_case(main, "deathline", "normal", 3, 0, 0, true, 0, 20)
 	# 26 lost leaves 10/36 = 27%, open.
@@ -71,7 +80,7 @@ func _init() -> void:
 
 func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 		combo_start: int = 0, want_blocked: bool = false, armor: int = 0,
-		wounds: int = 0) -> void:
+		wounds: int = 0, cell_charge: int = 0) -> void:
 	main._start_run("knight")
 	main.map_row = 0
 	main.map_col = 0
@@ -98,7 +107,9 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main.actions_left = 2
 	main.combo = combo_start
 	main.player_hp = main.player_max_hp - wounds
-	main.charge = 0
+	main.charge_map = {}
+	if cell_charge > 0:
+		main._set_cell_charge(target, cell_charge)
 
 	# What the first tap says the square is worth.
 	main._refresh_board()
