@@ -1358,6 +1358,31 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "attack", "amount": 3, "scale": "poison"}],
 		"detail": "盛った毒を即座に打点へ変換する。毒を撒く手段とセットで初めて意味を持つ。"},
 
+	# --- 手負い: 失ったHPそのものを資源にする ---
+	# The HP-paying content already existed — 供物台, 罠道, 献身, 血の祭壇 —
+	# with nothing anywhere that paid it back. These close that loop: the
+	# cost those squares charge is the fuel these squares burn. 不屈壁 is
+	# what stops the axis being a straight line into death, and it is
+	# deliberately the same counter, so surviving and killing pull on the
+	# same resource.
+	"lastblade": {"name": "背水刃", "kind": "手負い", "color": Color("#A8324A"), "icon": "slash",
+		"trigger": "stop", "effect": "失ったHPぶんダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 1, "scale": "wounds"}],
+		"detail": "傷が深いほど重い一撃。満身創痍で最大になり、回復すると弱くなる — 癒しを取るかどうかの判断ごと変えてしまうマス。"},
+	"unbowed": {"name": "不屈壁", "kind": "手負い", "color": Color("#8C3A5E"), "icon": "guard",
+		"trigger": "stop", "effect": "失ったHPぶん盾",
+		"effects": [{"on": "stop", "op": "shield", "amount": 1, "scale": "wounds"}],
+		"detail": "追い詰められるほど硬くなる。背水刃と同じ傷を見ているので、殴るか耐えるかを毎ターン選ぶことになる。"},
+	"bloodpath": {"name": "鮮血路", "kind": "手負い", "color": Color("#C2453A"), "icon": "poison",
+		"trigger": "pass", "effect": "通過ごとにHP-1、3ダメージ",
+		"effects": [{"on": "pass", "op": "self_damage", "amount": 1},
+			{"on": "pass", "op": "attack", "amount": 3}],
+		"detail": "走り抜けながら自分を削る。斬撃路より重い代わりに代価を払う — そして払った傷は、手負いのマスがそのまま火力に変える。"},
+	"deathline": {"name": "死線", "kind": "手負い", "color": Color("#6B1F3A"), "icon": "skull",
+		"trigger": "stop", "effect": "HP35%以下なら25ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 25, "cond": {"hp_below": 0.35}}],
+		"detail": "余裕のあるうちは完全な死にマス。本当に後がなくなってから初めて開く、盤上で最も重い一撃。"},
+
 	# --- 補助: 手札と行動そのものを増やす ---
 	"focus": {"name": "集中路", "kind": "補助", "color": Color("#5B8C2A"), "icon": "focus",
 		"trigger": "stop", "effect": "ダイスを1枚引く",
@@ -1630,6 +1655,7 @@ var reward_pool := [
 	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
 	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
+	{"type": "lastblade"}, {"type": "unbowed"}, {"type": "bloodpath"}, {"type": "deathline"},
 	{"type": "focus"}, {"type": "spring"}, {"type": "shock"},
 	{"type": "relay"}, {"type": "windfall"}, {"type": "one_more"}, {"type": "altar"}
 ]
@@ -3002,7 +3028,11 @@ func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictio
 		# applied per contributing row and floored at zero, exactly the way
 		# _damage_enemy applies it, so the board and the enemy agree.
 		if op == "attack":
-			amount = max(0, amount - _enemy_armor())
+			# Mirrors _damage_enemy exactly, floor included. An attack that
+			# was already zero or negative before armour never swings at
+			# all, so it stays at zero rather than being floored up to one.
+			if amount > 0:
+				amount = max(1, amount - _enemy_armor())
 		if not totals.has(op):
 			totals[op] = 0
 			order.append(op)
@@ -3606,6 +3636,7 @@ const TILE_KINDS := [
 	["狙撃", "チャージを溜め、止まって撃ち切る"],
 	["要塞", "盾を集め、盾そのものを打点に変える"],
 	["毒", "毒を盛り、敵のターンごとに削る"],
+	["手負い", "失ったHPを打点と守りに変える"],
 	["移動", "移動そのものを変える"],
 	["補助", "手札・行動・立て直し"],
 ]
@@ -4069,7 +4100,7 @@ func _start_encounter() -> void:
 # one makes some build wrong for that fight, which is what stops a single
 # board from being the answer to the whole run.
 const ENEMY_TRAIT_TEXT := {
-	"armor": "装甲%d：受けるダメージが1回ごとに%d減る",
+	"armor": "装甲%d：受けるダメージが1回ごとに%d減る（最低1は通る）",
 	"regen": "再生%d：毎ターンHPが%d回復する",
 	"thorns": "棘%d：攻撃するたびこちらが%dダメージ受ける",
 }
@@ -5779,6 +5810,11 @@ func _scale_value(scale: String) -> int:
 			return crossed_this_action
 		"poison":
 			return _enemy_poison()
+		"wounds":
+			# HP already lost. The one counter the player starts a fight
+			# with at zero and cannot spend — it only goes up, and the
+			# 手負い squares are what make that climb worth something.
+			return max(0, player_max_hp - player_hp)
 	return 1
 
 # Conditions may only read the player's own state. Gating on something the
@@ -5870,6 +5906,10 @@ func _projected_counter(scale: String, die: Dictionary, crossed: int) -> int:
 			return player_shield + _spend_gain(die, "shield")
 		"poison":
 			return _enemy_poison() + _spend_gain(die, "poison")
+		"wounds":
+			# A die that pays HP to be spent (献身) has already paid it by
+			# the time the square is read, so the preview counts it.
+			return max(0, player_max_hp - player_hp + _spend_gain(die, "self_damage"))
 		"roll":
 			return roll
 		"crossed":
@@ -5948,8 +5988,6 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 			var dealt := _strike_enemy(amount)
 			if dealt > 0:
 				return "%s：%dダメージ" % [label, dealt]
-			if dealt == 0:
-				return "%s：装甲に防がれた" % label
 			return ""
 		"shield":
 			if amount <= 0:
@@ -6089,11 +6127,11 @@ func _gain_shield(amount: int) -> void:
 
 func _damage_enemy(enemy: Dictionary, amount: int) -> int:
 	# 装甲 subtracts from every individual hit, so it punishes builds that
-	# win by many small hits and barely troubles one big one.
-	amount -= int(enemy.get("armor", 0))
-	if amount <= 0:
-		_spawn_enemy_popup("装甲で防いだ", COL_TEXT_SOFT)
-		return 0
+	# win by many small hits and barely troubles one big one — but never
+	# to nothing. A hit that lands for zero makes a whole square, and with
+	# it a whole build, simply not exist against three enemies on the
+	# roster; a floor of 1 keeps the answer "bad here" rather than "void".
+	amount = max(1, amount - int(enemy.get("armor", 0)))
 	enemy["hp"] = int(enemy["hp"]) - amount
 	var thorns := int(enemy.get("thorns", 0))
 	if thorns > 0:

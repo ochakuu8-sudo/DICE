@@ -49,15 +49,29 @@ func _init() -> void:
 	await run_case(main, "heavy", "normal", 3, 7, 0, false, 3)
 	await run_case(main, "bow", "blade", 3, 10, 0, false, 2)
 	await run_case(main, "slash", "tempest", 3, 7, 0, false, 2)
-	# Armour thicker than the hit: the square is worth nothing here, and
-	# says 0 rather than advertising damage it cannot land.
-	await run_case(main, "slash", "normal", 3, 0, 0, false, 5)
+	# Armour thicker than the hit no longer erases it: every strike lands
+	# for at least 1, so the square is bad here rather than non-existent.
+	await run_case(main, "slash", "normal", 3, 1, 0, false, 5)
+	await run_case(main, "slash", "normal", 3, 1, 0, false, 99)
+
+	# --- 手負い: the wounds counter ------------------------------------
+	# 背水刃 pays the HP already lost. At 36 max and 12 hurt, that is 12.
+	await run_case(main, "lastblade", "normal", 3, 12, 0, false, 0, 12)
+	# ...and armour still takes its slice off that one strike.
+	await run_case(main, "lastblade", "normal", 3, 10, 0, false, 2, 12)
+	# Unhurt, the square is worth nothing — it is a payoff, not a source.
+	await run_case(main, "lastblade", "normal", 3, 0, 0, false, 0, 0)
+	# 死線 only opens below 35%: 36 max, 20 lost leaves 44%, still shut.
+	await run_case(main, "deathline", "normal", 3, 0, 0, true, 0, 20)
+	# 26 lost leaves 10/36 = 27%, open.
+	await run_case(main, "deathline", "normal", 3, 25, 0, false, 0, 26)
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
 
 func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
-		combo_start: int = 0, want_blocked: bool = false, armor: int = 0) -> void:
+		combo_start: int = 0, want_blocked: bool = false, armor: int = 0,
+		wounds: int = 0) -> void:
 	main._start_run("knight")
 	main.map_row = 0
 	main.map_col = 0
@@ -83,6 +97,7 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main.dice_rolled = true
 	main.actions_left = 2
 	main.combo = combo_start
+	main.player_hp = main.player_max_hp - wounds
 	main.charge = 0
 
 	# What the first tap says the square is worth.
@@ -91,7 +106,8 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main._refresh_board()
 	var tile: Dictionary = main.tile_defs[tile_id]
 	var readout: Dictionary = main._tile_readout(tile, target)
-	check("%s + %s die%s: gated" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor],
+	check("%s + %s die%s: gated" % [tile_id, die_id,
+		("" if armor == 0 else " vs armor %d" % armor) + ("" if wounds == 0 else " at %d wounds" % wounds)],
 		bool(readout.get("blocked", false)), want_blocked)
 	var previewed: int = 0 if want_blocked else int(readout["text"])
 
@@ -102,5 +118,7 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	await main._on_die_pressed(0)
 	var dealt := hp_before - int(enemy["hp"])
 
-	check("%s + %s die%s: preview" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor], previewed, want)
-	check("%s + %s die%s: dealt" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor], dealt, want)
+	check("%s + %s die%s: preview" % [tile_id, die_id,
+		("" if armor == 0 else " vs armor %d" % armor) + ("" if wounds == 0 else " at %d wounds" % wounds)], previewed, want)
+	check("%s + %s die%s: dealt" % [tile_id, die_id,
+		("" if armor == 0 else " vs armor %d" % armor) + ("" if wounds == 0 else " at %d wounds" % wounds)], dealt, want)
