@@ -6,6 +6,12 @@ extends SceneTree
 
 var fails := 0
 
+func _six_ahead(main) -> Array:
+	var out := []
+	for i in range(1, 7):
+		out.append(main._pos_for_step(main.player_step + i))
+	return out
+
 func check(label: String, ok: bool) -> void:
 	print(("PASS  " if ok else "FAIL  ") + label)
 	if not ok:
@@ -28,6 +34,11 @@ func _init() -> void:
 
 	await main._roll_hand(false)
 	check("dice_rolled after roll", main.dice_rolled)
+	main._refresh_board()
+	check("the lookahead strip is six squares before any die is picked",
+		main.preview_path.size() == 6)
+	check("no route is drawn before any die is picked",
+		main.preview_route.is_empty())
 
 	var start_step: int = main.player_step
 	var actions_before: int = main.actions_left
@@ -41,7 +52,11 @@ func _init() -> void:
 	check("first tap does not discard the die", main.hand.size() == hand_before)
 	check("first tap leaves state playable", main.state == "player")
 	check("preview route is the die's route",
-		main.preview_path.size() > 0 and main.preview_path == main._route_for_roll(int(main.hand[0]["roll"])))
+		main.preview_route.size() > 0 and main.preview_route == main._route_for_roll(int(main.hand[0]["roll"])))
+	check("the lookahead strip stays six squares while considering",
+		main.preview_path.size() == 6)
+	check("the strip is the road ahead, not the die's route",
+		main.preview_path == _six_ahead(main))
 	var text: String = main._die_preview_text(0)
 	check("preview text mentions the landing square", text.find("着地") >= 0)
 	print("    log: " + text)
@@ -66,6 +81,9 @@ func _init() -> void:
 	var expected: Vector2i = main._landing_cell_for(int(main.hand[0]["roll"]))
 	await main._on_die_pressed(0)
 	check("second tap clears the preview", main.preview_die_index == -1)
+	main._refresh_board()
+	check("committing clears the route", main.preview_route.is_empty())
+	check("committing leaves the strip at six", main.preview_path.size() == 6)
 	check("second tap spent the die", main.hand.size() == hand_before - 1)
 	check("second tap landed where the preview promised",
 		main.player_pos == expected or not main._any_enemy_alive() or main.state == "game_over")

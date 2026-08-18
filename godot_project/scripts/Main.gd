@@ -1164,9 +1164,12 @@ var preview_place_pos := Vector2i(-1, -1)
 # preview_die_index is the die currently being *considered*; -1 is "nothing
 # picked yet".
 var preview_die_index := -1
-# A warp face jumps rather than walks, so its preview is a destination and
-# not a route — the "+n steps" labels have to stay off for it.
+# A warp face jumps rather than walks: nothing along the way fires, so its
+# crossed-count is zero however far it travelled.
 var preview_warp := false
+# The considered die's route. Separate from preview_path, which is the fixed
+# six-square strip and does not move with the die.
+var preview_route: Array[Vector2i] = []
 var catalog_return_state := "title"
 var settings_return_state := "title"
 var gallery_return_state := "title"
@@ -2794,12 +2797,11 @@ func _refresh_command() -> void:
 
 func _refresh_board() -> void:
 	_rebuild_preview_path()
+	_rebuild_preview_route()
 	_layout_board_buttons()
 	danger_cells = _telegraphed_cells()
 	_readout_die = _previewed_die()
-	_readout_route = []
-	if not _readout_die.is_empty():
-		_readout_route = preview_path
+	_readout_route = preview_route
 	_readout_crossed = 0 if preview_warp else _readout_route.size()
 	var placing: bool = state == "reward_place"
 	for y in range(BOARD_H):
@@ -2855,9 +2857,7 @@ func _refresh_board() -> void:
 			var on_route: bool = considering and _readout_route.has(pos)
 			var is_landing: bool = on_route and pos == _readout_route[_readout_route.size() - 1]
 
-			# A warp jumps, so counting steps to its destination would be a
-			# lie; every other route entry is genuinely "+n squares from here".
-			if state == "player" and ahead > 0 and not preview_warp:
+			if state == "player" and ahead > 0:
 				step_label.text = "+%d" % ahead
 			if danger_cells.has(pos):
 				border_color = COL_DANGER
@@ -2900,8 +2900,11 @@ func _refresh_board() -> void:
 				else:
 					button.disabled = true
 					dim = true
-			elif state == "player" and ahead <= 0 and not is_player_cell:
-				# Out of reach this turn: still legible, just quieter.
+			elif state == "player" and ahead <= 0 and not is_player_cell and not on_route:
+				# Out of reach this turn: still legible, just quieter. A
+				# square the considered die runs over is never quiet, even
+				# when it sits behind the piece — which is where 逆走 puts
+				# its whole route.
 				dim = true
 
 			icon.set_kind(icon_kind)
@@ -3093,13 +3096,7 @@ func _refresh_ribbon() -> void:
 	if not ribbon_row.visible:
 		_layout_ribbon()
 		return
-	# While a die is being considered the row stops being "the road ahead"
-	# and becomes "the squares this die runs over", so it has to say which.
-	var considered := _previewed_die()
-	if considered.is_empty():
-		ribbon_caption.text = tr("この先のマス　●通過 ■停止")
-	else:
-		ribbon_caption.text = tr("%s で踏むマス　●通過 ■停止") % _t(considered["name"])
+	ribbon_caption.text = tr("この先のマス　●通過 ■停止")
 	var chip: float = clamp((interior - 15.0) / 6.0, 14.0, 28.0)
 	for i in range(preview_path.size()):
 		ribbon_row.add_child(_make_ribbon_chip(preview_path[i], i + 1, chip))
@@ -6495,23 +6492,32 @@ func _start_pos() -> Vector2i:
 		return Vector2i.ZERO
 	return ring_cells[0]
 
-# With no die under consideration this is the plain six-square lookahead —
-# "what is coming up". Once a die is being considered it narrows to that
-# die's actual route, so the lookahead row and the "+n" labels stop
-# describing the road in general and start describing this move.
+# The six squares in front of the piece, always the same six. It is a fixed
+# reference strip — "here is the road" — and deliberately does not follow
+# the die being considered: a strip that resized itself to each die gave the
+# player nothing stable to read the dice against, and for 逆走, whose route
+# runs the other way, it would have had nothing to show at all. The
+# considered die's own route is drawn on the board instead (preview_route),
+# which is where a route belongs.
 func _rebuild_preview_path() -> void:
 	preview_path = []
-	preview_warp = false
 	if state != "player":
-		return
-	var die := _previewed_die()
-	if not die.is_empty():
-		var roll := int(die.get("roll", 0))
-		preview_warp = _is_warp_face(roll)
-		preview_path = _route_for_roll(roll)
 		return
 	for i in range(1, 7):
 		preview_path.append(_pos_for_step(player_step + i))
+
+# The squares the considered die would actually run over, and whether it
+# gets there by jumping. Empty whenever nothing is being considered, which
+# is what makes every readout fall back to a square's resting value.
+func _rebuild_preview_route() -> void:
+	preview_route = []
+	preview_warp = false
+	var die := _previewed_die()
+	if die.is_empty():
+		return
+	var roll := int(die.get("roll", 0))
+	preview_warp = _is_warp_face(roll)
+	preview_route = _route_for_roll(roll)
 
 func _segment_is_recent(a: Vector2i, b: Vector2i) -> bool:
 	if route_path.size() < 2:
