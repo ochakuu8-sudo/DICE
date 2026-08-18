@@ -832,33 +832,26 @@ class BoardView:
 			draw_arc(p, token * 0.5 + 5.0 + pulse * 4.0, 0.0, TAU, 28,
 				Color(1.0, 0.48, 0.09, 0.30 + pulse * 0.35), 3.0 + pulse * 2.0, true)
 
-	# One ring per die still in hand, on the cell that die would land on,
-	# in that die's own colour. This is the whole point of rolling up
-	# front: the choice of die is now a choice of square.
+	# One ring, on the square the die under consideration would land on, in
+	# that die's own colour. Drawing every die's landing at once put three
+	# or four rings on the board before the player had asked anything, and a
+	# board pre-marked with every possible answer is noise rather than a
+	# preview — the marks now appear only for the die actually being asked
+	# about, and the board is clean until then.
 	func _draw_landing_marks() -> void:
 		if main.state != "player" or not main.dice_rolled:
 			return
+		var die: Dictionary = main._previewed_die()
+		if die.is_empty():
+			return
 		var token: float = main._board_token_size()
-		var seen := {}
-		var considered: int = main.preview_die_index
-		for i in range(main.hand.size()):
-			var die: Dictionary = main.hand[i]
-			var roll := int(die.get("roll", 0))
-			var cell: Vector2i = main._landing_cell_for(roll)
-			var ring_index: int = int(seen.get(cell, 0))
-			seen[cell] = ring_index + 1
-			var p: Vector2 = main._board_cell_center(cell)
-			var radius: float = token * 0.5 + 7.0 + float(ring_index) * 6.0
-			var col: Color = main._die_color(die)
-			# Once one die is being considered the others still draw — the
-			# alternatives are half the decision — but they step back so the
-			# one under the question reads first.
-			var is_considered: bool = i == considered
-			var alpha: float = 1.0 if considered < 0 or is_considered else 0.28
-			draw_arc(p, radius, 0.0, TAU, 30, Color(0.16, 0.14, 0.13, alpha), 6.0, true)
-			draw_arc(p, radius, 0.0, TAU, 30, Color(col.r, col.g, col.b, alpha), 4.0, true)
-			if is_considered:
-				draw_arc(p, radius + 5.0, 0.0, TAU, 30, Color("#F2B33D"), 3.0, true)
+		var cell: Vector2i = main._landing_cell_for(int(die.get("roll", 0)))
+		var p: Vector2 = main._board_cell_center(cell)
+		var radius: float = token * 0.5 + 7.0
+		var col: Color = main._die_color(die)
+		draw_arc(p, radius, 0.0, TAU, 30, Color("#2A2320"), 6.0, true)
+		draw_arc(p, radius, 0.0, TAU, 30, col, 4.0, true)
+		draw_arc(p, radius + 5.0, 0.0, TAU, 30, Color("#F2B33D"), 3.0, true)
 
 	# A ring right on the rim of a fouled cell: visible at a glance without
 	# covering the tile's own icon or number.
