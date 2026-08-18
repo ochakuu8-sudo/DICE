@@ -39,11 +39,25 @@ func _init() -> void:
 	# advertising 14 damage it will not deal.
 	await run_case(main, "resonance", "normal", 3, 0, 0, true)
 
+	# --- 装甲 comes off the printed number too --------------------------
+	# The board used to advertise the raw swing against armoured enemies,
+	# and 大斬撃 — authored as two attack rows — paid the armour twice on
+	# top of that. One strike of 7+roll against armour 2 is 8, and that is
+	# what the square, the log and the enemy must all say.
+	await run_case(main, "heavy", "normal", 3, 8, 0, false, 2)
+	await run_case(main, "heavy", "blade", 3, 18, 0, false, 2)
+	await run_case(main, "heavy", "normal", 3, 7, 0, false, 3)
+	await run_case(main, "bow", "blade", 3, 10, 0, false, 2)
+	await run_case(main, "slash", "tempest", 3, 7, 0, false, 2)
+	# Armour thicker than the hit: the square is worth nothing here, and
+	# says 0 rather than advertising damage it cannot land.
+	await run_case(main, "slash", "normal", 3, 0, 0, false, 5)
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
 
 func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
-		combo_start: int = 0, want_blocked: bool = false) -> void:
+		combo_start: int = 0, want_blocked: bool = false, armor: int = 0) -> void:
 	main._start_run("knight")
 	main.map_row = 0
 	main.map_col = 0
@@ -59,6 +73,7 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	# A fixed enemy: the map roll can otherwise hand us the boss, whose regen
 	# ticks during the enemy turn and makes "HP lost" the wrong measurement.
 	main.enemies = [main._make_enemy("かかし", 9999, 0, "cell", "fixed", [])]
+	main.enemies[0]["armor"] = armor
 
 	# Two dice in hand and two actions, so spending one does not end the turn
 	# and hand control to the enemy before we read the damage.
@@ -76,7 +91,7 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main._refresh_board()
 	var tile: Dictionary = main.tile_defs[tile_id]
 	var readout: Dictionary = main._tile_readout(tile, target)
-	check("%s + %s die: gated" % [tile_id, die_id],
+	check("%s + %s die%s: gated" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor],
 		bool(readout.get("blocked", false)), want_blocked)
 	var previewed: int = 0 if want_blocked else int(readout["text"])
 
@@ -87,5 +102,5 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	await main._on_die_pressed(0)
 	var dealt := hp_before - int(enemy["hp"])
 
-	check("%s + %s die: preview" % [tile_id, die_id], previewed, want)
-	check("%s + %s die: dealt" % [tile_id, die_id], dealt, want)
+	check("%s + %s die%s: preview" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor], previewed, want)
+	check("%s + %s die%s: dealt" % [tile_id, die_id, "" if armor == 0 else " vs armor %d" % armor], dealt, want)

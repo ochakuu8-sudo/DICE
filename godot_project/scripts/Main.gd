@@ -1305,8 +1305,11 @@ var tile_defs := {
 		"detail": "溜めを消費せずに撃てる代わりに倍率が低い。何度も撃ちたいならこちら。"},
 	"heavy": {"name": "大斬撃", "kind": "狙撃", "color": Color("#B5302A"), "icon": "slash",
 		"trigger": "stop", "effect": "7ダメージ＋出目ぶん",
-		"effects": [{"on": "stop", "op": "attack", "amount": 7},
-			{"on": "stop", "op": "attack", "amount": 1, "scale": "roll"}],
+		# One row, not two. Written as two attacks it landed as two hits and
+		# paid 装甲 twice over, which its own text ("7ダメージ＋出目ぶん")
+		# never promised. "N plus the roll" already has a first-class form —
+		# the one 突進/慎重 use — and as one row it is one strike.
+		"effects": [{"on": "stop", "op": "attack", "amount": 7, "add_scale": "roll"}],
 		"detail": "踏み込みが深いほど重い。大きい出目のダイスをここに当てるのが剣士の基本。"},
 	"bow": {"name": "射撃台", "kind": "狙撃", "color": Color("#C9971F"), "icon": "bow",
 		"trigger": "stop", "effect": "出目×2ダメージ",
@@ -2994,6 +2997,12 @@ func _tile_readout(tile: Dictionary, pos: Vector2i = Vector2i(-1, -1)) -> Dictio
 			amount += counter * int(eff.get("add_scale_sign", 1))
 		if on_route:
 			amount *= _mod_multiplier(die, op, timing)
+		# 装甲 comes off every individual hit, so a printed attack number
+		# that ignores it promises damage the square cannot deliver. It is
+		# applied per contributing row and floored at zero, exactly the way
+		# _damage_enemy applies it, so the board and the enemy agree.
+		if op == "attack":
+			amount = max(0, amount - _enemy_armor())
 		if not totals.has(op):
 			totals[op] = 0
 			order.append(op)
@@ -5932,8 +5941,15 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 		"attack":
 			if amount <= 0:
 				return ""
-			if _strike_enemy(amount):
-				return "%s：%dダメージ" % [label, amount]
+			# Reports the HP that came off rather than the number swung.
+			# The two differ by 装甲, and the popup over the enemy has
+			# always shown the honest one — the log used to disagree
+			# with it.
+			var dealt := _strike_enemy(amount)
+			if dealt > 0:
+				return "%s：%dダメージ" % [label, dealt]
+			if dealt == 0:
+				return "%s：装甲に防がれた" % label
 			return ""
 		"shield":
 			if amount <= 0:
@@ -6008,6 +6024,12 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 			return "%s：行動+%d" % [label, amount]
 	return ""
 
+# The armour the square's damage will actually have to get through. Zero
+# when nothing is standing there — on the reward screen, for instance.
+func _enemy_armor() -> int:
+	var target := _living_enemy()
+	return 0 if target.is_empty() else int(target.get("armor", 0))
+
 func _living_enemy() -> Dictionary:
 	for enemy in enemies:
 		if int(enemy["hp"]) > 0:
@@ -6018,12 +6040,13 @@ func _enemy_poison() -> int:
 	var target := _living_enemy()
 	return 0 if target.is_empty() else int(target.get("poison", 0))
 
-func _strike_enemy(amount: int) -> bool:
+# Returns the HP actually taken off, which is not the amount swung: 装甲
+# eats a slice of every individual hit. -1 means there was nothing to hit.
+func _strike_enemy(amount: int) -> int:
 	var target := _living_enemy()
 	if target.is_empty():
-		return false
-	_damage_enemy(target, amount)
-	return true
+		return -1
+	return _damage_enemy(target, amount)
 
 # --- state changes, each one visible the moment it happens --------------
 
@@ -6064,13 +6087,13 @@ func _gain_shield(amount: int) -> void:
 	sfx.emit("shield")
 	_refresh_top()
 
-func _damage_enemy(enemy: Dictionary, amount: int) -> void:
+func _damage_enemy(enemy: Dictionary, amount: int) -> int:
 	# 装甲 subtracts from every individual hit, so it punishes builds that
 	# win by many small hits and barely troubles one big one.
 	amount -= int(enemy.get("armor", 0))
 	if amount <= 0:
 		_spawn_enemy_popup("装甲で防いだ", COL_TEXT_SOFT)
-		return
+		return 0
 	enemy["hp"] = int(enemy["hp"]) - amount
 	var thorns := int(enemy.get("thorns", 0))
 	if thorns > 0:
@@ -6085,6 +6108,7 @@ func _damage_enemy(enemy: Dictionary, amount: int) -> void:
 	if amount >= 6:
 		_shake(zone_enemy, 4.0)
 	_refresh_enemy()
+	return amount
 
 func _cleanup_dead_enemies() -> void:
 	var survivors := []
