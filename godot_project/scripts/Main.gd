@@ -1508,7 +1508,9 @@ var tile_defs := {
 #   damage / on   HP lost on entering ("pass") or on ending there ("stop")
 #   nullify       the square underneath does not fire at all
 #   halt          entering ends the move here, whatever the die rolled
-#   clear_on      "stop" / "halt" — when the square shakes the debuff off
+#   clear_on      when the square shakes the debuff off: "pass" (walked
+#                 over), "stop" (ended on) or "halt" (halted by). One
+#                 reason, or a list of them
 #
 # "mark" is the one character the board prints in the corner of a fouled
 # square. It has to be one character: the square is already carrying its
@@ -1535,11 +1537,19 @@ var temp_defs := {
 	# 凍結 costs no HP at all. It takes the square away — which against a
 	# board the player spent the whole run building is the more expensive
 	# of the two things an enemy can do to them.
+	#
+	# It melts under any foot, walking or landing, and that is the whole of
+	# the choice it poses. Sweeping over it costs the walk nothing it was
+	# not already spending, so a long roll clears the ice on its way past;
+	# landing on it clears the ice too, but the landing itself buys nothing,
+	# which is a whole action spent on thawing one square. The ice is
+	# therefore never a wall, only a bill — and the player picks which of
+	# the two prices to pay.
 	"freeze": {"name": "凍結", "icon": "shock", "color": Color("#4E9BD6"), "mark": "氷",
-		"nullify": true, "clear_on": "stop",
-		"trigger": "both", "effect": "マスの効果を無効化。止まると溶ける",
-		"desc": "凍結: そのマスの効果が出ない。止まれば溶ける",
-		"detail": "凍りついたマスは、通過効果も停止効果も一切発動しない。ダメージは受けないが、盛り上げた盤面の一番おいしい一枚を黙らせてくる。そこに止まると溶けて、次からはまた働く — 効果を1回捨てて直す形になる。かけた敵を倒しても消える。"},
+		"nullify": true, "clear_on": ["pass", "stop"],
+		"trigger": "both", "effect": "マスの効果を無効化。一度踏めば溶ける",
+		"desc": "凍結: そのマスの効果が出ない。通っても止まっても溶ける",
+		"detail": "凍りついたマスは、通過効果も停止効果も一切発動しない。ダメージは受けないが、盛り上げた盤面の一番おいしい一枚を黙らせてくる。一度踏めば溶けるので、走り抜けざまに割ってしまえば次からはまた働く。直接止まって溶かすこともできるが、その着地ではマスが働かないので、行動を1回まるごと氷を割るために使うことになる。かけた敵を倒しても消える。"},
 
 	# 茨 spends the player's distance instead of their HP. It is the only
 	# debuff that makes the preview's landing square move, which is why the
@@ -1583,11 +1593,16 @@ func _debuff_nullifies(pos: Vector2i) -> bool:
 func _debuff_halts(pos: Vector2i) -> bool:
 	return bool(_debuff_at(pos).get("halt", false))
 
-# A debuff that has done its job gets shaken off. Returns the name it went
-# by so the log can say so.
+# A debuff that has done its job gets shaken off. "clear_on" is one reason
+# or a list of them, so a debuff that comes off two different ways — 凍結
+# melts whether it is walked over or landed on — stays a row rather than a
+# branch. Returns the name it went by so the log can say so.
 func _consume_debuff(pos: Vector2i, reason: String) -> String:
 	var deb := _debuff_at(pos)
-	if deb.is_empty() or str(deb.get("clear_on", "")) != reason:
+	if deb.is_empty():
+		return ""
+	var reasons = deb.get("clear_on", "")
+	if not (reasons if reasons is Array else [reasons]).has(reason):
 		return ""
 	temp_board[pos.y][pos.x] = "none"
 	_spawn_floating_text(pos, "解除", COL_HP)
@@ -5688,7 +5703,9 @@ func _die_preview_text(index: int) -> String:
 	# already folded in — the number here is the number that will be dealt.
 	var tile: Dictionary = tile_defs[str(permanent_board[landing.y][landing.x])]
 	var stop_note := "停止効果なし"
-	if _tile_has_timing(tile, "stop"):
+	if _debuff_nullifies(landing):
+		stop_note = "%sで不発。着地で溶かす" % _t(_debuff_at(landing)["name"])
+	elif _tile_has_timing(tile, "stop"):
 		stop_note = _t(tile["effect"])
 		var readout := _tile_readout(tile, landing)
 		if bool(readout.get("blocked", false)):
@@ -5734,6 +5751,21 @@ func _die_preview_text(index: int) -> String:
 		if unobstructed > route.size():
 			parts.append("⚠ %sで停止（残り%d歩を失う）" % [
 				_t(_debuff_at(landing)["name"]), unobstructed - route.size()])
+	# Every frozen square on the route comes off it — the ones walked over
+	# melt under the foot, the one landed on melts under the landing — so a
+	# route worth nothing in damage can still be the one that clears the
+	# ice. The board says where with its ×; a player weighing two dice is
+	# asking how many.
+	var thaws := {}
+	var counted := {}
+	for cell in route:
+		if counted.has(cell) or not _debuff_nullifies(cell):
+			continue
+		counted[cell] = true
+		var deb_name := _t(_debuff_at(cell)["name"])
+		thaws[deb_name] = int(thaws.get(deb_name, 0)) + 1
+	for deb_name in thaws.keys():
+		parts.append("%s%d枚を溶かす" % [str(deb_name), int(thaws[deb_name])])
 	if danger_cells.has(landing):
 		parts.append("⚠ 敵の攻撃予告マス（%dダメージ）" % _telegraph_damage())
 	if crossed > 0:
@@ -5851,10 +5883,19 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	# A frozen square is not there as far as the walk is concerned.
 	if _debuff_nullifies(pos):
 		messages.append("%s：%sで効果が出ない" % [_t(tile["name"]), _t(deb["name"])])
-		return " ".join(messages)
-	var effect := _run_effects(tile.get("effects", []), "pass", _t(tile["name"]))
-	if effect != "":
-		messages.append(effect)
+	else:
+		var effect := _run_effects(tile.get("effects", []), "pass", _t(tile["name"]))
+		if effect != "":
+			messages.append(effect)
+	# 凍結 melts under a passing foot as well as a landing one — but only
+	# where the foot really is passing. steps_left is already decremented
+	# for this square, so zero means the action ends here, and there the
+	# stop half is what melts it (see _resolve_stop_tile): thawing it now
+	# would hand that landing the stop effect the ice is supposed to cost.
+	if steps_left > 0:
+		var melted := _consume_debuff(pos, "pass")
+		if melted != "":
+			messages.append("%sを踏み割った" % melted)
 	return " ".join(messages)
 
 func _resolve_stop_tile(pos: Vector2i) -> String:

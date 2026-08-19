@@ -54,8 +54,9 @@ func _init() -> void:
 	# Roll 5 into a briar at +2: the move ends at +2, three steps lost.
 	await run_case(main, "briar", [2], 5, "normal", 0, 2)
 
-	# --- 凍結: takes the square ----------------------------------------
+	# --- 凍結: takes the square, and comes off under any foot ----------
 	await freeze_case(main)
+	await freeze_walked_case(main)
 
 	# --- a trampled briar is gone --------------------------------------
 	await briar_consumed_case(main)
@@ -123,6 +124,11 @@ func _promised_hp_loss(main, index: int) -> int:
 			total += main._debuff_damage(route[i], "stop", die)
 	return total
 
+# 凍結 landed on: the landing pays nothing and melts the ice, so a whole
+# action goes on thawing one square. The order this resolves in is the point
+# — the walk enters the landing square before the action stops on it, so a
+# thaw applied to the entering foot would hand the landing the very effect
+# the ice is supposed to cost.
 func freeze_case(main) -> void:
 	_reset(main)
 	# A 砦 (盾+6 on stop) three squares ahead, frozen solid.
@@ -141,6 +147,8 @@ func freeze_case(main) -> void:
 	var readout: Dictionary = main._tile_readout(main.tile_defs["fort"], target)
 	check("frozen square reads as blocked", bool(readout.get("blocked", false)), true)
 	check("frozen square prints ×", str(readout["text"]), "×")
+	check("the preview promises the thaw",
+		main._die_preview_text(0).contains("溶かす"), true)
 
 	var shield_before: int = main.player_shield
 	await main._on_die_pressed(0)
@@ -161,6 +169,46 @@ func freeze_case(main) -> void:
 	main.preview_die_index = 0
 	await main._on_die_pressed(0)
 	check("thawed 砦 pays out again", main.player_shield, 6)
+
+# 凍結 walked over: the pass gets nothing either, but the ice breaks under
+# the foot, so the square is working again from the next time anything
+# touches it. This is the cheap way to clear it — the walk was happening
+# anyway — and it is what stops the ice being a square the player has to
+# spend an action on.
+func freeze_walked_case(main) -> void:
+	_reset(main)
+	# 斬撃路 (通過ごとに3ダメージ) two squares ahead, iced over, and a roll
+	# of 5 that runs straight past it.
+	var road: Vector2i = main._pos_for_step(main.player_step + 2)
+	main.permanent_board[road.y][road.x] = "slash"
+	main.temp_board[road.y][road.x] = "freeze"
+	_arm(main, 5)
+
+	var hp_before: int = int(main.enemies[0]["hp"])
+	await main._on_die_pressed(0)
+	check("walking over a frozen 斬撃路 deals nothing",
+		int(main.enemies[0]["hp"]), hp_before)
+	check("passing over it melted it",
+		str(main.temp_board[road.y][road.x]), "none")
+
+	# Same square, same roll, now that the ice is off it.
+	main.player_step = main._track_index(road) - 2
+	main.player_pos = main._pos_for_step(main.player_step)
+	_arm(main, 5)
+	hp_before = int(main.enemies[0]["hp"])
+	await main._on_die_pressed(0)
+	check("a thawed 斬撃路 cuts again",
+		hp_before - int(main.enemies[0]["hp"]), 3)
+
+# One 標準 die on the given face, ready to be committed, with a spare in
+# hand so the action does not roll straight into the enemy's turn.
+func _arm(main, roll: int) -> void:
+	main.hand = [main._make_die("normal"), main._make_die("normal")]
+	main.hand[0]["roll"] = roll
+	main.hand[1]["roll"] = 1
+	main.dice_rolled = true
+	main.actions_left = 2
+	main.preview_die_index = 0
 
 func briar_consumed_case(main) -> void:
 	_reset(main)
