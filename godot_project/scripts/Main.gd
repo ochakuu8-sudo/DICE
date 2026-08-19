@@ -128,6 +128,11 @@ const BEAT_PHASE := 0.6
 const THROW_FRAMES := 7
 const THROW_FRAME_TIME := 0.05
 const THROW_SETTLE := 0.07
+# A deal plays that same throw once per die instead of once for the hand, so
+# it runs the same seven frames at a faster clock: the die still tumbles and
+# lands the way it does on a reroll, but three of them in a row take about as
+# long as one reroll does rather than three times as long.
+const DEAL_FRAME_TIME := 0.03
 
 # Backdrop: a warm lit ground that reddens as the run climbs toward the
 # boss. Same "the run has a temperature" idea as before, moved into the
@@ -5608,14 +5613,14 @@ func _deal_hand(indices: Array, token: int) -> void:
 		if card == null:
 			continue
 		card.visible = true
-		if not await _throw_faces([i], token):
+		if not await _throw_faces([i], token, DEAL_FRAME_TIME):
 			return
 
 # Throws a set of faces and waits for them to land: they tumble together for
 # a few frames, then settle in turn, so results land as separate beats
 # instead of one indistinguishable flicker. Returns false if the hand was
 # rebuilt underneath it, which is the caller's cue to stop.
-func _throw_faces(indices: Array, token: int) -> bool:
+func _throw_faces(indices: Array, token: int, frame_time: float = THROW_FRAME_TIME) -> bool:
 	var faces := {}
 	var order := {}
 	for raw in indices:
@@ -5641,10 +5646,12 @@ func _throw_faces(indices: Array, token: int) -> bool:
 			face.rotation = deg_to_rad(rng.randf_range(-16.0, 16.0)) \
 				* (1.0 - float(step) / float(THROW_FRAMES))
 			face.queue_redraw()
-		await get_tree().create_timer(THROW_FRAME_TIME).timeout
+		await get_tree().create_timer(frame_time).timeout
+	var remaining := faces.size()
 	for i in faces.keys():
 		if token != throw_token:
 			return false
+		remaining -= 1
 		var settled: DiceFace = faces[i]
 		if not is_instance_valid(settled):
 			continue
@@ -5653,7 +5660,11 @@ func _throw_faces(indices: Array, token: int) -> bool:
 		settled.queue_redraw()
 		_punch(settled, 1.25)
 		sfx.emit("step")
-		await get_tree().create_timer(THROW_SETTLE).timeout
+		# The pause separates one landing from the next, so there is none to
+		# spend after the last: on a deal that trailing wait was dead air
+		# between a die landing and the next card even appearing.
+		if remaining > 0:
+			await get_tree().create_timer(THROW_SETTLE).timeout
 	return true
 
 # A face shows a value three ways at once — the pip count, the inverted fill
