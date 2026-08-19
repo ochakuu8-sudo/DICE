@@ -131,5 +131,30 @@ func _init() -> void:
 		check("reroll clears the considered die", main.preview_die_index == -1)
 		check("a reroll spends the turn's reroll", main.rerolls_left == 0)
 
+	# --- and the carry-over survives a real enemy turn, not just a direct
+	# --- call to the turn boundary ---
+	if main.state == "player" and main.hand.size() > 0:
+		main.rerolls_left = 0
+		var before: Array = _rolls(main)
+		main._on_end_turn_pressed()
+		var settled: bool = await _wait_for_player_turn(main)
+		if settled:
+			check("the enemy's turn does not re-throw the hand",
+				_rolls(main).slice(0, before.size()) == before)
+			check("every face is still a face this die can roll",
+				_faces_are_real(main))
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
+
+# The enemy turn is fired, not awaited, so the only way back to the player
+# is to let frames run until it hands control over. Gives up rather than
+# hanging if the fight ended instead.
+func _wait_for_player_turn(main) -> bool:
+	for i in range(1200):
+		await (main.get_tree() as SceneTree).process_frame
+		if main.state == "player":
+			return true
+		if main.state == "game_over" or main.state == "reward_select" or main.state == "map":
+			return false
+	return false
