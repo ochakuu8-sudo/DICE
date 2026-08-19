@@ -20,15 +20,16 @@ OUT = os.path.join(ART, "MANIFEST.md")
 # How each category is authored. Sizes are the frame the art is fitted into
 # at the 1024x576 design size, doubled for authoring headroom.
 KINDS = {
-    "stage": ("立ち絵", "縦長 / 透過PNG", "600 x 900 以上（2:3 〜 3:5）"),
+    "stage": ("立ち絵", "縦長 / 透過PNG", "800 x 1200（2:3）"),
     "cg":    ("全画面CG", "16:9 / 不透過", "1920 x 1080"),
     "bg":    ("背景", "16:9 / 不透過", "1920 x 1080"),
-    "face":  ("マップ顔", "正方形 / 透過PNG", "256 x 256"),
+    "face":  ("マップ顔", "透過PNG / 中央帯のみ表示", "256 x 256（主題は中央 256x200 に）"),
+    "ui":    ("UI部品", "透過PNG", "個別（PIPELINE.md 参照）"),
 }
 
 # Priority tiers. P0 is the line below which the game shows a magenta
 # placeholder to the player; everything else degrades to something real.
-P0 = "P0"  # 無いと画面が壊れて見える
+P0 = "P0"  # 無いと画面が壊れて見える（＝マゼンタが出る）
 P1 = "P1"  # 商品として要る
 P2 = "P2"  # あると良い
 
@@ -84,6 +85,13 @@ def rows_for(text):
     """Every slot, as (kind, stem, priority, what it is)."""
     out = []
 
+    # --- the wordmark ---------------------------------------------------
+    # Falls back to the game's name in the body font, so it breaks nothing —
+    # and it is the first image anyone sees of the game, so it is P1 anyway.
+    out.append(("ui", "logo_default", P1,
+                "タイトルロゴ。**ストアページの第一印象そのもの**。"
+                "横長・透過PNG / 目安 900 x 260"))
+
     # --- backgrounds ---------------------------------------------------
     # Backgrounds never show a placeholder — they fall through to the drawn
     # table top — so none of them are P0 no matter how much they are wanted.
@@ -113,14 +121,14 @@ def rows_for(text):
     for art, name in roster:
         out.append(("stage", f"{art}_idle", P0, f"「{name}」の立ち絵・通常"))
     for art, name in roster:
-        out.append(("cg", f"{art}_win", P0, f"「{name}」に勝利したときのCG"))
-        out.append(("cg", f"{art}_lose", P0, f"「{name}」に敗北したときのCG"))
+        out.append(("cg", f"{art}_win", P2, f"「{name}」に勝利したときのCG"))
+        out.append(("cg", f"{art}_lose", P2, f"「{name}」に敗北したときのCG"))
     for art, name in roster:
         out.append(("face", f"{art}_node", P1, f"「{name}」のマップ顔"))
     for art, name in roster:
         for frame in hit_frames("stage", art, "hit"):
             out.append(("stage", frame, P2, f"「{name}」被弾アニメ"))
-        out.append(("stage", f"{art}_down", P2, f"「{name}」瀕死"))
+        out.append(("stage", f"{art}_down", P2, f"「{name}」瀕死（HP35%以下）"))
 
     # --- everything else -----------------------------------------------
     for key, label in node_kinds(text):

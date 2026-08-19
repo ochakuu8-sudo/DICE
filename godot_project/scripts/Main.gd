@@ -70,12 +70,18 @@ const ART_KINDS := {
 	# The standing figure on the battle stage. Tall — roughly 3:4 or
 	# narrower — because it shares the screen with the board.
 	"stage": {"dir": "stage", "fps": 10.0, "placeholder": true},
-	# Full-frame scene art shown when a fight is decided. 16:9.
-	"cg": {"dir": "cg", "fps": 8.0, "placeholder": true},
+	# Full-frame scene art shown when a fight is decided. 16:9. No
+	# placeholder: a fight with no picture drawn for it plays no scene at
+	# all (see _play_scene), so a missing one is never on screen.
+	"cg": {"dir": "cg", "fps": 8.0, "placeholder": false},
 	# Behind everything. 16:9. Falls back to the drawn table top.
 	"bg": {"dir": "bg", "fps": 6.0, "placeholder": false},
 	# Square crops for the map nodes. Falls back to the vector icon.
 	"face": {"dir": "face", "fps": 6.0, "placeholder": false},
+	# Fixed furniture rather than a character: the wordmark, and anything
+	# else the interface itself is made of. Falls back to type, so the game
+	# is playable and legible with none of it.
+	"ui": {"dir": "ui", "fps": 6.0, "placeholder": false},
 }
 # States a stage actor can be in. "hit" is the one that plays on being
 # struck; the others idle.
@@ -1073,6 +1079,9 @@ var intent_panel: PanelContainer
 var intent_icon: IconGlyph
 var intent_label: Label
 var intent_note: Label
+var place_panel: PanelContainer
+var place_body: VBoxContainer
+var _place_card_type := ""
 
 var board_view: BoardView
 var token_view: BoardView
@@ -1097,11 +1106,15 @@ var banner: PanelContainer
 var banner_label: Label
 
 var overlay: Control
+var overlay_shade: ColorRect
+var overlay_scroll: ScrollContainer
 var overlay_card: VBoxContainer
+var overlay_logo: SpriteView
 var overlay_title: Label
 var overlay_body: Label
 var overlay_art: SpriteView
 var overlay_list: VBoxContainer
+var overlay_footer: VBoxContainer
 
 # The full-frame scene layer: one image over everything, dismissed by a
 # tap. It is its own layer rather than a mode of the overlay because it
@@ -1900,6 +1913,7 @@ func _build_ui() -> void:
 	zone_enemy.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(zone_enemy)
 	_build_enemy_zone()
+	_build_place_panel()
 
 	zone_board = Control.new()
 	zone_board.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2113,7 +2127,12 @@ func _build_enemy_zone() -> void:
 	enemy_sprite = SpriteView.new()
 	enemy_sprite.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	enemy_sprite.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	enemy_sprite.custom_minimum_size = Vector2(0, 120)
+	# The dossier below this grows with the enemy's traits, and a VBox pays
+	# for that out of whatever is set to expand — which is the figure. The
+	# result was that the boss, the one enemy worth looking at, came out
+	# 234x290 where an ordinary one got 234x382. The floor is what stops
+	# the most interesting character being the smallest.
+	enemy_sprite.custom_minimum_size = Vector2(0, 236)
 	enemy_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(enemy_sprite)
 
@@ -2171,7 +2190,55 @@ func _build_enemy_zone() -> void:
 	# was two words per line.
 	intent_note = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT)
 	intent_note.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Bounded, so a boss with three traits cannot keep growing this column
+	# at the figure's expense. What does not fit is the tail of a list the
+	# 図鑑 carries in full.
+	intent_note.clip_text = true
+	intent_note.max_lines_visible = 5
 	col.add_child(intent_note)
+
+# The column the enemy stands in is empty from the moment a fight ends until
+# the next one starts — which is precisely when the player is being asked to
+# choose where a square goes. Rather than leave a third of the screen blank
+# on that screen, it carries the square being placed: the same row the 図鑑
+# draws, so what is being placed is readable while the board is being read.
+func _build_place_panel() -> void:
+	place_panel = PanelContainer.new()
+	place_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	place_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 8, 8))
+	place_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_panel.visible = false
+	zone_enemy.add_child(place_panel)
+
+	place_body = VBoxContainer.new()
+	place_body.alignment = BoxContainer.ALIGNMENT_BEGIN
+	place_body.add_theme_constant_override("separation", 8)
+	place_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	place_panel.add_child(place_body)
+
+func _refresh_place_panel() -> void:
+	if place_panel == null:
+		return
+	var placing: bool = state == "reward_place" and pending_reward_type != "" \
+		and tile_defs.has(pending_reward_type)
+	place_panel.visible = placing
+	if not placing:
+		_place_card_type = ""
+		return
+	if _place_card_type == pending_reward_type:
+		return
+	_place_card_type = pending_reward_type
+	_clear_children(place_body)
+
+	var heading := _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	heading.text = tr("置くマス")
+	heading.autowrap_mode = TextServer.AUTOWRAP_OFF
+	place_body.add_child(heading)
+	place_body.add_child(_make_catalog_row(tile_defs[pending_reward_type]))
+
+	var note := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
+	note.text = tr("コースのマスをタップすると、ここに置き換わります。始点だけは置けません。")
+	place_body.add_child(note)
 
 func _build_board_zone() -> void:
 	board_view = BoardView.new()
@@ -2288,7 +2355,7 @@ func _build_board_zone() -> void:
 	banner.visible = false
 	zone_board.add_child(banner)
 	banner_label = _make_label(FS_BODY, COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	banner_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	banner_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	banner.add_child(banner_label)
 
 func _build_hand_zone() -> void:
@@ -2364,7 +2431,7 @@ func _build_log_zone() -> void:
 	log_label.set_anchors_preset(Control.PRESET_FULL_RECT)
 	log_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	log_label.clip_text = true
-	log_label.max_lines_visible = 2
+	log_label.max_lines_visible = 3
 	zone_log.add_child(log_label)
 
 func _build_overlay() -> void:
@@ -2373,11 +2440,15 @@ func _build_overlay() -> void:
 	overlay.visible = false
 	add_child(overlay)
 
-	var shade := ColorRect.new()
-	shade.color = Color(0.20, 0.15, 0.10, 0.30)
-	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
-	shade.mouse_filter = Control.MOUSE_FILTER_STOP
-	overlay.add_child(shade)
+	# The card is a modal, and behind it is a bright, busy screen: a warm
+	# 30% wash left the board and the figures reading at nearly full
+	# strength, so the card looked like a panel someone had dropped on a
+	# live game rather than a screen of its own.
+	overlay_shade = ColorRect.new()
+	overlay_shade.color = Color(0.16, 0.12, 0.08, 0.62)
+	overlay_shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay_shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(overlay_shade)
 
 	# A CenterContainer sizes the card from its content instead of the card
 	# being measured by hand — hand-measuring a panel whose labels wrap is
@@ -2397,6 +2468,16 @@ func _build_overlay() -> void:
 	overlay_card.add_theme_constant_override("separation", 10)
 	card.add_child(overlay_card)
 
+	# The wordmark, when one has been drawn. Everything else on this card is
+	# a sentence; the title of the game is a piece of art, and a store page
+	# whose first image is the game's name set in the body font reads as
+	# unfinished before a single screenshot is looked at.
+	overlay_logo = SpriteView.new()
+	overlay_logo.visible = false
+	overlay_logo.custom_minimum_size = Vector2(0, 108)
+	overlay_logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay_card.add_child(overlay_logo)
+
 	overlay_title = _make_label(FS_TITLE, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
 	overlay_card.add_child(overlay_title)
 
@@ -2412,9 +2493,25 @@ func _build_overlay() -> void:
 	overlay_art.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay_card.add_child(overlay_art)
 
+	# Every overlay's options live inside one scroll rather than each screen
+	# remembering to bring its own. A card taller than the window used to be
+	# centred and clipped at both ends — which is how the 図鑑 shipped with
+	# its 閉じる button cut off by the bottom of the screen.
+	overlay_scroll = ScrollContainer.new()
+	overlay_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	overlay_card.add_child(overlay_scroll)
+
 	overlay_list = VBoxContainer.new()
 	overlay_list.add_theme_constant_override("separation", 10)
-	overlay_card.add_child(overlay_list)
+	overlay_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	overlay_scroll.add_child(overlay_list)
+
+	# Outside the scroll: the way out. The 図鑑 is seventy rows long, and a
+	# close button that scrolls away with them is a close button the player
+	# has to go looking for.
+	overlay_footer = VBoxContainer.new()
+	overlay_footer.add_theme_constant_override("separation", 8)
+	overlay_card.add_child(overlay_footer)
 
 # The scene layer sits above everything, including the overlay card, so a
 # resolution scene can play *into* the result screen rather than beside it.
@@ -2546,7 +2643,12 @@ func _layout_screen() -> void:
 
 		# Centre: the game.
 		var cmd_h := 42.0
-		var log_h := 32.0
+		# Three lines, not two. The line this strip exists to print is the
+		# die preview — the whole of "what happens if I spend this" — and at
+		# this column width that sentence runs to three lines. Two lines of
+		# room clipped it mid-word, which made the one piece of text the
+		# game most needs read unreadable.
+		var log_h := 54.0
 		var hand_h: float = clamp(body_h * 0.21, 104.0, 136.0)
 		var board_h: float = max(body_h - hand_h - cmd_h - log_h - gap * 3.0, 180.0)
 		var y: float = margin
@@ -2565,7 +2667,7 @@ func _layout_screen() -> void:
 		var top_h := 74.0
 		var stage_h: float = clamp(vp.y * 0.24, 150.0, 220.0)
 		var cmd_h := 46.0
-		var log_h := 34.0
+		var log_h := 54.0
 		var hand_h: float = clamp(vp.y * 0.19, 128.0, 168.0)
 		var used: float = top_h + stage_h + hand_h + cmd_h + log_h + gap * 5.0 + margin * 2.0
 		var board_h: float = max(vp.y - used, 200.0)
@@ -2594,6 +2696,10 @@ func _layout_screen() -> void:
 	if overlay != null:
 		overlay.size = vp
 		_layout_overlay()
+	# The marker's position is a point on the board, cached in screen space.
+	# Every layout pass moves the board under it, so a window resize used to
+	# leave the piece sitting off the road until the next time it walked.
+	_resync_player_visual()
 	if scene_layer != null:
 		scene_layer.position = Vector2.ZERO
 		scene_layer.size = vp
@@ -2612,7 +2718,12 @@ func _layout_overlay() -> void:
 	if card == null:
 		return
 	var vp := get_viewport_rect().size
-	var card_w: float = min(vp.x - 28.0, 420.0)
+	# 420 was the width of a phone held upright, and it survived the move to
+	# a 16:9 frame — which left roughly 300 dead pixels down each side of
+	# every reward, shop, event, catalogue and result screen, and wrapped
+	# two lines of body text into four. The card now follows the window and
+	# only stops growing where a line of text gets too long to track.
+	var card_w: float = clamp(vp.x - 96.0, 320.0, 660.0)
 	card.custom_minimum_size = Vector2(card_w, 0)
 	# Wrapping labels need a width to wrap against before they can report a
 	# height, so every wrapping child is told the card's inner width.
@@ -2620,6 +2731,20 @@ func _layout_overlay() -> void:
 	for node in [overlay_title, overlay_body, overlay_list]:
 		if node != null:
 			node.custom_minimum_size = Vector2(inner, node.custom_minimum_size.y)
+	if overlay_scroll == null:
+		return
+	# What is left for the options once the fixed parts of the card have
+	# taken their share. The list scrolls inside that rather than pushing
+	# the card off the top and bottom of the screen.
+	var reserved := 52.0
+	for node in [overlay_title, overlay_body, overlay_footer]:
+		if node != null and node.visible:
+			reserved += node.get_combined_minimum_size().y
+	if overlay_art != null and overlay_art.visible:
+		reserved += overlay_art.custom_minimum_size.y
+	var room: float = max(vp.y - 24.0 - reserved, 140.0)
+	var wanted: float = overlay_list.get_combined_minimum_size().y
+	overlay_scroll.custom_minimum_size = Vector2(inner, min(wanted, room))
 
 func _layout_board_buttons() -> void:
 	if board_view == null or cell_buttons.is_empty():
@@ -2640,7 +2765,16 @@ func _layout_board_buttons() -> void:
 	if token_view != null:
 		token_view.queue_redraw()
 	if banner != null and zone_board != null:
+		# Inside the ring, never across it. The banner used to be centred on
+		# the whole board zone at whatever width its text wanted, which on a
+		# short board meant a gold bar lying over the squares it was asking
+		# the player to look at. It now wraps to the ring's interior — the
+		# same空 space the lookahead strip uses, and the two are never up at
+		# once.
+		var interior: float = max(_board_spacing() * float(BOARD_W - 2) - _board_token_size() - 16.0, 120.0)
+		banner_label.custom_minimum_size = Vector2(interior, 0)
 		var wanted: Vector2 = banner.get_combined_minimum_size()
+		wanted.x = min(wanted.x, zone_board.size.x)
 		banner.size = wanted
 		banner.position = ((zone_board.size - wanted) * 0.5).floor()
 	board_view.queue_redraw()
@@ -2761,7 +2895,16 @@ var _readout_die: Dictionary = {}
 var _readout_route: Array[Vector2i] = []
 var _readout_crossed := 0
 
+# How many enemy popups are currently in flight, so a burst of them fans out
+# instead of piling on one spot. Reset once the screen has been quiet.
+var _popup_depth := 0
+var _popup_clear_timer := 0.0
+
 func _process(delta: float) -> void:
+	if _popup_clear_timer > 0.0:
+		_popup_clear_timer -= delta
+		if _popup_clear_timer <= 0.0:
+			_popup_depth = 0
 	if cell_info_timer > 0.0:
 		cell_info_timer -= delta
 		if cell_info_timer <= 0.0 and log_label != null:
@@ -2895,6 +3038,7 @@ func _refresh_hero_stage() -> void:
 		["down", "idle"] if hurt else ["idle"])
 
 func _refresh_enemy() -> void:
+	_refresh_place_panel()
 	var show: bool = state != "title" and not enemies.is_empty()
 	zone_enemy.visible = _in_battle_view()
 	enemy_panel.modulate = Color(1, 1, 1, 1.0 if show else 0.0)
@@ -2902,7 +3046,11 @@ func _refresh_enemy() -> void:
 		return
 	var enemy: Dictionary = enemies[0]
 	if not _enemy_clip_lock:
-		_show_art(enemy_sprite, "stage", _enemy_art_id(), ["idle"])
+		# Same rule the player's own figure follows. Without this the seven
+		# enemy "down" slots the manifest asks for could never be seen.
+		var enemy_hurt: bool = float(enemy["hp"]) / float(max(int(enemy["max_hp"]), 1)) <= 0.35
+		_show_art(enemy_sprite, "stage", _enemy_art_id(),
+			["down", "idle"] if enemy_hurt else ["idle"])
 	enemy_name_label.text = "%s%s" % [str(enemy["type"]), "（ボス）" if str(enemy["type"]) == "ボス" else ""]
 	enemy_hp_bar.max_value = int(enemy["max_hp"])
 	enemy_hp_bar.value = max(int(enemy["hp"]), 0)
@@ -3581,6 +3729,11 @@ func _spawn_floating_text(pos: Vector2i, text: String, color: Color, big: bool =
 func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
 	if enemy_sprite == null or not is_instance_valid(enemy_sprite):
 		return
+	# These are feedback about a fight. Once the fight is over — a card is
+	# up, or there is nobody left standing there — they are just glyphs
+	# floating across a menu.
+	if (overlay != null and overlay.visible) or not _any_enemy_alive():
+		return
 	var label := Label.new()
 	label.text = text
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -3594,6 +3747,13 @@ func _spawn_enemy_popup(text: String, color: Color, big: bool = false) -> void:
 	label.pivot_offset = label.size / 2.0
 	var anchor: Vector2 = enemy_sprite.get_global_transform_with_canvas().origin
 	label.position = anchor + Vector2(enemy_sprite.size.x * 0.5 - 20.0, enemy_sprite.size.y * 0.32)
+	# A kill fires three of these in the same frame — the damage, 撃破!, and
+	# the bounty — and stacking them on one anchor drew all three glyphs
+	# through each other into an unreadable blot. Each one steps down and
+	# aside from the last so they read as a run.
+	label.position += Vector2(10.0, 40.0) * float(_popup_depth)
+	_popup_depth = (_popup_depth + 1) % 4
+	_popup_clear_timer = 0.9
 	label.scale = Vector2(0.4, 0.4)
 	var base_y: float = label.position.y
 	var tween := create_tween()
@@ -3686,6 +3846,11 @@ func _spawn_burst_at_enemy() -> void:
 
 func _open_overlay(title: String, body: String) -> void:
 	overlay.visible = true
+	if overlay_logo != null:
+		overlay_logo.visible = false
+	overlay_title.visible = true
+	if overlay_footer != null:
+		_clear_children(overlay_footer)
 	overlay_title.text = title
 	overlay_body.text = body
 	overlay_body.visible = body != ""
@@ -3781,15 +3946,12 @@ func _show_catalog() -> void:
 	overlay_body.visible = true
 	_clear_children(overlay_list)
 
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.custom_minimum_size = Vector2(0, min(get_viewport_rect().size.y * 0.52, 380.0))
-	overlay_list.add_child(scroll)
-
+	# No scroll of its own: the card scrolls the whole option list now, and
+	# a scroll inside a scroll is a trap for a thumb.
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation", 6)
-	scroll.add_child(column)
+	overlay_list.add_child(column)
 
 	# Grouped by build concept rather than by trigger: with this many tiles,
 	# "which build is this for" is the question a player actually has.
@@ -3828,7 +3990,7 @@ func _show_catalog() -> void:
 	_style_button(settings_row, COL_PANEL_SUNK, COL_INK)
 	settings_row.add_theme_color_override("font_color", COL_INK)
 	settings_row.pressed.connect(Callable(self, "_show_settings"))
-	overlay_list.add_child(settings_row)
+	overlay_footer.add_child(settings_row)
 
 	if catalog_return_state != "title":
 		var quit_row := Button.new()
@@ -3839,7 +4001,7 @@ func _show_catalog() -> void:
 		_style_button(quit_row, COL_PANEL_SUNK, COL_INK)
 		quit_row.add_theme_color_override("font_color", COL_INK)
 		quit_row.pressed.connect(Callable(self, "_show_title"))
-		overlay_list.add_child(quit_row)
+		overlay_footer.add_child(quit_row)
 
 	var close_button := Button.new()
 	close_button.text = tr("閉じる")
@@ -3849,7 +4011,7 @@ func _show_catalog() -> void:
 	_style_button(close_button, COL_GOLD, COL_INK)
 	close_button.add_theme_color_override("font_color", COL_INK)
 	close_button.pressed.connect(Callable(self, "_close_catalog"))
-	overlay_list.add_child(close_button)
+	overlay_footer.add_child(close_button)
 	_layout_overlay()
 
 func _make_catalog_row(tile: Dictionary) -> Control:
@@ -3993,6 +4155,9 @@ func _show_title() -> void:
 	_refresh_all()
 	_set_log("")
 	_open_overlay("Dice Board Rogue", "画面をタップして伏せたダイスを振り、出た目から1つ選んで進む。使わなかった目は次のターンへ持ち越す。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
+	# The drawn wordmark replaces the typeset one rather than sitting above
+	# it, so the title screen has one name on it either way.
+	overlay_title.visible = not _show_art(overlay_logo, "ui", "logo", ["default"])
 	if _has_run_save():
 		_add_overlay_option("続きから", "中断した挑戦を再開します。", COL_GOLD, "warp", Callable(self, "_continue_run"))
 	for key in hero_defs.keys():
@@ -4838,13 +5003,24 @@ const CG_STATE_TEXT := {"win": "勝利", "lose": "敗北"}
 var encounter_art := "unknown"
 var encounter_name := ""
 
+# Shows the full-frame scene for a decided fight, then hands on. A scene
+# with no art drawn for it is skipped outright rather than shown as a
+# placeholder: a resolution CG is the most expensive thing on the art list
+# and the least visible — it plays once, after the fight is already won or
+# lost — so making the game unshippable until all twenty-two exist would be
+# the schedule wagging the product.
 func _play_scene(actor: String, art_state: String, caption: String, after: Callable) -> void:
-	scene_after = after
 	# Reaching a scene is what unlocks it, whether or not its file exists
 	# yet — so once art lands, a player's gallery already reflects every
-	# fight they have actually finished.
+	# fight they have actually finished. Recorded before the skip below, or
+	# a run played today would leave no trace in a gallery filled tomorrow.
 	if _unlock("cg:%s:%s" % [actor, art_state]):
 		_bump_lifetime("scenes")
+	if not _has_art("cg", actor, art_state):
+		if after.is_valid():
+			after.call()
+		return
+	scene_after = after
 	scene_caption.text = caption
 	_show_art(scene_sprite, "cg", actor, [art_state], false)
 	scene_layer.visible = true
