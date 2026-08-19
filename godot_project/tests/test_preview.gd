@@ -6,11 +6,14 @@ extends SceneTree
 
 var fails := 0
 
-# Every face showing in hand is one this die could actually have rolled —
-# which is also how "nothing is sitting there unthrown" is checked, since an
-# unthrown die used to show a 0 that no die but 居合 has.
+# Every face *showing* in hand is one that die could actually have rolled.
+# A die that has not been thrown shows a question mark rather than a face,
+# so it has nothing to check — it is _unthrown_dice that says which those
+# are, and the tests below pin that down separately.
 func _faces_are_real(main) -> bool:
 	for die in main.hand:
+		if not bool(die.get("thrown", true)):
+			continue
 		if not (die["faces"] as Array).has(int(die.get("roll", 0))):
 			return false
 	return true
@@ -47,27 +50,37 @@ func _init() -> void:
 	check("hand was dealt", main.hand.size() > 0)
 	check("nothing considered at turn start", main.preview_die_index == -1)
 
-	# --- a die is thrown as it is drawn, not when the hand is tapped ---
-	check("every die in hand already shows one of its own faces",
-		_faces_are_real(main))
+	# --- a newly drawn die is face down until the tap throws it ---
+	check("every die in the opening hand is face down",
+		main._unthrown_dice().size() == main.hand.size())
+	check("nothing can be considered while the hand is face down",
+		main._previewed_die().is_empty())
+	await main._throw_unthrown()
+	check("the tap throws them", main._unthrown_dice().is_empty())
+	check("every die now shows one of its own faces", _faces_are_real(main))
 
 	# --- a die that is not spent keeps its face into the next turn ---
 	var kept: Array = _rolls(main)
 	main._start_player_turn()
 	check("a full hand carries every face into the next turn",
 		_rolls(main) == kept)
+	check("and a carried die is not asked to be thrown again",
+		main._unthrown_dice().is_empty())
 
 	# Spend one (without walking it — the walk is what the rest of this file
-	# is about) and the survivors are still not re-thrown; only the refill is.
+	# is about). The survivors keep their faces; only the refill is face down.
 	main.hand.remove_at(0)
 	var survivors: Array = _rolls(main)
 	main._start_player_turn()
-	var refilled: Array = _rolls(main)
-	check("the hand is refilled to its limit", refilled.size() == main.hand_limit)
+	check("the hand is refilled to its limit", main.hand.size() == main.hand_limit)
 	check("the dice left alone keep the faces they had",
-		refilled.slice(0, survivors.size()) == survivors)
-	check("and the die drawn to replace the spent one arrived thrown",
-		_faces_are_real(main))
+		_rolls(main).slice(0, survivors.size()) == survivors)
+	check("only the die drawn to replace the spent one is face down",
+		main._unthrown_dice() == [main.hand.size() - 1])
+	await main._throw_unthrown()
+	check("the tap throws the refill and leaves the kept faces alone",
+		_rolls(main).slice(0, survivors.size()) == survivors)
+	check("every die shows one of its own faces again", _faces_are_real(main))
 
 	main._refresh_board()
 	check("the lookahead strip is six squares before any die is picked",
@@ -139,9 +152,9 @@ func _init() -> void:
 		main._on_end_turn_pressed()
 		var settled: bool = await _wait_for_player_turn(main)
 		if settled:
-			check("the enemy's turn does not re-throw the hand",
+			check("the enemy's turn does not re-throw the kept dice",
 				_rolls(main).slice(0, before.size()) == before)
-			check("every face is still a face this die can roll",
+			check("every face still showing is one this die can roll",
 				_faces_are_real(main))
 
 	print("\n%d failure(s)" % fails)

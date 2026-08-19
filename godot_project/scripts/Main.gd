@@ -128,11 +128,6 @@ const BEAT_PHASE := 0.6
 const THROW_FRAMES := 7
 const THROW_FRAME_TIME := 0.05
 const THROW_SETTLE := 0.07
-# A deal plays that same throw once per die instead of once for the hand, so
-# it runs the same seven frames at a faster clock: the die still tumbles and
-# lands the way it does on a reroll, but three of them in a row take about as
-# long as one reroll does rather than three times as long.
-const DEAL_FRAME_TIME := 0.03
 
 # Backdrop: a warm lit ground that reddens as the run climbs toward the
 # boss. Same "the run has a temperature" idea as before, moved into the
@@ -1096,6 +1091,7 @@ var end_turn_button: Button
 var restart_button: Button
 var catalog_button: Button
 var reroll_button: Button
+var roll_catcher: Button
 var log_label: Label
 var banner: PanelContainer
 var banner_label: Label
@@ -1937,6 +1933,17 @@ func _build_ui() -> void:
 	add_child(zone_gallery)
 	_build_gallery_zone()
 
+	# A tap anywhere over the board and hand throws the dice that have not
+	# been thrown yet. It sits above the cells, so while anything in hand is
+	# still face down the whole play area is one big "roll" button, and it
+	# disappears the moment the last of them lands.
+	roll_catcher = Button.new()
+	roll_catcher.flat = true
+	roll_catcher.focus_mode = Control.FOCUS_NONE
+	roll_catcher.visible = false
+	roll_catcher.pressed.connect(Callable(self, "_on_roll_area_pressed"))
+	add_child(roll_catcher)
+
 	_build_overlay()
 	_build_scene_layer()
 	_relabel_static_text()
@@ -2577,6 +2584,13 @@ func _layout_screen() -> void:
 		y += cmd_h + gap
 		_place(zone_log, Rect2(margin, y, width, log_h))
 
+	if roll_catcher != null and zone_board != null and zone_hand != null:
+		var top: float = min(zone_board.position.y, zone_hand.position.y)
+		var bottom: float = max(zone_board.position.y + zone_board.size.y, zone_hand.position.y + zone_hand.size.y)
+		var left: float = min(zone_board.position.x, zone_hand.position.x)
+		var right: float = max(zone_board.position.x + zone_board.size.x, zone_hand.position.x + zone_hand.size.x)
+		roll_catcher.position = Vector2(left, top)
+		roll_catcher.size = Vector2(right - left, bottom - top)
 	if overlay != null:
 		overlay.size = vp
 		_layout_overlay()
@@ -2914,13 +2928,17 @@ func _refresh_enemy() -> void:
 
 func _refresh_command() -> void:
 	var playing: bool = state == "player"
+	if roll_catcher != null:
+		roll_catcher.visible = playing and not _unthrown_dice().is_empty()
 	zone_cmd.visible = state != "title" and state != "map" and state != "node_event"
 	zone_hand.visible = state == "player" or state == "moving" or state == "enemy"
 	end_turn_button.visible = playing or state == "moving" or state == "enemy"
 	end_turn_button.disabled = not playing
 	catalog_button.visible = state != "title"
 	reroll_button.visible = playing or state == "moving" or state == "enemy"
-	reroll_button.disabled = not (playing and rerolls_left > 0 and not hand.is_empty())
+	# Nothing to reroll until the hand has been thrown in the first place.
+	reroll_button.disabled = not (playing and rerolls_left > 0 and not hand.is_empty() \
+		and _unthrown_dice().is_empty())
 	reroll_button.text = tr("振り直す %d") % rerolls_left
 
 func _refresh_board() -> void:
@@ -3230,10 +3248,11 @@ func _refresh_ribbon() -> void:
 		return
 	var interior: float = _board_spacing() * float(BOARD_W - 2) - _board_token_size() - 12.0
 	var moving: bool = state == "moving"
-	ribbon_caption.visible = state == "player" and interior >= 96.0
+	ribbon_caption.visible = state == "player" and _unthrown_dice().is_empty() \
+		and interior >= 96.0
 	ribbon_row.visible = ribbon_caption.visible
 	roll_readout.visible = moving
-	ribbon_box.visible = state == "player" or moving
+	ribbon_box.visible = (state == "player" and _unthrown_dice().is_empty()) or moving
 
 	if moving:
 		roll_readout.visible = steps_left > 0
@@ -3391,30 +3410,14 @@ func _refresh_hand() -> void:
 	_ensure_hand_slots(max(hand.size(), hand_slots.size()))
 	var slot_w: float = _card_width()
 	var slot_h: float = zone_hand.size.y
-	var arriving := []
 	for i in range(hand_slots.size()):
 		var slot: Control = hand_slots[i]
 		slot.custom_minimum_size = Vector2(slot_w, 0)
 		_clear_children(slot)
 		if i < hand.size():
-			var die: Dictionary = hand[i]
-			# The cue is consumed as the card is built, so a refresh that
-			# interrupts the deal simply draws settled cards — there is no
-			# half-dealt state for anything to get stuck in.
-			if bool(die.get("fresh", false)):
-				die["fresh"] = false
-				arriving.append(i)
-			slot.add_child(_make_die_card(die, i, slot_w, slot_h))
+			slot.add_child(_make_die_card(hand[i], i, slot_w, slot_h))
 		else:
 			slot.add_child(_make_empty_slot(slot_w))
-	# A die that has just been drawn has not arrived yet: its card waits out
-	# of sight until the deal reaches it.
-	for i in arriving:
-		var card := _slot_card(int(i))
-		if card != null:
-			card.visible = false
-	if not arriving.is_empty():
-		_deal_hand(arriving, throw_token)
 	await get_tree().process_frame
 	_update_hand_arrows()
 
@@ -3442,7 +3445,8 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	var pip_size: float = clamp((slot_w - 14.0) / float(max(faces.size(), 1)) - 2.0, 6.0, 13.0)
 	# The card under consideration wears a gold frame, so "which die am I
 	# being asked about" is answered on the card as well as on the board.
-	var considered: bool = index == preview_die_index and state == "player"
+	var considered: bool = index == preview_die_index and state == "player" \
+		and _unthrown_dice().is_empty()
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	panel.custom_minimum_size = Vector2(slot_w, 0)
@@ -3462,22 +3466,23 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	name_label.clip_text = true
 	col.add_child(name_label)
 
-	# The result, big. A die in hand has always been thrown — it was thrown
-	# as it was drawn — so the only face that is not a number here is a warp
-	# face, which is a destination rather than a distance.
+	# The result, big. Before this die has been thrown it is a question mark:
+	# the card is a die you have not thrown yet, not a die with no value —
+	# which matters, because 居合 can legitimately roll a real 0.
 	var face_holder := Control.new()
 	face_holder.custom_minimum_size = Vector2(0, face_size)
 	face_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	face_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(face_holder)
 
-	var is_warp: bool = _is_warp_face(roll)
+	var unrolled: bool = not bool(die.get("thrown", true))
+	var is_warp: bool = not unrolled and _is_warp_face(roll)
 
 	var face := DiceFace.new()
 	face.name = "RolledFace"
 	face.value = roll
 	face.invert = roll < 0
-	face.query = is_warp
+	face.query = unrolled or is_warp
 	var half: float = face_size * 0.5
 	face.custom_minimum_size = Vector2(face_size, face_size)
 	face.size = Vector2(face_size, face_size)
@@ -3490,10 +3495,10 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	face.offset_bottom = half
 	face.pivot_offset = Vector2(half, half)
 
-	if is_warp:
-		var overlay_text := _warp_face_label(roll)
-		# The corner labels are two characters (左上/右上/...) where 帰 is
-		# one, so the font has to shrink to still fit the face.
+	if unrolled or is_warp:
+		var overlay_text := "?" if unrolled else _warp_face_label(roll)
+		# The corner labels are two characters (左上/右上/...) where "?" and
+		# 帰 are one, so the font has to shrink to still fit the face.
 		var overlay_size := face_size * (0.72 if overlay_text.length() <= 1 else 0.40)
 		var overlay := _make_label(int(overlay_size), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
 		overlay.text = overlay_text
@@ -3522,7 +3527,7 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 		pip.query = _is_warp_face(fv)
 		pip.custom_minimum_size = Vector2(pip_size, pip_size)
 		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		pip.modulate = Color(1, 1, 1, 1.0 if fv == roll else 0.55)
+		pip.modulate = Color(1, 1, 1, 1.0 if (not unrolled and fv == roll) else 0.55)
 		faces_row.add_child(pip)
 
 	# What this die *does* when spent. This is the line the choice is now
@@ -3987,7 +3992,7 @@ func _show_title() -> void:
 	temp_board = _make_empty_board("none")
 	_refresh_all()
 	_set_log("")
-	_open_overlay("Dice Board Rogue", "ダイスは引いた瞬間に目が決まる。出た目から1つ選んで進み、使わなかった目は次のターンへ持ち越す。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
+	_open_overlay("Dice Board Rogue", "画面をタップして伏せたダイスを振り、出た目から1つ選んで進む。使わなかった目は次のターンへ持ち越す。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
 	if _has_run_save():
 		_add_overlay_option("続きから", "中断した挑戦を再開します。", COL_GOLD, "warp", Callable(self, "_continue_run"))
 	for key in hero_defs.keys():
@@ -4206,7 +4211,7 @@ func _start_encounter() -> void:
 	_snap_player_visual()
 	var intro := "第%d戦。ダイスを選んで進みましょう。" % encounter
 	if encounter == 1:
-		intro = "ダイスは引いた時点で目が決まります。使う目を選んで進み、使わなかったダイスは目のまま次のターンへ残ります。"
+		intro = "画面をタップして伏せたダイスを振り、出た目から1つ選んで進みます。使わなかったダイスは目のまま次のターンへ残ります。"
 	_start_player_turn(intro)
 
 # Every non-boss enemy in the game is one of exactly two attack kinds:
@@ -5516,7 +5521,7 @@ func _reset_dice_for_encounter() -> void:
 	for die in dice_bag:
 		draw_pile.append(die.duplicate(true))
 	draw_pile.shuffle()
-	_draw_to_hand()
+	_draw_to_hand(false)
 
 func _start_player_turn(message: String = "") -> void:
 	state = "player"
@@ -5544,19 +5549,28 @@ func _start_player_turn(message: String = "") -> void:
 	# Whatever survived last turn keeps the face it was already showing. A
 	# die held back is a face held back, which is the only reason holding one
 	# back is a decision — and it is what the turn's single reroll is now
-	# spent against, because a reroll throws the kept die with the rest.
-	_draw_to_hand()
+	# spent against, because a reroll throws the kept die with the rest. The
+	# dice drawn to fill the gaps arrive face down and wait for the tap.
+	_draw_to_hand(false)
 	if message != "":
 		_set_log(message)
-	_hide_banner()
 	_refresh_all()
+	if _unthrown_dice().is_empty():
+		_hide_banner()
+	else:
+		_set_banner(tr("タップしてダイスを振る"))
 
-# Fills the hand back up to its limit. Every die is thrown at the moment it
-# is drawn, here, rather than waiting for the hand to be thrown as a set —
-# so this is the only place in the game a face is decided, whether the draw
-# is the turn's opening deal or a 集中路 refill halfway through it. "fresh"
-# is the card's cue to play that throw on screen; _make_die_card consumes it.
-func _draw_to_hand() -> void:
+# Fills the hand back up to its limit. A die arrives face down — "thrown"
+# false, and a roll of 0 that nothing is allowed to read — and the tap is
+# what turns it over. A die carried in from last turn is already thrown and
+# keeps the face it was showing, so the hand at the start of a turn is a
+# mix: the results the player chose to keep, and question marks over the
+# ones just drawn.
+#
+# throw_now is for the 集中路-style refill in the middle of a turn. The rest
+# of the hand is face up by then, so a die drawn there is thrown on arrival
+# rather than waiting for a tap that has already happened.
+func _draw_to_hand(throw_now: bool) -> void:
 	while hand.size() < hand_limit:
 		if draw_pile.is_empty():
 			if discard_pile.is_empty():
@@ -5565,15 +5579,46 @@ func _draw_to_hand() -> void:
 			discard_pile = []
 			draw_pile.shuffle()
 		var drawn: Dictionary = draw_pile.pop_back()
-		drawn["roll"] = _random_face(drawn)
-		drawn["fresh"] = true
+		drawn["thrown"] = throw_now
+		drawn["roll"] = _random_face(drawn) if throw_now else 0
 		hand.append(drawn)
+
+# Which dice in hand are still face down. Empty means the hand is readable
+# and the turn can be planned; anything in it means the tap is still owed.
+func _unthrown_dice() -> Array:
+	var out := []
+	for i in range(hand.size()):
+		if not bool((hand[i] as Dictionary).get("thrown", true)):
+			out.append(i)
+	return out
 
 # --- player turn -------------------------------------------------------
 
 func _random_face(die: Dictionary) -> int:
 	var faces: Array = die["faces"]
 	return int(faces[rng.randi_range(0, faces.size() - 1)])
+
+# The turn's opening throw: everything still face down goes over at once,
+# and a die carried in from last turn is not touched — keeping it is what
+# not spending it bought. Free, and owed once per turn; the reroll below is
+# the one that costs something.
+func _throw_unthrown() -> void:
+	if state != "player":
+		return
+	var pending := _unthrown_dice()
+	if pending.is_empty():
+		return
+	_hide_banner()
+	for i in pending:
+		var die: Dictionary = hand[i]
+		die["roll"] = _random_face(die)
+		die["thrown"] = true
+	_refresh_hand()
+	_refresh_board()
+	_refresh_command()
+	# Captured after the refresh, which is what bumps the token.
+	await _throw_faces(pending, throw_token)
+	_refresh_all()
 
 # Throws every die still in hand again. It costs the turn's reroll, and it
 # is all-or-nothing rather than one die at a time — a die carried over from
@@ -5589,6 +5634,7 @@ func _reroll_hand() -> void:
 	_hide_banner()
 	for die in hand:
 		die["roll"] = _random_face(die)
+		die["thrown"] = true
 	_refresh_hand()
 	_refresh_board()
 	_refresh_command()
@@ -5598,23 +5644,6 @@ func _reroll_hand() -> void:
 		all_dice.append(i)
 	await _throw_faces(all_dice, throw_token)
 	_refresh_all()
-
-# The deal: the dice that have just been drawn are thrown one at a time, in
-# hand order, each card arriving only when its own throw begins. It is the
-# same motion the reroll uses — the whole of the difference is that a reroll
-# throws the hand together and a deal throws it one die after another, which
-# is what makes each draw read as its own event.
-func _deal_hand(indices: Array, token: int) -> void:
-	for raw in indices:
-		var i := int(raw)
-		if token != throw_token:
-			return
-		var card := _slot_card(i)
-		if card == null:
-			continue
-		card.visible = true
-		if not await _throw_faces([i], token, DEAL_FRAME_TIME):
-			return
 
 # Throws a set of faces and waits for them to land: they tumble together for
 # a few frames, then settle in turn, so results land as separate beats
@@ -5689,11 +5718,21 @@ func _slot_face(index: int) -> DiceFace:
 		return null
 	return card.find_child("RolledFace", true, false) as DiceFace
 
+func _on_roll_area_pressed() -> void:
+	await _throw_unthrown()
+
 func _on_reroll_pressed() -> void:
 	await _reroll_hand()
 
 func _on_die_pressed(index: int) -> void:
 	if state != "player" or index < 0 or index >= hand.size() or actions_left <= 0:
+		return
+	# A hand with anything still face down cannot be planned against, so the
+	# tap that lands on a card throws the hand rather than asking about one
+	# die of it. The roll catcher covers the play area and normally takes
+	# this tap first; this is the same answer for the taps it does not.
+	if not _unthrown_dice().is_empty():
+		await _throw_unthrown()
 		return
 
 	# First tap on a die is a question, not a move: it paints that die's route
@@ -6107,7 +6146,7 @@ func _mod_multiplier(die: Dictionary, op: String, timing: String) -> int:
 # considered die instead of the spent one; nothing here mutates state.
 
 func _previewed_die() -> Dictionary:
-	if state != "player":
+	if state != "player" or not _unthrown_dice().is_empty():
 		return {}
 	if preview_die_index < 0 or preview_die_index >= hand.size():
 		return {}
@@ -6298,7 +6337,7 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 				return ""
 			for i in range(amount):
 				hand_limit += 1
-			_draw_to_hand()
+			_draw_to_hand(_unthrown_dice().is_empty())
 			for i in range(amount):
 				hand_limit -= 1
 			_refresh_hand()
