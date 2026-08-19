@@ -22,6 +22,11 @@ gap silently truncates the clip.
 its priority and a tick for the ones that exist. It is generated — run
 `python3 tools/art_manifest.py` after adding content, don't edit it.
 
+`PIPELINE.md` is the other half: what to make first, how to keep eight
+characters looking like one game, how transparency and file size are
+actually handled, and the two decisions worth making before generating
+anything. Read it before starting, not after.
+
 ## Two kinds of missing
 
 A slot with **no fallback** — a standing figure, a scene — draws a magenta
