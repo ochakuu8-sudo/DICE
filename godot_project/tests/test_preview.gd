@@ -6,6 +6,21 @@ extends SceneTree
 
 var fails := 0
 
+# Every face showing in hand is one this die could actually have rolled —
+# which is also how "nothing is sitting there unthrown" is checked, since an
+# unthrown die used to show a 0 that no die but 居合 has.
+func _faces_are_real(main) -> bool:
+	for die in main.hand:
+		if not (die["faces"] as Array).has(int(die.get("roll", 0))):
+			return false
+	return true
+
+func _rolls(main) -> Array:
+	var out := []
+	for die in main.hand:
+		out.append(int(die.get("roll", 0)))
+	return out
+
 func _six_ahead(main) -> Array:
 	var out := []
 	for i in range(1, 7):
@@ -32,8 +47,28 @@ func _init() -> void:
 	check("hand was dealt", main.hand.size() > 0)
 	check("nothing considered at turn start", main.preview_die_index == -1)
 
-	await main._roll_hand(false)
-	check("dice_rolled after roll", main.dice_rolled)
+	# --- a die is thrown as it is drawn, not when the hand is tapped ---
+	check("every die in hand already shows one of its own faces",
+		_faces_are_real(main))
+
+	# --- a die that is not spent keeps its face into the next turn ---
+	var kept: Array = _rolls(main)
+	main._start_player_turn()
+	check("a full hand carries every face into the next turn",
+		_rolls(main) == kept)
+
+	# Spend one (without walking it — the walk is what the rest of this file
+	# is about) and the survivors are still not re-thrown; only the refill is.
+	main.hand.remove_at(0)
+	var survivors: Array = _rolls(main)
+	main._start_player_turn()
+	var refilled: Array = _rolls(main)
+	check("the hand is refilled to its limit", refilled.size() == main.hand_limit)
+	check("the dice left alone keep the faces they had",
+		refilled.slice(0, survivors.size()) == survivors)
+	check("and the die drawn to replace the spent one arrived thrown",
+		_faces_are_real(main))
+
 	main._refresh_board()
 	check("the lookahead strip is six squares before any die is picked",
 		main.preview_path.size() == 6)
@@ -92,8 +127,9 @@ func _init() -> void:
 	if main.state == "player":
 		main.preview_die_index = 0
 		main.rerolls_left = 1
-		await main._roll_hand(true)
+		await main._reroll_hand()
 		check("reroll clears the considered die", main.preview_die_index == -1)
+		check("a reroll spends the turn's reroll", main.rerolls_left == 0)
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)

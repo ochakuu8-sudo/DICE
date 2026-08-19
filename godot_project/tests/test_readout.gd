@@ -103,7 +103,6 @@ func run_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main.hand = [main._make_die(die_id), main._make_die("normal")]
 	main.hand[0]["roll"] = roll
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	main.combo = combo_start
 	main.player_hp = main.player_max_hp - wounds

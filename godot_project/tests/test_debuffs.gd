@@ -89,7 +89,6 @@ func run_case(main, debuff: String, offsets: Array, roll: int, die_id: String,
 	main.hand = [main._make_die(die_id), main._make_die("normal")]
 	main.hand[0]["roll"] = roll
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 
 	var start_step: int = main.player_step
@@ -139,7 +138,6 @@ func freeze_case(main) -> void:
 	main.hand = [main._make_die("normal"), main._make_die("normal")]
 	main.hand[0]["roll"] = 3
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 
 	main.preview_die_index = 0
@@ -160,7 +158,6 @@ func freeze_case(main) -> void:
 	main.hand = [main._make_die("normal"), main._make_die("normal")]
 	main.hand[0]["roll"] = 16
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	main.player_step = main._track_index(target) - 3
 	main.player_pos = main._pos_for_step(main.player_step)
@@ -206,7 +203,6 @@ func _arm(main, roll: int) -> void:
 	main.hand = [main._make_die("normal"), main._make_die("normal")]
 	main.hand[0]["roll"] = roll
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	main.preview_die_index = 0
 
@@ -217,7 +213,6 @@ func briar_consumed_case(main) -> void:
 	main.hand = [main._make_die("normal"), main._make_die("normal")]
 	main.hand[0]["roll"] = 5
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	main.preview_die_index = 0
 	await main._on_die_pressed(0)

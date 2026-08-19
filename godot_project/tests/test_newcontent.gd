@@ -66,7 +66,6 @@ func tile_case(main, tile_id: String, die_id: String, roll: int, want: int,
 	main.hand = [main._make_die(die_id), main._make_die("normal")]
 	main.hand[0]["roll"] = roll
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 
 	main.preview_die_index = 0
@@ -98,7 +97,6 @@ func iai_case(main) -> void:
 	main.hand = [main._make_die("iai"), main._make_die("normal")]
 	main.hand[0]["roll"] = 0
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	main.player_shield = 0
 
@@ -121,7 +119,6 @@ func wheel_case(main) -> void:
 	main.hand = [main._make_die("wheel"), main._make_die("normal")]
 	main.hand[0]["roll"] = 9
 	main.hand[1]["roll"] = 1
-	main.dice_rolled = true
 	main.actions_left = 2
 	var hp_before: int = main.player_hp
 	var start: int = main.player_step
