@@ -121,13 +121,13 @@ const BEAT_EFFECT := 0.45
 const BEAT_STOP := 0.55
 const BEAT_PHASE := 0.6
 
-# The deal. A die is thrown as it is drawn rather than the hand being thrown
-# in one go, so each card fades in over its own tumbling face and the next
-# one starts a beat behind it. Three cards land inside two thirds of a
-# second: long enough to arrive one at a time, short enough that the turn
-# does not wait on it.
-const DEAL_STAGGER := 0.16
-const DEAL_TUMBLE := 0.34
+# Throwing dice, whether the throw is a whole hand being rerolled or a
+# single die arriving as it is drawn. The faces tumble for a few frames and
+# then settle in turn, and the deal walks one die through the same motion at
+# a time so each arrival reads as its own throw.
+const THROW_FRAMES := 7
+const THROW_FRAME_TIME := 0.05
+const THROW_SETTLE := 0.07
 
 # Backdrop: a warm lit ground that reddens as the run climbs toward the
 # boss. Same "the run has a temperature" idea as before, moved into the
@@ -524,11 +524,6 @@ class DiceFace:
 	# die — same pip count, opposite fill — so "this moves you backwards"
 	# is visible on the face itself, not just in the card's text below it.
 	var invert := false
-	# Which step of a tumble is currently showing. A tumble is driven by a
-	# tween, which ticks every frame, and a face that changed sixty times a
-	# second would read as grey mush rather than as a die rolling — so the
-	# face only changes when this crosses into a new step.
-	var tumble_tick := -1
 
 	func _draw() -> void:
 		var bg: Color = dot_color if invert else face_color
@@ -1211,6 +1206,11 @@ var hand_limit := 3
 var actions_per_turn := ACTIONS_PER_TURN
 var last_cleanse_count := 0
 var rerolls_left := 0
+# Bumped every time the hand is rebuilt. A throw captures it when it starts
+# and gives up the moment it changes, so a refresh — the player tapping a
+# die mid-deal, a reroll landing on top of one — cancels the animation
+# instead of leaving it writing to cards that no longer exist.
+var throw_token := 0
 
 # --- counters the effect system can read and scale against ---------------
 # Each of these is the spine of one build concept rather than a rule that
@@ -3380,31 +3380,36 @@ func _refresh_hand() -> void:
 	# One entry per die drawn this turn. A spent die leaves its place
 	# behind rather than closing the gap, so nothing slides out from under
 	# a thumb mid-turn.
+	# Whatever was being thrown belongs to the cards that are about to be
+	# thrown away, so it is cancelled here rather than left to write to them.
+	throw_token += 1
 	_ensure_hand_slots(max(hand.size(), hand_slots.size()))
 	var slot_w: float = _card_width()
 	var slot_h: float = zone_hand.size.y
-	# Cards drawn since the last refresh are dealt one at a time rather than
-	# all at once, so each one needs to know how many were dealt ahead of it.
-	var dealt := 0
+	var arriving := []
 	for i in range(hand_slots.size()):
 		var slot: Control = hand_slots[i]
 		slot.custom_minimum_size = Vector2(slot_w, 0)
 		_clear_children(slot)
 		if i < hand.size():
 			var die: Dictionary = hand[i]
-			var fresh: bool = bool(die.get("fresh", false))
-			var order := dealt
-			if fresh:
-				dealt += 1
-				# Consumed here, so a refresh that interrupts the deal simply
-				# draws a settled card. There is no half-dealt state for
-				# anything to get stuck in.
+			# The cue is consumed as the card is built, so a refresh that
+			# interrupts the deal simply draws settled cards — there is no
+			# half-dealt state for anything to get stuck in.
+			if bool(die.get("fresh", false)):
 				die["fresh"] = false
+				arriving.append(i)
 			slot.add_child(_make_die_card(die, i, slot_w, slot_h))
-			if fresh:
-				_animate_dealt_card(slot.get_child(0), _slot_face(i), die, order)
 		else:
 			slot.add_child(_make_empty_slot(slot_w))
+	# A die that has just been drawn has not arrived yet: its card waits out
+	# of sight until the deal reaches it.
+	for i in arriving:
+		var card := _slot_card(int(i))
+		if card != null:
+			card.visible = false
+	if not arriving.is_empty():
+		_deal_hand(arriving, throw_token)
 	await get_tree().process_frame
 	_update_hand_arrows()
 
@@ -3486,7 +3491,6 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 		# one, so the font has to shrink to still fit the face.
 		var overlay_size := face_size * (0.72 if overlay_text.length() <= 1 else 0.40)
 		var overlay := _make_label(int(overlay_size), COL_INK, HORIZONTAL_ALIGNMENT_CENTER, true)
-		overlay.name = "WarpLabel"
 		overlay.text = overlay_text
 		overlay.autowrap_mode = TextServer.AUTOWRAP_OFF
 		overlay.set_anchors_preset(Control.PRESET_CENTER)
@@ -3536,54 +3540,6 @@ func _make_die_card(die: Dictionary, index: int, slot_w: float = 120.0, slot_h: 
 	panel.add_child(hit)
 	panel.modulate = Color(1, 1, 1, 1.0 if not hit.disabled else 0.55)
 	return panel
-
-# One die, thrown as it lands. The card fades in over a face that is still
-# tumbling, and settles on the result it actually rolled — offset behind
-# whatever else is being dealt in the same refresh, so a hand of three
-# arrives as three throws rather than one.
-#
-# The tween hangs off the card, not off this node, so a rebuild of the hand
-# takes the animation with it instead of leaving it writing to a freed face.
-func _animate_dealt_card(card: Control, face: DiceFace, die: Dictionary, order: int) -> void:
-	if card == null or face == null or not card.is_inside_tree():
-		return
-	var final_value := int(die.get("roll", 0))
-	var warp_label: Control = null
-	if face.get_parent() != null:
-		warp_label = face.get_parent().find_child("WarpLabel", false, false) as Control
-	card.modulate.a = 0.0
-	if warp_label != null:
-		warp_label.modulate.a = 0.0
-	face.tumble_tick = -1
-	var tween := card.create_tween()
-	if order > 0:
-		tween.tween_interval(float(order) * DEAL_STAGGER)
-	tween.tween_callback(Callable(sfx, "emit").bind("roll"))
-	tween.tween_property(card, "modulate:a", 1.0, 0.12)
-	tween.parallel().tween_method(
-		Callable(self, "_tumble_face").bind(face, die["faces"], final_value),
-		0.0, 1.0, DEAL_TUMBLE)
-	tween.tween_callback(Callable(sfx, "emit").bind("step"))
-	tween.parallel().tween_callback(Callable(self, "_punch").bind(face, 1.3))
-	if warp_label != null:
-		tween.parallel().tween_property(warp_label, "modulate:a", 1.0, 0.12)
-
-# Driven by the tween above: shows a new random face of this die every few
-# ticks on the way, and the real one on arrival.
-func _tumble_face(t: float, face: DiceFace, faces: Array, final_value: int) -> void:
-	if not is_instance_valid(face):
-		return
-	var shown := final_value
-	if t < 1.0:
-		var tick := int(t * 7.0)
-		if tick == face.tumble_tick:
-			return
-		face.tumble_tick = tick
-		shown = int(faces[rng.randi_range(0, faces.size() - 1)])
-	face.value = shown
-	face.invert = shown < 0
-	face.query = _is_warp_face(shown)
-	face.queue_redraw()
 
 # --- feedback ----------------------------------------------------------
 
@@ -5626,54 +5582,101 @@ func _reroll_hand() -> void:
 	# is no longer the move it was.
 	preview_die_index = -1
 	_hide_banner()
-	sfx.emit("roll")
 	for die in hand:
 		die["roll"] = _random_face(die)
 	_refresh_hand()
 	_refresh_board()
 	_refresh_command()
-	await _animate_hand_roll()
+	# Captured after the refresh, which is what bumps the token.
+	var all_dice := []
+	for i in range(hand.size()):
+		all_dice.append(i)
+	await _throw_faces(all_dice, throw_token)
 	_refresh_all()
 
-# The reroll's animation, as opposed to the deal's: every die tumbles at
-# once, because they were all thrown at once, but they settle in turn so
-# three results land as three separate beats instead of one flicker.
-func _animate_hand_roll() -> void:
-	var faces_by_slot := []
-	for i in range(hand_slots.size()):
-		faces_by_slot.append(_slot_face(i))
-	var frames := 7
-	for step in range(frames):
-		for i in range(faces_by_slot.size()):
-			var face: DiceFace = faces_by_slot[i]
-			if face == null:
-				continue
-			# Later slots keep tumbling for a few extra frames.
-			if step >= frames - 2 + i - 1 and i < hand.size():
-				face.value = int(hand[i]["roll"])
-			elif i < hand.size():
-				face.value = _random_face(hand[i])
-			face.rotation = deg_to_rad(rng.randf_range(-16.0, 16.0)) * (1.0 - float(step) / float(frames))
-			face.queue_redraw()
-		await get_tree().create_timer(0.05).timeout
-	for i in range(faces_by_slot.size()):
-		var settled: DiceFace = faces_by_slot[i]
-		if settled == null or i >= hand.size():
+# The deal: the dice that have just been drawn are thrown one at a time, in
+# hand order, each card arriving only when its own throw begins. It is the
+# same motion the reroll uses — the whole of the difference is that a reroll
+# throws the hand together and a deal throws it one die after another, which
+# is what makes each draw read as its own event.
+func _deal_hand(indices: Array, token: int) -> void:
+	for raw in indices:
+		var i := int(raw)
+		if token != throw_token:
+			return
+		var card := _slot_card(i)
+		if card == null:
 			continue
-		settled.value = int(hand[i]["roll"])
+		card.visible = true
+		if not await _throw_faces([i], token):
+			return
+
+# Throws a set of faces and waits for them to land: they tumble together for
+# a few frames, then settle in turn, so results land as separate beats
+# instead of one indistinguishable flicker. Returns false if the hand was
+# rebuilt underneath it, which is the caller's cue to stop.
+func _throw_faces(indices: Array, token: int) -> bool:
+	var faces := {}
+	var order := {}
+	for raw in indices:
+		var i := int(raw)
+		var face := _slot_face(i)
+		if face != null and i < hand.size():
+			faces[i] = face
+			order[i] = order.size()
+	if faces.is_empty():
+		return true
+	sfx.emit("roll")
+	for step in range(THROW_FRAMES):
+		if token != throw_token:
+			return false
+		for i in faces.keys():
+			var face: DiceFace = faces[i]
+			if not is_instance_valid(face):
+				continue
+			# Dice later in the throw keep tumbling for a few extra frames,
+			# so a hand thrown together still lands in order.
+			var locked: bool = step >= THROW_FRAMES - 3 + int(order[i])
+			_show_face(face, int(hand[i]["roll"]) if locked else _random_face(hand[i]))
+			face.rotation = deg_to_rad(rng.randf_range(-16.0, 16.0)) \
+				* (1.0 - float(step) / float(THROW_FRAMES))
+			face.queue_redraw()
+		await get_tree().create_timer(THROW_FRAME_TIME).timeout
+	for i in faces.keys():
+		if token != throw_token:
+			return false
+		var settled: DiceFace = faces[i]
+		if not is_instance_valid(settled):
+			continue
+		_show_face(settled, int(hand[i]["roll"]))
 		settled.rotation = 0.0
 		settled.queue_redraw()
 		_punch(settled, 1.25)
 		sfx.emit("step")
-		await get_tree().create_timer(0.07).timeout
+		await get_tree().create_timer(THROW_SETTLE).timeout
+	return true
 
-func _slot_face(index: int) -> DiceFace:
-	if index >= hand_slots.size():
+# A face shows a value three ways at once — the pip count, the inverted fill
+# a negative face wears, and the blank a warp face leaves for its label — so
+# they are set together rather than one at a time by each caller.
+func _show_face(face: DiceFace, value: int) -> void:
+	face.value = value
+	face.invert = value < 0
+	face.query = _is_warp_face(value)
+
+func _slot_card(index: int) -> Control:
+	if index < 0 or index >= hand_slots.size():
 		return null
 	var slot: Control = hand_slots[index]
 	if slot.get_child_count() == 0:
 		return null
-	return slot.get_child(0).find_child("RolledFace", true, false) as DiceFace
+	return slot.get_child(0) as Control
+
+func _slot_face(index: int) -> DiceFace:
+	var card := _slot_card(index)
+	if card == null:
+		return null
+	return card.find_child("RolledFace", true, false) as DiceFace
 
 func _on_reroll_pressed() -> void:
 	await _reroll_hand()
