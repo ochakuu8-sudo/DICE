@@ -1063,6 +1063,7 @@ var map_links: Control
 var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
 var action_pip_box: HBoxContainer
+var action_caption: Label
 
 var hero_panel: PanelContainer
 var hero_sprite: SpriteView
@@ -1118,6 +1119,7 @@ var scene_after := Callable()
 var gallery_grid: GridContainer
 var gallery_scroll: ScrollContainer
 var gallery_title: Label
+var gallery_close_button: Button
 
 var ui_font: Font
 var ui_font_heavy: Font
@@ -1832,9 +1834,15 @@ func _ready() -> void:
 	heavy.base_font = base_font
 	heavy.variation_embolden = 0.75
 	ui_font_heavy = heavy
-	_build_ui()
+	# The profile decides the locale, and the locale has to be current before
+	# any of the UI is built: tr() resolves against whatever locale is set at
+	# the moment it runs, so a label written during construction would
+	# otherwise keep the *system's* language for the life of the process —
+	# which is how an English browser ended up with three English buttons in
+	# an otherwise Japanese game.
 	_load_profile()
 	_apply_locale()
+	_build_ui()
 	_apply_audio_settings()
 	_layout_screen()
 	_show_title()
@@ -1926,6 +1934,7 @@ func _build_ui() -> void:
 
 	_build_overlay()
 	_build_scene_layer()
+	_relabel_static_text()
 
 func _build_top_zone() -> void:
 	var col := VBoxContainer.new()
@@ -2037,8 +2046,7 @@ func _build_top_zone() -> void:
 	chip_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	chip_row.add_child(chip_spacer)
 
-	var action_caption := _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT)
-	action_caption.text = tr("行動")
+	action_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT)
 	action_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
 	action_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	chip_row.add_child(action_caption)
@@ -2317,7 +2325,6 @@ func _build_command_zone() -> void:
 	row.add_child(reroll_button)
 
 	end_turn_button = Button.new()
-	end_turn_button.text = tr("行動終了")
 	end_turn_button.focus_mode = Control.FOCUS_NONE
 	end_turn_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	end_turn_button.add_theme_font_size_override("font_size", FS_BODY)
@@ -2327,7 +2334,6 @@ func _build_command_zone() -> void:
 	row.add_child(end_turn_button)
 
 	catalog_button = Button.new()
-	catalog_button.text = tr("図鑑")
 	catalog_button.focus_mode = Control.FOCUS_NONE
 	catalog_button.custom_minimum_size = Vector2(74, 0)
 	catalog_button.add_theme_font_size_override("font_size", FS_SMALL)
@@ -2430,7 +2436,6 @@ func _build_scene_layer() -> void:
 	col.add_child(scene_caption)
 
 	scene_hint = _make_label(FS_SMALL, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER)
-	scene_hint.text = tr("画面をタップで進む")
 	scene_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(scene_hint)
 
@@ -2471,15 +2476,14 @@ func _build_gallery_zone() -> void:
 	gallery_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gallery_scroll.add_child(gallery_grid)
 
-	var close_button := Button.new()
-	close_button.text = tr("閉じる")
-	close_button.focus_mode = Control.FOCUS_NONE
-	close_button.custom_minimum_size = Vector2(0, 42)
-	close_button.add_theme_font_size_override("font_size", FS_BODY)
-	_style_button(close_button, COL_GOLD, COL_INK)
-	close_button.add_theme_color_override("font_color", COL_INK)
-	close_button.pressed.connect(Callable(self, "_close_gallery"))
-	col.add_child(close_button)
+	gallery_close_button = Button.new()
+	gallery_close_button.focus_mode = Control.FOCUS_NONE
+	gallery_close_button.custom_minimum_size = Vector2(0, 42)
+	gallery_close_button.add_theme_font_size_override("font_size", FS_BODY)
+	_style_button(gallery_close_button, COL_GOLD, COL_INK)
+	gallery_close_button.add_theme_color_override("font_color", COL_INK)
+	gallery_close_button.pressed.connect(Callable(self, "_close_gallery"))
+	col.add_child(gallery_close_button)
 
 # --- layout ------------------------------------------------------------
 
@@ -5123,6 +5127,26 @@ func _bump_lifetime(key: String, amount: int = 1) -> void:
 
 func _apply_locale() -> void:
 	TranslationServer.set_locale(locale)
+	_relabel_static_text()
+
+# The labels that are written once, when the UI is built, and never touched
+# again — every other piece of text on screen is rewritten by a refresh or
+# rebuilt each time its screen opens, and so picks up the current locale on
+# its own. These cannot, so switching language in the settings screen would
+# leave them behind. Written here rather than inline in the builders so
+# there is one list to keep, and it is the same list both the first build
+# and a later switch go through.
+func _relabel_static_text() -> void:
+	if end_turn_button != null:
+		end_turn_button.text = tr("行動終了")
+	if catalog_button != null:
+		catalog_button.text = tr("図鑑")
+	if action_caption != null:
+		action_caption.text = tr("行動")
+	if scene_hint != null:
+		scene_hint.text = tr("画面をタップで進む")
+	if gallery_close_button != null:
+		gallery_close_button.text = tr("閉じる")
 
 func _apply_audio_settings() -> void:
 	if sfx == null:
