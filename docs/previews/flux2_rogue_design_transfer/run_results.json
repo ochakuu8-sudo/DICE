@@ -1,0 +1,50 @@
+[
+  {
+    "label": "flux2_text_design",
+    "kind": "t2i",
+    "seed": 84701,
+    "positive": "cute female rogue, single character, full body standing pose, warm chestnut brown bob hair, light rogue outfit with white leather bodice, blue waist cloth accent, gold trim, brown leather belt, dark leggings, sturdy brown boots, small dagger, fantasy anime character design, high quality illustration, plain light background",
+    "negative": "low quality, bad anatomy, text, watermark, blue hair, white hair, silver hair, multiple characters, character sheet, turnaround, back view, round shield, heavy knight armor, realistic photo, 3d render",
+    "source_prompt_id": "c9e370ac-afe2-4271-9d55-73f9374f854b",
+    "source": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\source_flux2_text_design_dice_flux2_rogue_flux2_text_design_seed84701_00001_.png",
+    "pixel_seed": 84801,
+    "pixel_prompt_id": "4ce786df-ac6a-45e7-9088-f1211b0a1355",
+    "pixelized": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\pixel_flux2_text_design_dice_flux2_rogue_pixel_flux2_text_design_seed84801_00001_.png"
+  },
+  {
+    "label": "flux2_text_strict",
+    "kind": "t2i",
+    "seed": 84702,
+    "positive": "cute female rogue, single character, full body standing pose, warm chestnut brown bob hair, soft cute face, bright eyes, compact readable silhouette, white leather bodice, blue waist cloth sash, small gold trim, brown leather belt and straps, dark fitted leggings, sturdy brown boots, one small dagger, fantasy RPG anime character design, high quality illustration, plain light background",
+    "negative": "low quality, bad anatomy, text, watermark, blue hair, white hair, silver hair, multiple characters, character sheet, turnaround, back view, round shield, heavy knight armor, realistic photo, 3d render",
+    "source_prompt_id": "6fd26276-8f9b-4c6b-a6a0-61aa202a7243",
+    "source": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\source_flux2_text_strict_dice_flux2_rogue_flux2_text_strict_seed84702_00001_.png",
+    "pixel_seed": 84802,
+    "pixel_prompt_id": "1c5c3606-430c-43a2-b794-f50b6219e0c9",
+    "pixelized": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\pixel_flux2_text_strict_dice_flux2_rogue_pixel_flux2_text_strict_seed84802_00001_.png"
+  },
+  {
+    "label": "flux2_reference_latent",
+    "kind": "reference_latent",
+    "seed": 84703,
+    "positive": "cute female rogue, single character, full body standing pose, warm chestnut brown bob hair, light rogue outfit with white leather bodice, blue waist cloth accent, gold trim, brown leather belt, dark leggings, sturdy brown boots, small dagger, fantasy anime character design, high quality illustration, plain light background, use the reference image only as design-language guidance: polished anime rendering, white blue gold material language, leather belt density, layered cloth feel; change the role into a rogue and do not keep the knight armor or shield",
+    "negative": "low quality, bad anatomy, text, watermark, blue hair, white hair, silver hair, multiple characters, character sheet, turnaround, back view, round shield, heavy knight armor, realistic photo, 3d render",
+    "source_prompt_id": "149fa3ed-2e20-469e-a5e3-28ddb2799711",
+    "source": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\source_flux2_reference_latent_dice_flux2_rogue_flux2_reference_latent_seed84703_00001_.png",
+    "pixel_seed": 84803,
+    "pixel_prompt_id": "3edced48-72a2-4c21-ab8c-88b73453dc62",
+    "pixelized": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\pixel_flux2_reference_latent_dice_flux2_rogue_pixel_flux2_reference_latent_seed84803_00001_.png"
+  },
+  {
+    "label": "flux2_refplus_clothes_late",
+    "kind": "refplus",
+    "seed": 84704,
+    "positive": "cute female rogue, single character, full body standing pose, warm chestnut brown bob hair, light rogue outfit with white leather bodice, blue waist cloth accent, gold trim, brown leather belt, dark leggings, sturdy brown boots, small dagger, fantasy anime character design, high quality illustration, plain light background, use the reference image only as design-language guidance: polished anime rendering, white blue gold material language, leather belt density, layered cloth feel; change the role into a rogue and do not keep the knight armor or shield",
+    "negative": "low quality, bad anatomy, text, watermark, blue hair, white hair, silver hair, multiple characters, character sheet, turnaround, back view, round shield, heavy knight armor, realistic photo, 3d render",
+    "source_prompt_id": "a73b0c66-f7f7-4c92-966c-f292d86fb7cf",
+    "source": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\source_flux2_refplus_clothes_late_dice_flux2_rogue_flux2_refplus_clothes_late_seed84704_00001_.png",
+    "pixel_seed": 84804,
+    "pixel_prompt_id": "fc259e4c-1280-4f4e-8481-d67a1ef41b89",
+    "pixelized": "C:\\Users\\yuuuu\\Documents\\Codex\\2026-08-20\\c-users-yuuuu-ai-comfyui-windows\\outputs\\flux2_rogue_design_transfer\\pixel_flux2_refplus_clothes_late_dice_flux2_rogue_pixel_flux2_refplus_clothes_late_seed84804_00001_.png"
+  }
+]
