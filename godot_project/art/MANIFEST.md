@@ -8,7 +8,7 @@
 python3 tools/art_manifest.py
 ```
 
-**進捗: 0 / 88**
+**進捗: 15 / 88**
 
 ## 優先度の意味
 
@@ -31,20 +31,20 @@ python3 tools/art_manifest.py
 連番（`_0`, `_1`, …）はアニメーションになります。番号は0から連続
 している必要があり、抜けたところでクリップが終わります。
 
-## P0 — これが無いと画面が壊れて見える　（0 / 8）
+## P0 — これが無いと画面が壊れて見える　（8 / 8）
 
 | | パス | 内容 |
 | --- | --- | --- |
-| [ ] | `art/stage/knight_idle.png` | 自機「剣士」の立ち絵・通常 |
-| [ ] | `art/stage/stray_idle.png` | 「はぐれ兵」の立ち絵・通常 |
-| [ ] | `art/stage/scout_idle.png` | 「斥候」の立ち絵・通常 |
-| [ ] | `art/stage/archer_idle.png` | 「射手」の立ち絵・通常 |
-| [ ] | `art/stage/heavy_idle.png` | 「重装」の立ち絵・通常 |
-| [ ] | `art/stage/plague_idle.png` | 「疫病持ち」の立ち絵・通常 |
-| [ ] | `art/stage/captain_idle.png` | 「隊長」の立ち絵・通常 |
-| [ ] | `art/stage/boss_idle.png` | 「ボス」の立ち絵・通常 |
+| [x] | `art/stage/knight_idle.png` | 自機「剣士」の立ち絵・通常 |
+| [x] | `art/stage/stray_idle.png` | 「はぐれ兵」の立ち絵・通常 |
+| [x] | `art/stage/scout_idle.png` | 「斥候」の立ち絵・通常 |
+| [x] | `art/stage/archer_idle.png` | 「射手」の立ち絵・通常 |
+| [x] | `art/stage/heavy_idle.png` | 「重装」の立ち絵・通常 |
+| [x] | `art/stage/plague_idle.png` | 「疫病持ち」の立ち絵・通常 |
+| [x] | `art/stage/captain_idle.png` | 「隊長」の立ち絵・通常 |
+| [x] | `art/stage/boss_idle.png` | 「ボス」の立ち絵・通常 |
 
-## P1 — 商品として要る　（0 / 16）
+## P1 — 商品として要る　（7 / 16）
 
 | | パス | 内容 |
 | --- | --- | --- |
@@ -57,13 +57,13 @@ python3 tools/art_manifest.py
 | [ ] | `art/stage/knight_hit_1.png` | 自機「剣士」被弾アニメ |
 | [ ] | `art/stage/knight_hit_2.png` | 自機「剣士」被弾アニメ |
 | [ ] | `art/stage/knight_hit_3.png` | 自機「剣士」被弾アニメ |
-| [ ] | `art/face/stray_node.png` | 「はぐれ兵」のマップ顔 |
-| [ ] | `art/face/scout_node.png` | 「斥候」のマップ顔 |
-| [ ] | `art/face/archer_node.png` | 「射手」のマップ顔 |
-| [ ] | `art/face/heavy_node.png` | 「重装」のマップ顔 |
-| [ ] | `art/face/plague_node.png` | 「疫病持ち」のマップ顔 |
-| [ ] | `art/face/captain_node.png` | 「隊長」のマップ顔 |
-| [ ] | `art/face/boss_node.png` | 「ボス」のマップ顔 |
+| [x] | `art/face/stray_node.png` | 「はぐれ兵」のマップ顔 |
+| [x] | `art/face/scout_node.png` | 「斥候」のマップ顔 |
+| [x] | `art/face/archer_node.png` | 「射手」のマップ顔 |
+| [x] | `art/face/heavy_node.png` | 「重装」のマップ顔 |
+| [x] | `art/face/plague_node.png` | 「疫病持ち」のマップ顔 |
+| [x] | `art/face/captain_node.png` | 「隊長」のマップ顔 |
+| [x] | `art/face/boss_node.png` | 「ボス」のマップ顔 |
 
 ## P2 — あると良い　（0 / 64）
 
