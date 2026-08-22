@@ -1051,6 +1051,7 @@ var zone_gallery: Control
 var run_track: RunTrack
 var run_label: Label
 var hero_portrait: HeroPortrait
+var hp_caption: Label
 var hp_bar: GaugeBar
 var hp_label: Label
 var shield_chip: PanelContainer
@@ -2000,6 +2001,13 @@ func _build_top_zone() -> void:
 	# One row, not two: the second row used to spill past the zone's fixed
 	# height and slide under the enemy panel.
 	var hp_row := stat_row
+	hp_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT, true)
+	hp_caption.text = tr("昂り")
+	hp_caption.custom_minimum_size = Vector2(34, 0)
+	hp_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hp_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	hp_row.add_child(hp_caption)
+
 	hp_bar = GaugeBar.new()
 	hp_bar.custom_minimum_size = Vector2(0, 22)
 	hp_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2984,13 +2992,20 @@ func _refresh_top() -> void:
 	hero_portrait.face_color = hero_token_color
 	hero_portrait.hp_ratio = float(player_hp) / float(max(player_max_hp, 1))
 
+	# The bar and label show 昂り (arousal), not remaining HP: the same
+	# underlying number, read from the other end. Internal HP stays the
+	# real currency — damage math, debuffs, the enemy AI, and the 35%
+	# threshold below all still read player_hp untouched. Only the paint
+	# is inverted, here and nowhere else.
+	var arousal: int = max(player_max_hp - player_hp, 0)
+	var safe_ratio: float = float(player_hp) / float(max(player_max_hp, 1))
 	hp_bar.max_value = player_max_hp
 	hp_bar.segments = 12
-	hp_bar.value = max(player_hp, 0)
-	hp_bar.fill_color = COL_HP if float(player_hp) / float(max(player_max_hp, 1)) > 0.35 else COL_HP_LOW
+	hp_bar.value = arousal
+	hp_bar.fill_color = COL_HP if safe_ratio > 0.35 else COL_HP_LOW
 	_animate_gauge(hp_bar)
-	hp_label.text = "%d/%d" % [max(player_hp, 0), player_max_hp]
-	hp_label.add_theme_color_override("font_color", COL_TEXT if float(player_hp) / float(max(player_max_hp, 1)) > 0.35 else COL_HP_LOW)
+	hp_label.text = "%d/%d" % [arousal, player_max_hp]
+	hp_label.add_theme_color_override("font_color", COL_TEXT if safe_ratio > 0.35 else COL_HP_LOW)
 
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
@@ -4349,7 +4364,7 @@ func _start_run(key: String) -> void:
 	dice_bag = []
 	for die_id in hero["dice"]:
 		dice_bag.append(_make_die(str(die_id)))
-	hp_bar.display_value = float(player_hp)
+	hp_bar.display_value = float(player_max_hp - player_hp)
 	_generate_map()
 	_snap_player_visual()
 	_show_map()
@@ -4690,7 +4705,7 @@ func _enter_map_node() -> void:
 func _resolve_rest_node() -> void:
 	var healed: int = min(player_max_hp - player_hp, int(round(player_max_hp * 0.3)))
 	player_hp += healed
-	hp_bar.display_value = float(player_hp)
+	hp_bar.display_value = float(player_max_hp - player_hp)
 	sfx.emit("shield")
 	_refresh_top()
 	_open_overlay("休憩", "傷を癒した。HPが %d 回復（%d / %d）。" % [healed, player_hp, player_max_hp])
@@ -4813,7 +4828,7 @@ func _take_event_choice(choice: Dictionary) -> void:
 				pool.shuffle()
 				dice_bag.append(_make_die(str(pool[0])))
 				notes.append("%sダイスを入手" % str(dice_defs[str(pool[0])]["name"]))
-	hp_bar.display_value = float(player_hp)
+	hp_bar.display_value = float(player_max_hp - player_hp)
 	sfx.emit("reward")
 	_refresh_top()
 	if player_hp <= 0:
@@ -5427,7 +5442,7 @@ func _load_run() -> bool:
 	temp_board = _make_empty_board("none")
 	enemies = []
 	next_enemy_uid = 0
-	hp_bar.display_value = float(player_hp)
+	hp_bar.display_value = float(player_max_hp - player_hp)
 	_snap_player_visual()
 
 	# Mid-node when the game was closed: re-enter that node rather than
