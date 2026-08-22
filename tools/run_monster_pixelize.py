@@ -11,6 +11,15 @@ Two failed attempts got us here, and both failures are worth keeping:
      sprites, so its prior overrides "human, humanoid" in the negative —
      which destroys the one thing §4 exists for.
 
+  3. The same checkpoint with PixelAnimal.safetensors instead. Worth
+     ruling out, because that LoRA is never referenced by any saved
+     workflow and its filename promises exactly what this roster needs.
+     It is mis-named: its ss_output_name is "PixelSpiritesV2", another
+     *character* sprite LoRA. The mimic came back as a sumo wrestler in
+     a barrel, the mushroom as a girl in a swimsuit. The humanoid prior
+     lives in the 2D_Pixel_Sprites checkpoint itself, not in the LoRA on
+     top of it, so no LoRA swap on that checkpoint will fix this.
+
 So neither the design nor the style can come from the same stage. The
 designs stay as the Chroma renders, and the pixel checkpoint is applied
 over them through depth-guided img2img: DepthAnythingV2 holds the
