@@ -36,13 +36,13 @@ python3 tools/art_manifest.py
 | | パス | 内容 |
 | --- | --- | --- |
 | [x] | `art/stage/shizuku_idle.png` | 自機「シズク」の立ち絵・通常 |
-| [x] | `art/stage/stray_idle.png` | 「はぐれ兵」の立ち絵・通常 |
-| [x] | `art/stage/scout_idle.png` | 「斥候」の立ち絵・通常 |
-| [x] | `art/stage/archer_idle.png` | 「射手」の立ち絵・通常 |
-| [x] | `art/stage/heavy_idle.png` | 「重装」の立ち絵・通常 |
-| [x] | `art/stage/plague_idle.png` | 「疫病持ち」の立ち絵・通常 |
-| [x] | `art/stage/captain_idle.png` | 「隊長」の立ち絵・通常 |
-| [x] | `art/stage/boss_idle.png` | 「ボス」の立ち絵・通常 |
+| [x] | `art/stage/stray_idle.png` | 「粘体」の立ち絵・通常 |
+| [x] | `art/stage/scout_idle.png` | 「絡み蔦」の立ち絵・通常 |
+| [x] | `art/stage/archer_idle.png` | 「灼眼」の立ち絵・通常 |
+| [x] | `art/stage/heavy_idle.png` | 「擬態箱」の立ち絵・通常 |
+| [x] | `art/stage/plague_idle.png` | 「胞子塊」の立ち絵・通常 |
+| [x] | `art/stage/captain_idle.png` | 「贄喰い」の立ち絵・通常 |
+| [x] | `art/stage/boss_idle.png` | 「深淵の主」の立ち絵・通常 |
 
 ## P1 — 商品として要る　（7 / 16）
 
@@ -57,13 +57,13 @@ python3 tools/art_manifest.py
 | [ ] | `art/stage/shizuku_hit_1.png` | 自機「シズク」被弾アニメ |
 | [ ] | `art/stage/shizuku_hit_2.png` | 自機「シズク」被弾アニメ |
 | [ ] | `art/stage/shizuku_hit_3.png` | 自機「シズク」被弾アニメ |
-| [x] | `art/face/stray_node.png` | 「はぐれ兵」のマップ顔 |
-| [x] | `art/face/scout_node.png` | 「斥候」のマップ顔 |
-| [x] | `art/face/archer_node.png` | 「射手」のマップ顔 |
-| [x] | `art/face/heavy_node.png` | 「重装」のマップ顔 |
-| [x] | `art/face/plague_node.png` | 「疫病持ち」のマップ顔 |
-| [x] | `art/face/captain_node.png` | 「隊長」のマップ顔 |
-| [x] | `art/face/boss_node.png` | 「ボス」のマップ顔 |
+| [x] | `art/face/stray_node.png` | 「粘体」のマップ顔 |
+| [x] | `art/face/scout_node.png` | 「絡み蔦」のマップ顔 |
+| [x] | `art/face/archer_node.png` | 「灼眼」のマップ顔 |
+| [x] | `art/face/heavy_node.png` | 「擬態箱」のマップ顔 |
+| [x] | `art/face/plague_node.png` | 「胞子塊」のマップ顔 |
+| [x] | `art/face/captain_node.png` | 「贄喰い」のマップ顔 |
+| [x] | `art/face/boss_node.png` | 「深淵の主」のマップ顔 |
 
 ## P2 — あると良い　（0 / 64）
 
@@ -76,55 +76,55 @@ python3 tools/art_manifest.py
 | [ ] | `art/bg/scene_boss.png` | ボス戦の背景（無ければ戦闘背景） |
 | [ ] | `art/bg/scene_gallery.png` | 回想画面の背景（無ければマップ背景） |
 | [ ] | `art/stage/shizuku_down.png` | 自機「シズク」瀕死（HP35%以下） |
-| [ ] | `art/cg/stray_win.png` | 「はぐれ兵」に勝利したときのCG |
-| [ ] | `art/cg/stray_lose.png` | 「はぐれ兵」に敗北したときのCG |
-| [ ] | `art/cg/scout_win.png` | 「斥候」に勝利したときのCG |
-| [ ] | `art/cg/scout_lose.png` | 「斥候」に敗北したときのCG |
-| [ ] | `art/cg/archer_win.png` | 「射手」に勝利したときのCG |
-| [ ] | `art/cg/archer_lose.png` | 「射手」に敗北したときのCG |
-| [ ] | `art/cg/heavy_win.png` | 「重装」に勝利したときのCG |
-| [ ] | `art/cg/heavy_lose.png` | 「重装」に敗北したときのCG |
-| [ ] | `art/cg/plague_win.png` | 「疫病持ち」に勝利したときのCG |
-| [ ] | `art/cg/plague_lose.png` | 「疫病持ち」に敗北したときのCG |
-| [ ] | `art/cg/captain_win.png` | 「隊長」に勝利したときのCG |
-| [ ] | `art/cg/captain_lose.png` | 「隊長」に敗北したときのCG |
-| [ ] | `art/cg/boss_win.png` | 「ボス」に勝利したときのCG |
-| [ ] | `art/cg/boss_lose.png` | 「ボス」に敗北したときのCG |
-| [ ] | `art/stage/stray_hit_0.png` | 「はぐれ兵」被弾アニメ |
-| [ ] | `art/stage/stray_hit_1.png` | 「はぐれ兵」被弾アニメ |
-| [ ] | `art/stage/stray_hit_2.png` | 「はぐれ兵」被弾アニメ |
-| [ ] | `art/stage/stray_hit_3.png` | 「はぐれ兵」被弾アニメ |
-| [ ] | `art/stage/stray_down.png` | 「はぐれ兵」瀕死（HP35%以下） |
-| [ ] | `art/stage/scout_hit_0.png` | 「斥候」被弾アニメ |
-| [ ] | `art/stage/scout_hit_1.png` | 「斥候」被弾アニメ |
-| [ ] | `art/stage/scout_hit_2.png` | 「斥候」被弾アニメ |
-| [ ] | `art/stage/scout_hit_3.png` | 「斥候」被弾アニメ |
-| [ ] | `art/stage/scout_down.png` | 「斥候」瀕死（HP35%以下） |
-| [ ] | `art/stage/archer_hit_0.png` | 「射手」被弾アニメ |
-| [ ] | `art/stage/archer_hit_1.png` | 「射手」被弾アニメ |
-| [ ] | `art/stage/archer_hit_2.png` | 「射手」被弾アニメ |
-| [ ] | `art/stage/archer_hit_3.png` | 「射手」被弾アニメ |
-| [ ] | `art/stage/archer_down.png` | 「射手」瀕死（HP35%以下） |
-| [ ] | `art/stage/heavy_hit_0.png` | 「重装」被弾アニメ |
-| [ ] | `art/stage/heavy_hit_1.png` | 「重装」被弾アニメ |
-| [ ] | `art/stage/heavy_hit_2.png` | 「重装」被弾アニメ |
-| [ ] | `art/stage/heavy_hit_3.png` | 「重装」被弾アニメ |
-| [ ] | `art/stage/heavy_down.png` | 「重装」瀕死（HP35%以下） |
-| [ ] | `art/stage/plague_hit_0.png` | 「疫病持ち」被弾アニメ |
-| [ ] | `art/stage/plague_hit_1.png` | 「疫病持ち」被弾アニメ |
-| [ ] | `art/stage/plague_hit_2.png` | 「疫病持ち」被弾アニメ |
-| [ ] | `art/stage/plague_hit_3.png` | 「疫病持ち」被弾アニメ |
-| [ ] | `art/stage/plague_down.png` | 「疫病持ち」瀕死（HP35%以下） |
-| [ ] | `art/stage/captain_hit_0.png` | 「隊長」被弾アニメ |
-| [ ] | `art/stage/captain_hit_1.png` | 「隊長」被弾アニメ |
-| [ ] | `art/stage/captain_hit_2.png` | 「隊長」被弾アニメ |
-| [ ] | `art/stage/captain_hit_3.png` | 「隊長」被弾アニメ |
-| [ ] | `art/stage/captain_down.png` | 「隊長」瀕死（HP35%以下） |
-| [ ] | `art/stage/boss_hit_0.png` | 「ボス」被弾アニメ |
-| [ ] | `art/stage/boss_hit_1.png` | 「ボス」被弾アニメ |
-| [ ] | `art/stage/boss_hit_2.png` | 「ボス」被弾アニメ |
-| [ ] | `art/stage/boss_hit_3.png` | 「ボス」被弾アニメ |
-| [ ] | `art/stage/boss_down.png` | 「ボス」瀕死（HP35%以下） |
+| [ ] | `art/cg/stray_win.png` | 「粘体」に勝利したときのCG |
+| [ ] | `art/cg/stray_lose.png` | 「粘体」に敗北したときのCG |
+| [ ] | `art/cg/scout_win.png` | 「絡み蔦」に勝利したときのCG |
+| [ ] | `art/cg/scout_lose.png` | 「絡み蔦」に敗北したときのCG |
+| [ ] | `art/cg/archer_win.png` | 「灼眼」に勝利したときのCG |
+| [ ] | `art/cg/archer_lose.png` | 「灼眼」に敗北したときのCG |
+| [ ] | `art/cg/heavy_win.png` | 「擬態箱」に勝利したときのCG |
+| [ ] | `art/cg/heavy_lose.png` | 「擬態箱」に敗北したときのCG |
+| [ ] | `art/cg/plague_win.png` | 「胞子塊」に勝利したときのCG |
+| [ ] | `art/cg/plague_lose.png` | 「胞子塊」に敗北したときのCG |
+| [ ] | `art/cg/captain_win.png` | 「贄喰い」に勝利したときのCG |
+| [ ] | `art/cg/captain_lose.png` | 「贄喰い」に敗北したときのCG |
+| [ ] | `art/cg/boss_win.png` | 「深淵の主」に勝利したときのCG |
+| [ ] | `art/cg/boss_lose.png` | 「深淵の主」に敗北したときのCG |
+| [ ] | `art/stage/stray_hit_0.png` | 「粘体」被弾アニメ |
+| [ ] | `art/stage/stray_hit_1.png` | 「粘体」被弾アニメ |
+| [ ] | `art/stage/stray_hit_2.png` | 「粘体」被弾アニメ |
+| [ ] | `art/stage/stray_hit_3.png` | 「粘体」被弾アニメ |
+| [ ] | `art/stage/stray_down.png` | 「粘体」瀕死（HP35%以下） |
+| [ ] | `art/stage/scout_hit_0.png` | 「絡み蔦」被弾アニメ |
+| [ ] | `art/stage/scout_hit_1.png` | 「絡み蔦」被弾アニメ |
+| [ ] | `art/stage/scout_hit_2.png` | 「絡み蔦」被弾アニメ |
+| [ ] | `art/stage/scout_hit_3.png` | 「絡み蔦」被弾アニメ |
+| [ ] | `art/stage/scout_down.png` | 「絡み蔦」瀕死（HP35%以下） |
+| [ ] | `art/stage/archer_hit_0.png` | 「灼眼」被弾アニメ |
+| [ ] | `art/stage/archer_hit_1.png` | 「灼眼」被弾アニメ |
+| [ ] | `art/stage/archer_hit_2.png` | 「灼眼」被弾アニメ |
+| [ ] | `art/stage/archer_hit_3.png` | 「灼眼」被弾アニメ |
+| [ ] | `art/stage/archer_down.png` | 「灼眼」瀕死（HP35%以下） |
+| [ ] | `art/stage/heavy_hit_0.png` | 「擬態箱」被弾アニメ |
+| [ ] | `art/stage/heavy_hit_1.png` | 「擬態箱」被弾アニメ |
+| [ ] | `art/stage/heavy_hit_2.png` | 「擬態箱」被弾アニメ |
+| [ ] | `art/stage/heavy_hit_3.png` | 「擬態箱」被弾アニメ |
+| [ ] | `art/stage/heavy_down.png` | 「擬態箱」瀕死（HP35%以下） |
+| [ ] | `art/stage/plague_hit_0.png` | 「胞子塊」被弾アニメ |
+| [ ] | `art/stage/plague_hit_1.png` | 「胞子塊」被弾アニメ |
+| [ ] | `art/stage/plague_hit_2.png` | 「胞子塊」被弾アニメ |
+| [ ] | `art/stage/plague_hit_3.png` | 「胞子塊」被弾アニメ |
+| [ ] | `art/stage/plague_down.png` | 「胞子塊」瀕死（HP35%以下） |
+| [ ] | `art/stage/captain_hit_0.png` | 「贄喰い」被弾アニメ |
+| [ ] | `art/stage/captain_hit_1.png` | 「贄喰い」被弾アニメ |
+| [ ] | `art/stage/captain_hit_2.png` | 「贄喰い」被弾アニメ |
+| [ ] | `art/stage/captain_hit_3.png` | 「贄喰い」被弾アニメ |
+| [ ] | `art/stage/captain_down.png` | 「贄喰い」瀕死（HP35%以下） |
+| [ ] | `art/stage/boss_hit_0.png` | 「深淵の主」被弾アニメ |
+| [ ] | `art/stage/boss_hit_1.png` | 「深淵の主」被弾アニメ |
+| [ ] | `art/stage/boss_hit_2.png` | 「深淵の主」被弾アニメ |
+| [ ] | `art/stage/boss_hit_3.png` | 「深淵の主」被弾アニメ |
+| [ ] | `art/stage/boss_down.png` | 「深淵の主」瀕死（HP35%以下） |
 | [ ] | `art/face/rest_node.png` | 休憩ノードのマップ顔 |
 | [ ] | `art/face/shop_node.png` | 店ノードのマップ顔 |
 | [ ] | `art/face/event_node.png` | イベントノードのマップ顔 |

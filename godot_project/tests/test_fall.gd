@@ -33,7 +33,7 @@ func _reset(main) -> void:
 	main.map_row = 0
 	main.map_col = 0
 	main._start_encounter()
-	main.encounter_name = "はぐれ兵"
+	main.encounter_name = "粘体"
 	main.encounter_art = "stray"
 	main._close_overlay()
 	# lifetime persists to disk (user://profile.json) across real runs by
