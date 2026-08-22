@@ -18,10 +18,23 @@ func _init() -> void:
 	main._close_overlay()
 	await process_frame
 
+	# The last enemy in the table is the boss: it carries a part, a debuff
+	# and two traits, so the dossier is at its fullest here rather than at
+	# its emptiest. はぐれ兵 would have shown an empty note and proved
+	# nothing about whether the note fits.
+	main.enemies = []
+	main.map_row = 6
+	main.map_col = 0
+	main._ensure_map_node(6, 0)
+	main.map_nodes[6][0]["type"] = "boss"
+	main.map_nodes[6][0]["enemy"] = main.enemy_defs.size() - 1
+	main._setup_encounter()
+	main._refresh_all()
+
 	for shot in [
 		{"name": "ui_00", "hp_frac": 1.0, "parts": {"chest": 0, "depths": 0, "tail": 0}},
 		{"name": "ui_50", "hp_frac": 0.5, "parts": {"chest": 2, "depths": 1, "tail": 0}},
-		{"name": "ui_85", "hp_frac": 0.15, "parts": {"chest": 4, "depths": 3, "tail": 2}},
+		{"name": "ui_85", "hp_frac": 0.15, "parts": {"chest": 5, "depths": 3, "tail": 1}},
 	]:
 		main.player_hp = int(round(float(main.player_max_hp) * float(shot["hp_frac"])))
 		main.part_dev = (shot["parts"] as Dictionary).duplicate()

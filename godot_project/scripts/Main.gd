@@ -1098,7 +1098,10 @@ var action_caption: Label
 var hero_panel: PanelContainer
 var hero_sprite: SpriteView
 var hero_stage_name: Label
-var part_dev_label: Label
+var part_box: VBoxContainer
+# part id -> {"label": Label, "pips": Array[IconGlyph]}
+var part_rows: Dictionary = {}
+var top_panel: PanelContainer
 
 var enemy_panel: Control
 var enemy_sprite: SpriteView
@@ -1108,6 +1111,7 @@ var enemy_hp_label: Label
 var intent_panel: PanelContainer
 var intent_icon: IconGlyph
 var intent_label: Label
+var intent_part: Label
 var intent_note: Label
 var place_panel: PanelContainer
 var place_body: VBoxContainer
@@ -1998,11 +2002,20 @@ func _build_ui() -> void:
 	_relabel_static_text()
 
 func _build_top_zone() -> void:
+	# This strip is the bottom half of her column, not a separate HUD: it
+	# gets the same panel as the figure above it and sinks with her, so
+	# 昂り, the marks and her chips read as one object called "her"
+	# instead of as a status bar parked underneath a portrait.
+	top_panel = PanelContainer.new()
+	top_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	top_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 6, 6))
+	top_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	zone_top.add_child(top_panel)
+
 	var col := VBoxContainer.new()
-	col.set_anchors_preset(Control.PRESET_FULL_RECT)
 	col.add_theme_constant_override("separation", 6)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	zone_top.add_child(col)
+	top_panel.add_child(col)
 
 	var track_row := HBoxContainer.new()
 	track_row.add_theme_constant_override("separation", 8)
@@ -2151,9 +2164,36 @@ func _build_hero_zone() -> void:
 	hero_stage_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(hero_stage_name)
 
-	part_dev_label = _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER, true)
-	part_dev_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	col.add_child(part_dev_label)
+	# Development is a count that only ever goes up, so it is drawn as
+	# marks rather than as a number: five slots per part, filling in. A
+	# number tells you 3; five slots tell you 3 *out of five* and that
+	# two are left, which is the thing actually worth reading off it.
+	part_box = VBoxContainer.new()
+	part_box.add_theme_constant_override("separation", 2)
+	part_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(part_box)
+	part_rows = {}
+	for part in PARTS:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 3)
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		part_box.add_child(row)
+		var name_label := _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT, true)
+		name_label.text = str(PART_NAMES[part])
+		name_label.custom_minimum_size = Vector2(38, 0)
+		name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		row.add_child(name_label)
+		var pips := []
+		for i in range(PART_DEV_MAX):
+			var pip := IconGlyph.new()
+			pip.outline_color = COL_INK
+			pip.custom_minimum_size = Vector2(13, 13)
+			pip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(pip)
+			pips.append(pip)
+		part_rows[part] = {"label": name_label, "pips": pips}
 
 func _build_enemy_zone() -> void:
 	enemy_panel = PanelContainer.new()
@@ -2173,12 +2213,12 @@ func _build_enemy_zone() -> void:
 	enemy_sprite = SpriteView.new()
 	enemy_sprite.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	enemy_sprite.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	# The dossier below this grows with the enemy's traits, and a VBox pays
-	# for that out of whatever is set to expand — which is the figure. The
-	# result was that the boss, the one enemy worth looking at, came out
-	# 234x290 where an ordinary one got 234x382. The floor is what stops
-	# the most interesting character being the smallest.
-	enemy_sprite.custom_minimum_size = Vector2(0, 236)
+	# Identification, not spectacle. The figure only has to answer "who is
+	# standing there"; the enemy's real screen time is the 陥落 CG, which
+	# is full-frame at z_index 60. What the player re-reads every single
+	# turn is the intent below, so the floor here is low enough to leave
+	# that room and the dossier is what gets the column.
+	enemy_sprite.custom_minimum_size = Vector2(0, 150)
 	enemy_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(enemy_sprite)
 
@@ -2223,13 +2263,23 @@ func _build_enemy_zone() -> void:
 	intent_icon = IconGlyph.new()
 	intent_icon.kind = "slash"
 	intent_icon.glyph_color = Color("#FFF7E6")
-	intent_icon.custom_minimum_size = Vector2(22, 22)
+	intent_icon.custom_minimum_size = Vector2(26, 26)
 	intent_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	intent_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	intent_inner.add_child(intent_icon)
-	intent_label = _make_label(FS_NUM, Color("#FFF7E6"), HORIZONTAL_ALIGNMENT_LEFT, true)
+	# The one number on this column the player re-reads every turn. It is
+	# set at the size the 昂り readout uses, because it is the same
+	# question asked from the other side.
+	intent_label = _make_label(FS_NUM_BIG, Color("#FFF7E6"), HORIZONTAL_ALIGNMENT_LEFT, true)
 	intent_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	intent_inner.add_child(intent_label)
+	# Where it is aimed belongs on the badge next to how hard, not buried
+	# in the sentence below: those two numbers are read together, and the
+	# sentence is bounded at five lines that a boss already overruns.
+	intent_part = _make_label(FS_BODY, Color("#FFF7E6"), HORIZONTAL_ALIGNMENT_LEFT, true)
+	intent_part.autowrap_mode = TextServer.AUTOWRAP_OFF
+	intent_part.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	intent_inner.add_child(intent_part)
 
 	# The sentence wraps under the badge instead of beside it: the column is
 	# narrow now, and "行動を終えた時に光ったマスにいると当たる" beside a badge
@@ -2241,6 +2291,11 @@ func _build_enemy_zone() -> void:
 	# 図鑑 carries in full.
 	intent_note.clip_text = true
 	intent_note.max_lines_visible = 5
+	# clip_text lets a label report almost no minimum height, and the
+	# figure above is set to expand — so the dossier was being squeezed to
+	# nothing and the boss showed no intent text at all. This floor is the
+	# room those five lines need, claimed before the figure takes the rest.
+	intent_note.custom_minimum_size = Vector2(0, 92)
 	col.add_child(intent_note)
 
 # The column the enemy stands in is empty from the moment a fight ends until
@@ -2667,21 +2722,22 @@ func _layout_screen() -> void:
 	_place(zone_map, full)
 	_place(zone_gallery, full)
 	if _is_landscape():
-		# Three columns. The two outer ones are the characters — this is a
-		# game whose art is the point, so the art gets a little over half
-		# the frame and the board is sized to fit what is left, not the
-		# other way round. The centre column stacks board, hand, buttons,
-		# log at fixed heights so nothing that appears mid-turn can shift
-		# anything else.
+		# Three columns, but not three equal claims. She is the subject —
+		# the run happens to her, and 昂り and the marks are read off her
+		# column — so she gets the widest of the three. The enemy used to
+		# get more frame than she did; it is a dossier now. What it loses
+		# is split between her and the board.
 		var body_h: float = vp.y - margin * 2.0
-		var hero_w: float = clamp(vp.x * 0.28, 220.0, 320.0)
-		var enemy_w: float = clamp(vp.x * 0.245, 200.0, 288.0)
+		var hero_w: float = clamp(vp.x * 0.31, 220.0, 340.0)
+		var enemy_w: float = clamp(vp.x * 0.195, 180.0, 240.0)
 		var mid_x: float = margin + hero_w + gap
 		var mid_w: float = vp.x - margin - enemy_w - gap - mid_x
 
-		# Left: the player's figure, with their own status strip beneath it.
-		var top_h := 100.0
-		_place(zone_hero, Rect2(margin, margin, hero_w, body_h - top_h - gap))
+		# Left: her figure over her status, one column with no gap between
+		# the two halves — they are one panel wearing one colour, so a gap
+		# here would cut her in half.
+		var top_h := 108.0
+		_place(zone_hero, Rect2(margin, margin, hero_w, body_h - top_h))
 		_place(zone_top, Rect2(margin, margin + body_h - top_h, hero_w, top_h))
 
 		# Right: the enemy's figure and dossier, one full-height column.
@@ -3049,18 +3105,23 @@ func _refresh_top() -> void:
 	if backdrop_view != null:
 		backdrop_view.heat = ratio
 
-	# Everything above sits straight on the backdrop with no panel behind
-	# it, so ink-on-cream becomes ink-on-nothing the moment the room goes
-	# dark. These cross over with it. The board's own labels are not in
-	# this list on purpose: the board keeps its light and its contrast no
-	# matter how far gone she is.
-	var on_room := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
+	# This strip shares her panel, so it sinks with her rather than with
+	# the room.
+	if top_panel != null:
+		top_panel.add_theme_stylebox_override("panel",
+			_flat_style(COL_PANEL.lerp(COL_HERO_DEEP, sink), COL_INK, 3, 6, 6))
+
+	# Ink on cream becomes ink on nothing once the ground under it is
+	# dark, whether that ground is her panel or the room itself. The
+	# board's own labels are deliberately not in this list: the board
+	# keeps its light and its contrast no matter how far gone she is.
+	var on_dark := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
 	hp_label.add_theme_color_override("font_color",
 		COL_TEXT.lerp(COL_TEXT_ON_DARK, sink) if ratio < 0.65
 		else heat_color.lerp(COL_TEXT_ON_DARK, 0.45 * sink))
 	for label in [run_label, hp_caption, action_caption, log_label]:
 		if label != null:
-			label.add_theme_color_override("font_color", on_room)
+			label.add_theme_color_override("font_color", on_dark)
 
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
@@ -3124,20 +3185,28 @@ func _refresh_hero_stage() -> void:
 	hero_stage_name.add_theme_color_override("font_color",
 		COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink))
 
-	if part_dev_label != null:
-		var pieces := []
-		for part in PARTS:
-			pieces.append("%s%d" % [str(PART_NAMES[part]), int(part_dev.get(part, 0))])
-		part_dev_label.text = "　".join(pieces)
-		# Developed parts are the marks that do not wash off, so they are
-		# lit in the same heat the gauge uses rather than in body text.
-		var worst := 0
-		for part in PARTS:
-			worst = max(worst, int(part_dev.get(part, 0)))
-		var mark := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
-		if worst > 0:
-			mark = heat_color.lerp(COL_TEXT_ON_DARK, 0.25 * sink)
-		part_dev_label.add_theme_color_override("font_color", mark)
+	# Filled marks are lit in the same heat the gauge uses; empty ones
+	# cross over with the panel so they stay visible once it is dark.
+	var faded := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
+	for part in PARTS:
+		if not part_rows.has(part):
+			continue
+		var row: Dictionary = part_rows[part]
+		var dev := int(part_dev.get(part, 0))
+		(row["label"] as Label).add_theme_color_override("font_color", faded)
+		var pips: Array = row["pips"]
+		for i in range(pips.size()):
+			var pip: IconGlyph = pips[i]
+			var filled: bool = i < dev
+			pip.outlined = filled
+			# Each mark is hotter than the one before it, so a part at 4
+			# reads as further gone than a part at 2 without counting.
+			pip.glyph_color = _arousal_color(float(i + 1) / float(PART_DEV_MAX)) if filled else faded
+			# Only `kind` has a setter that repaints; the colour fields are
+			# plain vars. These pips are built once and mutated in place
+			# (unlike the action pips, which are rebuilt every refresh), so
+			# without this they would keep drawing their first frame.
+			pip.set_kind("pip_on" if filled else "pip_off")
 
 func _refresh_enemy() -> void:
 	_refresh_place_panel()
@@ -3165,16 +3234,24 @@ func _refresh_enemy() -> void:
 	intent_icon.set_kind("slash" if guaranteed else "focus")
 	intent_label.text = str(int(enemy["damage"]))
 	intent_panel.add_theme_stylebox_override("panel", _flat_style(COL_ENEMY if guaranteed else COL_DANGER, COL_INK, 3, 8, 3))
+	var part := str(enemy.get("part", ""))
+	var has_part: bool = part != "" and PART_NAMES.has(part)
+	intent_part.visible = has_part
+	if has_part:
+		intent_part.text = str(PART_NAMES[part])
+
 	var note_lines := []
 	note_lines.append(tr("毎ターン必ず当たる") if guaranteed else "行動を終えた時に光ったマスにいると当たる")
+	# Ahead of the debuff prose on purpose: the multiplier changes as she
+	# is developed, so it is the line most worth re-reading, and the note
+	# is clipped at five lines that a boss's debuff text already fills.
+	if has_part:
+		note_lines.append("%s狙い：昂り ×%.1f（開発度%d）" % [
+			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0))])
 	var kind := str(enemy.get("debuff", ""))
 	if kind != "" and temp_defs.has(kind):
 		note_lines.append("%s をマスにかける（%s）" % [
 			_t(temp_defs[kind]["name"]), _t(temp_defs[kind]["effect"])])
-	var part := str(enemy.get("part", ""))
-	if part != "" and PART_NAMES.has(part):
-		note_lines.append("%s狙い：昂り倍率 ×%.1f（開発度%d）" % [
-			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0))])
 	var traits := _enemy_trait_text(enemy)
 	if traits != "":
 		note_lines.append(traits)
