@@ -104,6 +104,19 @@ const COL_GOLD := Color("#F2B33D")
 const COL_DANGER := Color("#FF7A18")
 const COL_HP := Color("#3EA95E")
 const COL_HP_LOW := Color("#E4453A")
+# 昂り is painted as temperature, not as health. Cold and composed at
+# zero, hot at the limit, so a bar that grows reads as something being
+# done to her — the COL_HP/COL_HP_LOW pair it replaces painted a
+# *growing green bar* for most of a fight, and a growing green bar means
+# "going well" in every visual language there is. The breakpoint is the
+# same 35%-HP line the hurt pose and the danger colour already use.
+const COL_CALM := Color("#5E8CA8")
+const COL_AROUSAL := Color("#C4506B")
+const COL_AROUSAL_MAX := Color("#7E1F3C")
+# Her own column sinks as she does. The board never does — that contrast
+# is the whole concept, so this colour exists for the hero panel and for
+# nothing else.
+const COL_HERO_DEEP := Color("#2E2026")
 const COL_SHIELD := Color("#2E7BD6")
 const COL_ENEMY := Color("#C2453A")
 const COL_TRACK := Color("#BFA87F")
@@ -146,12 +159,24 @@ class Backdrop:
 			tint_progress = clamp(v, 0.0, 1.0)
 			queue_redraw()
 
+	# How far gone she is, 0..1, straight off 昂り. The climb warms the
+	# room; this one puts the light out in it. Kept separate from
+	# tint_progress because they answer different questions — how deep
+	# into the dungeon, and how deep into her.
+	var heat: float = 0.0:
+		set(v):
+			heat = clamp(v, 0.0, 1.0)
+			queue_redraw()
+
 	func _draw() -> void:
 		if size.x <= 0.0 or size.y <= 0.0:
 			return
-		var top_color := Color("#F7EDD6").lerp(Color("#F7E2CB"), tint_progress)
-		var mid_color := Color("#EFE0BE").lerp(Color("#EDCFB0"), tint_progress)
-		var bottom_color := Color("#DFCCA2").lerp(Color("#DDB894"), tint_progress)
+		# Late, not early: squared so the room holds its composure through
+		# the first half of a fight and gives it up in the back half.
+		var sink: float = heat * heat
+		var top_color := Color("#F7EDD6").lerp(Color("#F7E2CB"), tint_progress).lerp(Color("#3E2029"), sink)
+		var mid_color := Color("#EFE0BE").lerp(Color("#EDCFB0"), tint_progress).lerp(Color("#31161F"), sink)
+		var bottom_color := Color("#DFCCA2").lerp(Color("#DDB894"), tint_progress).lerp(Color("#210E18"), sink)
 		var w: float = size.x
 		var h: float = size.y
 		var mid_y: float = h * 0.45
@@ -164,12 +189,15 @@ class Backdrop:
 			PackedColorArray([mid_color, mid_color, bottom_color, bottom_color])
 		)
 		# A soft light pooled over the board, so the middle of the screen
-		# reads as the lit part of the table.
+		# reads as the lit part of the table. It grows *stronger* as the
+		# room goes dark: the board is the one thing that stays lit and
+		# stays fair no matter how far she has gone.
 		var glow_center := Vector2(w * 0.5, h * 0.42)
 		var glow_radius: float = max(w, h) * 0.55
+		var glow_alpha: float = 0.05 + 0.11 * sink
 		for i in range(5, 0, -1):
 			var t: float = float(i) / 5.0
-			draw_circle(glow_center, glow_radius * t, Color(1.0, 0.98, 0.9, 0.05))
+			draw_circle(glow_center, glow_radius * t, Color(1.0, 0.98, 0.9, glow_alpha))
 
 # Vector icons drawn with an ink outline so a bright fill still reads on a
 # bright ground. Every shape is painted twice: once grown into the outline
@@ -3008,14 +3036,31 @@ func _refresh_top() -> void:
 	# threshold below all still read player_hp untouched. Only the paint
 	# is inverted, here and nowhere else.
 	var arousal: int = max(player_max_hp - player_hp, 0)
-	var safe_ratio: float = float(player_hp) / float(max(player_max_hp, 1))
+	var ratio: float = _arousal_ratio()
+	var heat_color := _arousal_color(ratio)
 	hp_bar.max_value = player_max_hp
 	hp_bar.segments = 12
 	hp_bar.value = arousal
-	hp_bar.fill_color = COL_HP if safe_ratio > 0.35 else COL_HP_LOW
+	hp_bar.fill_color = heat_color
 	_animate_gauge(hp_bar)
 	hp_label.text = "%d/%d" % [arousal, player_max_hp]
-	hp_label.add_theme_color_override("font_color", COL_TEXT if safe_ratio > 0.35 else COL_HP_LOW)
+	# The room answers to her, not to the turn counter.
+	var sink: float = ratio * ratio
+	if backdrop_view != null:
+		backdrop_view.heat = ratio
+
+	# Everything above sits straight on the backdrop with no panel behind
+	# it, so ink-on-cream becomes ink-on-nothing the moment the room goes
+	# dark. These cross over with it. The board's own labels are not in
+	# this list on purpose: the board keeps its light and its contrast no
+	# matter how far gone she is.
+	var on_room := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
+	hp_label.add_theme_color_override("font_color",
+		COL_TEXT.lerp(COL_TEXT_ON_DARK, sink) if ratio < 0.65
+		else heat_color.lerp(COL_TEXT_ON_DARK, 0.45 * sink))
+	for label in [run_label, hp_caption, action_caption, log_label]:
+		if label != null:
+			label.add_theme_color_override("font_color", on_room)
 
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
@@ -3061,11 +3106,38 @@ func _refresh_hero_stage() -> void:
 	var hurt: bool = float(player_hp) / float(max(player_max_hp, 1)) <= 0.35
 	_show_art(hero_sprite, "stage", _hero_art_id(),
 		["down", "idle"] if hurt else ["idle"])
+
+	# Her column is the one panel on screen that answers to her state. The
+	# board keeps its own bright styling no matter what happens here.
+	var ratio: float = _arousal_ratio()
+	var sink: float = ratio * ratio
+	var heat_color := _arousal_color(ratio)
+	hero_panel.add_theme_stylebox_override("panel",
+		_flat_style(COL_PANEL.lerp(COL_HERO_DEEP, sink), COL_INK, 3, 6, 6))
+	# She takes on the heat rather than the dark: tinting toward rose
+	# reads as flush, where dimming her would just hide the one drawing
+	# on screen the player is here to look at. modulate is free — the hit
+	# clip animates `flash`, not this.
+	hero_sprite.modulate = Color.WHITE.lerp(Color("#EE8FA6"), sink * 0.30)
+	# Ink on cream is unreadable once the cream is gone, so the type
+	# crosses over with the panel it sits on.
+	hero_stage_name.add_theme_color_override("font_color",
+		COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink))
+
 	if part_dev_label != null:
 		var pieces := []
 		for part in PARTS:
 			pieces.append("%s%d" % [str(PART_NAMES[part]), int(part_dev.get(part, 0))])
 		part_dev_label.text = "　".join(pieces)
+		# Developed parts are the marks that do not wash off, so they are
+		# lit in the same heat the gauge uses rather than in body text.
+		var worst := 0
+		for part in PARTS:
+			worst = max(worst, int(part_dev.get(part, 0)))
+		var mark := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
+		if worst > 0:
+			mark = heat_color.lerp(COL_TEXT_ON_DARK, 0.25 * sink)
+		part_dev_label.add_theme_color_override("font_color", mark)
 
 func _refresh_enemy() -> void:
 	_refresh_place_panel()
@@ -4478,6 +4550,17 @@ const PART_DEV_MAX := 5
 # Flat until 2, a step at 2 and again at 4 — the same shape debuffs and
 # armor already use elsewhere, so a developed part reads as one more
 # stacking modifier rather than a new kind of number.
+# 0 at full HP, 1 at the limit. Every part of the screen that reacts to
+# her state reads it from here, so the gauge, her column and the room can
+# never disagree about how far gone she is.
+func _arousal_ratio() -> float:
+	return clampf(float(player_max_hp - player_hp) / float(max(player_max_hp, 1)), 0.0, 1.0)
+
+func _arousal_color(ratio: float) -> Color:
+	if ratio <= 0.65:
+		return COL_CALM.lerp(COL_AROUSAL, ratio / 0.65)
+	return COL_AROUSAL.lerp(COL_AROUSAL_MAX, (ratio - 0.65) / 0.35)
+
 func _part_multiplier(part: String) -> float:
 	var dev := int(part_dev.get(part, 0))
 	if dev >= 5:
