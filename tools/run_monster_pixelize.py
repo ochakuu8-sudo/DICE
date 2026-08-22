@@ -20,6 +20,20 @@ Two failed attempts got us here, and both failures are worth keeping:
      lives in the 2D_Pixel_Sprites checkpoint itself, not in the LoRA on
      top of it, so no LoRA swap on that checkpoint will fix this.
 
+  4. pixel-art-xl.safetensors on sd_xl_base_1.0, text-to-image. This is
+     the one worth knowing about, because it is genuinely a different
+     animal: despite the filename its ss_output_name is
+     pixelbuildings128-v1, an SDXL LoRA trained on 1150 objects and
+     props, so it carries no humanoid prior at all. It solved both of
+     the problems above — every creature came back inhuman and all seven
+     shared one idiom. It lost the designs instead. Its pull toward
+     "cute object" archetypes turned the burning eye into a crowned
+     snowman, the abyssal maw into an owl, and the vine tangle into a
+     houseplant in a pot. Style and species were right; the concepts
+     were gone.
+
+That is the whole lesson: a model can be made to hold the style or the
+subject, and the only thing that reliably holds the *shape* is depth.
 So neither the design nor the style can come from the same stage. The
 designs stay as the Chroma renders, and the pixel checkpoint is applied
 over them through depth-guided img2img: DepthAnythingV2 holds the
