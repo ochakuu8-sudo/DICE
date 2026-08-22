@@ -1,19 +1,24 @@
-"""Build シズク's battle stage sprite and install it into the Godot project.
+"""シズク's stage sprite as a finished illustration — no pixelization.
 
-Two stages, both already proven on this machine:
+The screen's actual design language is not pixel art. Every board tile,
+panel, chip and dice card is a clean shape with a COL_INK (#2A2320)
+outline; IconGlyph even documents the technique ("painted twice: once
+grown into the outline color, once at true size"). The pixel sprites
+were the one thing on screen that did not speak it.
 
-  1. Source illustration — chroma-unlocked-v50-fp8-scaled with the shizuku
-     character LoRA alone at 1.0, euler / beta / 24 steps / CFG 3.8. The
-     LoRA trained at 1024x1024 and DESIGN_DIRECTION.md §5 flags that its
-     accuracy in a tall frame is unverified, so this renders several
-     candidate seeds at 832x1216 rather than trusting one.
-  2. Pixelization — the existing 2d_pixel_toolkit_i2i_depth path at
-     800x1200, byte-identical settings to the ones that produced the
-     roster already committed in art/stage/.
+So: render the illustration, key it cleanly, and give it the same ink
+outline the rest of the frame wears. Three things have to be right for
+this to look made rather than exported —
 
-Then the same edge flood-fill cutout the roster script uses, and a
-contact sheet at the real in-game size so the result is judged where it
-will actually be seen rather than at authoring resolution.
+  1. no white fringe. A hard binary key on an anti-aliased illustration
+     leaves one, so alpha ramps across the boundary band and the
+     background colour is un-mixed back out of the semi-transparent
+     pixels.
+  2. interior whites survive. Her dress is mostly white, so the key is a
+     flood fill inwards from the border, never a global colour match.
+  3. the outline lands at the same visual weight as the board's. The
+     board draws 3px at display size and she is shown at ~0.4x, so the
+     rim is authored at 7px.
 """
 
 import json
@@ -24,54 +29,50 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 COMFY = "http://127.0.0.1:8188"
 ROOT = Path(r"C:\Users\yuuuu\Documents\Codex\2026-08-20\c-users-yuuuu-ai-comfyui-windows")
-REPO = ROOT / "work" / "DICE"
-PROJECT = REPO / "godot_project"
 COMFY_ROOT = Path(
     r"C:\Users\yuuuu\AI\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\ComfyUI"
 )
-COMFY_INPUT = COMFY_ROOT / "input"
 COMFY_OUTPUT = COMFY_ROOT / "output"
-OUT = ROOT / "outputs" / "shizuku_stage"
+OUT = ROOT / "outputs" / "shizuku_stage_clean"
 
 UNET = "chroma-unlocked-v50-fp8-scaled.safetensors"
 LORA = "shizuku_charalora_v4_hair_ornament_chromav50-step00004000.safetensors"
 
-# No face wording: the LoRA owns the face. Outfit enumerated one piece at
-# a time, and a full-body standing pose asked for explicitly because this
-# is a stage sprite, not a portrait.
+# 832x1248 is exactly 2:3, so fitting to the manifest's 800x1200 is a
+# clean scale with no aspect distortion.
+GEN_W, GEN_H = 832, 1248
+SHEET_W, SHEET_H = 800, 1200
+INGAME = (274, 412)
+INK = (42, 35, 32)
+OUTLINE_PX = 7
+
 POSITIVE = (
     "shizuku_charalora, shizuku, 1girl, front standing full body, standing straight, "
-    "whole body visible from head to feet, "
+    "whole body visible from head to feet, feet visible, "
     "pale blonde very long hair, blunt bangs, "
     "large black and white ribbon bow, antique gold flower hair ornament, "
     "black hanging tassel, black high collar, black corset bodice, "
     "white puffy sleeves, black and white noble dress, "
     "antique gold shoulder armor, "
-    "rough painterly anime illustration, scratchy ink lines, "
-    "plain flat white background"
+    "crisp clean ink linework, confident outlines, flat cel shading, "
+    "high quality character illustration, game character art, "
+    "plain flat white background, no shadow on the ground"
 )
 NEGATIVE = (
     "low quality, worst quality, bad anatomy, bad hands, extra fingers, "
     "missing fingers, fused fingers, distorted face, color bleeding, "
-    "gray skin, skin-colored clothing, text, watermark, "
+    "gray skin, skin-colored clothing, text, watermark, signature, "
     "cropped, close-up, portrait, bust shot, multiple characters, "
-    "busy background, scenery"
+    "busy background, scenery, gradient background, cast shadow, "
+    "blurry edges, soft focus, sketch, unfinished"
 )
 
-PIXEL_POSITIVE = (
-    "pixel art sprite of a noble girl in a black and white dress with gold shoulder armor, "
-    "pale blonde very long hair, clean readable silhouette, "
-    "transparent-friendly plain background, 2d pixel art, RPG battle stage character"
-)
-PIXEL_NEGATIVE = "lowres, worst quality, bad quality, blurry, text, watermark, multiple characters"
-
-SEEDS = [91101, 91102, 91103, 91104]
-# The size the sprite is actually drawn at inside the hero column.
-INGAME = (274, 412)
+SEEDS = [92101, 92102, 92103, 92104, 92105, 92106]
 
 
 def post_json(path, payload):
@@ -132,7 +133,7 @@ def source_prompt(seed, prefix):
         "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": NEGATIVE}},
         "8": {
             "class_type": "EmptySD3LatentImage",
-            "inputs": {"width": 832, "height": 1216, "batch_size": 1},
+            "inputs": {"width": GEN_W, "height": GEN_H, "batch_size": 1},
         },
         "9": {
             "class_type": "KSampler",
@@ -157,193 +158,136 @@ def source_prompt(seed, prefix):
     }
 
 
-def pixel_prompt(source_input_name, seed, prefix):
-    return {
-        "1": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": "2D_Pixel_Sprites.safetensors"},
-        },
-        "2": {
-            "class_type": "LoraLoader",
-            "inputs": {
-                "model": ["1", 0],
-                "clip": ["1", 1],
-                "lora_name": "pixel sprites.safetensors",
-                "strength_model": 0.45,
-                "strength_clip": 0.45,
-            },
-        },
-        "5": {"class_type": "LoadImage", "inputs": {"image": source_input_name}},
-        "15": {
-            "class_type": "ImageScale",
-            "inputs": {
-                "image": ["5", 0],
-                "upscale_method": "nearest-exact",
-                "width": 800,
-                "height": 1200,
-                "crop": "disabled",
-            },
-        },
-        "6": {
-            "class_type": "DepthAnythingV2Preprocessor",
-            "inputs": {"image": ["15", 0], "ckpt_name": "depth_anything_v2_vitl.pth", "resolution": 512},
-        },
-        "8": {"class_type": "VAEEncode", "inputs": {"pixels": ["15", 0], "vae": ["1", 2]}},
-        "9": {
-            "class_type": "ControlNetLoader",
-            "inputs": {"control_net_name": "control_v11f1p_sd15_depth_fp16.safetensors"},
-        },
-        "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 1], "text": PIXEL_POSITIVE}},
-        "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 1], "text": PIXEL_NEGATIVE}},
-        "10": {
-            "class_type": "ControlNetApplyAdvanced",
-            "inputs": {
-                "positive": ["3", 0],
-                "negative": ["4", 0],
-                "control_net": ["9", 0],
-                "image": ["6", 0],
-                "strength": 0.5,
-                "start_percent": 0.0,
-                "end_percent": 0.9,
-                "vae": ["1", 2],
-            },
-        },
-        "11": {
-            "class_type": "KSampler",
-            "inputs": {
-                "model": ["2", 0],
-                "seed": seed,
-                "steps": 24,
-                "cfg": 7.0,
-                "sampler_name": "dpmpp_2m",
-                "scheduler": "karras",
-                "positive": ["10", 0],
-                "negative": ["10", 1],
-                "latent_image": ["8", 0],
-                "denoise": 0.55,
-            },
-        },
-        "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["1", 2]}},
-        "13": {
-            "class_type": "SaveImage",
-            "inputs": {"images": ["12", 0], "filename_prefix": prefix},
-        },
-    }
+# --- cutout -------------------------------------------------------------
+
+FLOOD_T = 78.0     # what counts as "still background" while flooding inward
+RAMP_LO = 26.0     # fully transparent at or below this distance from bg
+RAMP_HI = 70.0     # fully opaque at or above it
+# The model draws a soft grey contact shadow whatever the negative prompt
+# says. Removing it by colour was tried and reverted: "achromatic and
+# bright" also describes her dress, and because her linework is scratchy
+# rather than closed, adding that rule to the flood opened a path from
+# the shadow through the hem and ate the skirt. The shadow stays. It is
+# small, and DESIGN_DIRECTION.md §6 asks for a contact shadow anyway —
+# so the seed to ship is the one whose shadow is least pronounced, not
+# whichever one a filter can be talked into cleaning.
 
 
-def bg_like(pixel, ref):
-    r, g, b = pixel[:3]
-    rr, rg, rb = ref
-    dist = ((r - rr) ** 2 + (g - rg) ** 2 + (b - rb) ** 2) ** 0.5
-    bright = (r + g + b) / 3.0
-    sat = max(r, g, b) - min(r, g, b)
-    return dist < 42 or (bright > 232 and sat < 34)
+def cutout(src_path, tag):
+    im = Image.open(src_path).convert("RGB")
+    rgb = np.asarray(im).astype(np.float32)
+    h, w, _ = rgb.shape
 
+    border = np.concatenate([rgb[0, :], rgb[-1, :], rgb[:, 0], rgb[:, -1]])
+    bg = np.median(border, axis=0)
+    dist = np.linalg.norm(rgb - bg[None, None, :], axis=2)
 
-def transparent_stage(pixel_path, tag):
-    """Flood-fill the background in from the edges.
-
-    Not a colour-key: keying the background colour globally also eats the
-    whites inside the dress, which on this character is most of it.
-    """
-    im = Image.open(pixel_path).convert("RGBA")
-    w, h = im.size
-    pix = im.load()
-    edge = []
-    for x in range(0, w, max(1, w // 80)):
-        edge.append(pix[x, 0][:3])
-        edge.append(pix[x, h - 1][:3])
-    for y in range(0, h, max(1, h // 80)):
-        edge.append(pix[0, y][:3])
-        edge.append(pix[w - 1, y][:3])
-    ref = tuple(sorted(channel)[len(channel) // 2] for channel in zip(*edge))
-
-    seen = set()
+    # Flood inward from the frame. Connectivity is the whole point: a
+    # global colour match would also erase the white of her dress.
+    floodable = dist < FLOOD_T
+    outside = np.zeros((h, w), dtype=bool)
     q = deque()
     for x in range(w):
-        q.append((x, 0))
-        q.append((x, h - 1))
+        for y in (0, h - 1):
+            if floodable[y, x] and not outside[y, x]:
+                outside[y, x] = True
+                q.append((y, x))
     for y in range(h):
-        q.append((0, y))
-        q.append((w - 1, y))
+        for x in (0, w - 1):
+            if floodable[y, x] and not outside[y, x]:
+                outside[y, x] = True
+                q.append((y, x))
     while q:
-        x, y = q.popleft()
-        if x < 0 or y < 0 or x >= w or y >= h or (x, y) in seen:
-            continue
-        if not bg_like(pix[x, y], ref):
-            continue
-        seen.add((x, y))
-        q.append((x + 1, y))
-        q.append((x - 1, y))
-        q.append((x, y + 1))
-        q.append((x, y - 1))
-    for x, y in seen:
-        r, g, b, _ = pix[x, y]
-        pix[x, y] = (r, g, b, 0)
+        y, x = q.popleft()
+        for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+            if 0 <= ny < h and 0 <= nx < w and floodable[ny, nx] and not outside[ny, nx]:
+                outside[ny, nx] = True
+                q.append((ny, nx))
 
-    out = OUT / f"shizuku_idle_transparent_{tag}.png"
-    im.save(out)
-    return out
+    # Opaque everywhere the flood never reached; inside the flooded region
+    # alpha ramps with distance from the background, which is what keeps
+    # the anti-aliased boundary soft instead of stair-stepped.
+    alpha = np.ones((h, w), dtype=np.float32)
+    ramp = np.clip((dist - RAMP_LO) / (RAMP_HI - RAMP_LO), 0.0, 1.0)
+    alpha[outside] = ramp[outside]
+
+    # Un-mix the background out of the partly transparent pixels. Without
+    # this every soft edge keeps a pale rim of the old backdrop and the
+    # figure reads as a cutout pasted on.
+    a3 = alpha[:, :, None]
+    safe = np.maximum(a3, 1e-3)
+    true_rgb = np.clip((rgb - (1.0 - a3) * bg[None, None, :]) / safe, 0, 255)
+
+    out = np.dstack([true_rgb, alpha * 255.0]).astype(np.uint8)
+    cut = Image.fromarray(out, "RGBA")
+
+    # Trim to the figure, then seat it in the sheet with a little air, so
+    # every seed lands at the same scale regardless of how much margin the
+    # model happened to leave.
+    bbox = cut.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    if bbox:
+        cut = cut.crop(bbox)
+    inner_w, inner_h = SHEET_W - OUTLINE_PX * 4, SHEET_H - OUTLINE_PX * 4
+    cut.thumbnail((inner_w, inner_h), Image.Resampling.LANCZOS)
+
+    sheet = Image.new("RGBA", (SHEET_W, SHEET_H), (0, 0, 0, 0))
+    # Bottom-aligned: she stands on the floor of her frame rather than
+    # floating in the middle of it.
+    pos = ((SHEET_W - cut.width) // 2, SHEET_H - OUTLINE_PX * 2 - cut.height)
+    sheet.paste(cut, pos, cut)
+
+    # The same trick IconGlyph uses: grow the silhouette into the ink
+    # colour, then lay the true-size figure over it.
+    grown = sheet.getchannel("A").filter(ImageFilter.MaxFilter(OUTLINE_PX * 2 + 1))
+    ink = Image.new("RGBA", sheet.size, INK + (0,))
+    ink.putalpha(grown)
+    final = Image.alpha_composite(ink, sheet)
+
+    out_path = OUT / f"shizuku_clean_{tag}.png"
+    final.save(out_path)
+    return out_path
 
 
 def make_contact(results):
-    """Judged at the size it ships at, per DESIGN_DIRECTION.md §8."""
-    # Tall enough to hold the in-game plate whole: it starts at y=316, so
-    # anything shorter than that plus INGAME's height silently clips the
-    # sprite's legs and makes a correct render look cropped.
-    plate_y = 316
-    cell_w, cell_h = 300, plate_y + INGAME[1] + 12
+    plate_y = 300
+    cell_w, cell_h = 300, plate_y + INGAME[1] + 16
     sheet = Image.new("RGB", (cell_w * len(results), cell_h), (58, 44, 48))
     try:
-        font = ImageFont.truetype("arial.ttf", 16)
+        font = ImageFont.truetype("arial.ttf", 15)
     except OSError:
         font = ImageFont.load_default()
     for idx, r in enumerate(results):
         cell = Image.new("RGB", (cell_w, cell_h), (74, 58, 62))
         src = Image.open(r["source"]).convert("RGB")
-        src.thumbnail((cell_w - 20, 300), Image.Resampling.LANCZOS)
+        src.thumbnail((cell_w - 20, 284), Image.Resampling.LANCZOS)
         cell.paste(src, ((cell_w - src.width) // 2, 4))
-        # The one that matters: the sprite at its real in-game footprint.
-        cut = Image.open(r["transparent"]).convert("RGBA")
+        cut = Image.open(r["clean"]).convert("RGBA")
         shown = cut.copy()
-        shown.thumbnail(INGAME, Image.Resampling.NEAREST)
-        plate = Image.new("RGBA", INGAME, (96, 76, 80, 255))
+        shown.thumbnail(INGAME, Image.Resampling.LANCZOS)
+        # On the panel colour she will actually sit on, not on a neutral
+        # grey — a fringe only shows against the real ground.
+        plate = Image.new("RGBA", INGAME, (255, 247, 230, 255))
         plate.paste(shown, ((INGAME[0] - shown.width) // 2, (INGAME[1] - shown.height) // 2), shown)
         cell.paste(plate.convert("RGB"), ((cell_w - INGAME[0]) // 2, plate_y))
         ImageDraw.Draw(cell).text((8, plate_y - 16), "seed %d  (下=実寸 %dx%d)" % (r["seed"], *INGAME),
                                   fill=(236, 226, 209), font=font)
         sheet.paste(cell, (idx * cell_w, 0))
-    out = ROOT / "outputs" / "dice_shizuku_stage_contact.jpg"
-    sheet.save(out, "JPEG", quality=92, optimize=True)
+    out = ROOT / "outputs" / "dice_shizuku_stage_clean_contact.jpg"
+    sheet.save(out, "JPEG", quality=93, optimize=True)
     return out
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    COMFY_INPUT.mkdir(parents=True, exist_ok=True)
     results = []
     for seed in SEEDS:
         print(f"SOURCE seed={seed}", flush=True)
         hist = wait_for_history(
-            post_json("/prompt", {"prompt": source_prompt(seed, f"shizuku_stage_src_seed{seed}")})["prompt_id"]
+            post_json("/prompt", {"prompt": source_prompt(seed, f"shizuku_clean_seed{seed}")})["prompt_id"]
         )
         src = copy_outputs(hist, f"src_seed{seed}")[0]
-
-        input_name = f"codex_shizuku_stage_{seed}.png"
-        shutil.copy2(src, COMFY_INPUT / input_name)
-        pixel_seed = seed + 100
-        print(f"PIXEL  seed={pixel_seed}", flush=True)
-        hist = wait_for_history(
-            post_json(
-                "/prompt",
-                {"prompt": pixel_prompt(input_name, pixel_seed, f"shizuku_stage_px_seed{pixel_seed}")},
-            )["prompt_id"]
-        )
-        pixel = copy_outputs(hist, f"px_seed{pixel_seed}")[0]
-        cut = transparent_stage(pixel, str(seed))
-        results.append(
-            {"seed": seed, "source": str(src), "pixel": str(pixel), "transparent": str(cut)}
-        )
+        clean = cutout(src, str(seed))
+        results.append({"seed": seed, "source": str(src), "clean": str(clean)})
         print(f"DONE   seed={seed}", flush=True)
 
     (OUT / "run_results.json").write_text(
@@ -352,8 +296,10 @@ def main():
                 "unet": UNET,
                 "lora": LORA,
                 "lora_strength": 1.0,
-                "source_sampler": "euler / beta / 24 steps / cfg 3.8 / 832x1216",
-                "pixel_workflow": "2d_pixel_toolkit_i2i_depth (800x1200, denoise 0.55)",
+                "sampler": f"euler / beta / 24 steps / cfg 3.8 / {GEN_W}x{GEN_H}",
+                "pixelization": "none - finished illustration",
+                "cutout": f"inward flood (T={FLOOD_T}), alpha ramp {RAMP_LO}-{RAMP_HI}, background un-mixed",
+                "outline": f"{OUTLINE_PX}px ink {INK}",
                 "positive": POSITIVE,
                 "negative": NEGATIVE,
                 "results": results,
