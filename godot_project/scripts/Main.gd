@@ -4289,12 +4289,26 @@ func _show_victory() -> void:
 
 # `by_enemy` is what separates "the enemy finished you" from "you walked
 # onto one poison square too many". Only the first has a scene, because
-# only the first has someone standing over you at the end of it.
+# only the first has someone standing over you at the end of it — and
+# only the first ever asks _resolve_defeat whether the run actually
+# ends, because only the first has a tier to check.
 func _show_game_over(reason: String, by_enemy: bool = false) -> void:
 	if by_enemy and not scene_played_this_fight:
 		scene_played_this_fight = true
 		_play_scene(encounter_art, "lose", tr("%s に敗れた") % encounter_name,
-			Callable(self, "_show_game_over").bind(reason, false))
+			Callable(self, "_resolve_defeat").bind(reason, by_enemy))
+		return
+	_resolve_defeat(reason, by_enemy)
+
+# 陥落: 0 HP at an enemy's own hand is not automatically a run-ending
+# game over the way falling to a hazard tile still is. Every non-boss
+# fight only takes the encounter, not the run — full heal, the part
+# that finished her develops (already handled inside _take_damage,
+# before this ever runs), and the map is still there to walk back to.
+# The boss is the one fight this game cannot be walked away from twice.
+func _resolve_defeat(reason: String, by_enemy: bool) -> void:
+	if by_enemy and not _is_boss_node():
+		_resolve_fall()
 		return
 	state = "game_over"
 	_delete_run_save()
@@ -4302,12 +4316,26 @@ func _show_game_over(reason: String, by_enemy: bool = false) -> void:
 	_save_profile()
 	sfx.emit("lose")
 	_refresh_all()
-	_open_overlay("ゲームオーバー", reason)
+	_open_overlay("総陥落" if by_enemy else "ゲームオーバー",
+		tr("%s に完全に屈し、もう起き上がれなかった。") % encounter_name if by_enemy else reason)
 	_add_result_stats()
 	_add_overlay_option("もう一度、同じキャラで", "%s で第1戦から挑み直します。" % hero_name, COL_GOLD, "warp", Callable(self, "_restart_same_hero"))
 	_add_overlay_option("キャラを選び直す", "タイトルに戻ります。", COL_TEXT_SOFT, "dice", Callable(self, "_show_title"))
 	_layout_overlay()
 	_play_result_flourish(Color(0.75, 0.2, 0.1, 0.4))
+
+func _resolve_fall() -> void:
+	_bump_lifetime("falls")
+	player_hp = player_max_hp
+	player_shield = 0
+	hp_bar.display_value = float(player_max_hp - player_hp)
+	_save_run()
+	sfx.emit("shield")
+	_refresh_all()
+	_open_overlay("陥落", tr("%s に意識を刈り取られた。目を覚ますと、傷だけが癒えていた。") % encounter_name)
+	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
+	_layout_overlay()
+	state = "node_event"
 
 # A run that ends with no record of what happened gives the player nothing
 # to carry into the next one.
