@@ -35,7 +35,7 @@ python3 tools/art_manifest.py
 
 | | パス | 内容 |
 | --- | --- | --- |
-| [x] | `art/stage/knight_idle.png` | 自機「剣士」の立ち絵・通常 |
+| [x] | `art/stage/shizuku_idle.png` | 自機「シズク」の立ち絵・通常 |
 | [x] | `art/stage/stray_idle.png` | 「はぐれ兵」の立ち絵・通常 |
 | [x] | `art/stage/scout_idle.png` | 「斥候」の立ち絵・通常 |
 | [x] | `art/stage/archer_idle.png` | 「射手」の立ち絵・通常 |
@@ -53,10 +53,10 @@ python3 tools/art_manifest.py
 | [ ] | `art/bg/scene_title.png` | タイトルのキービジュアル。ストアと配信で最初に映る画面 |
 | [ ] | `art/bg/scene_map.png` | ノードマップの背景 |
 | [ ] | `art/bg/scene_battle.png` | 通常戦闘の背景 |
-| [ ] | `art/stage/knight_hit_0.png` | 自機「剣士」被弾アニメ |
-| [ ] | `art/stage/knight_hit_1.png` | 自機「剣士」被弾アニメ |
-| [ ] | `art/stage/knight_hit_2.png` | 自機「剣士」被弾アニメ |
-| [ ] | `art/stage/knight_hit_3.png` | 自機「剣士」被弾アニメ |
+| [ ] | `art/stage/shizuku_hit_0.png` | 自機「シズク」被弾アニメ |
+| [ ] | `art/stage/shizuku_hit_1.png` | 自機「シズク」被弾アニメ |
+| [ ] | `art/stage/shizuku_hit_2.png` | 自機「シズク」被弾アニメ |
+| [ ] | `art/stage/shizuku_hit_3.png` | 自機「シズク」被弾アニメ |
 | [x] | `art/face/stray_node.png` | 「はぐれ兵」のマップ顔 |
 | [x] | `art/face/scout_node.png` | 「斥候」のマップ顔 |
 | [x] | `art/face/archer_node.png` | 「射手」のマップ顔 |
@@ -75,7 +75,7 @@ python3 tools/art_manifest.py
 | [ ] | `art/bg/scene_elite.png` | 強敵戦の背景（無ければ戦闘背景） |
 | [ ] | `art/bg/scene_boss.png` | ボス戦の背景（無ければ戦闘背景） |
 | [ ] | `art/bg/scene_gallery.png` | 回想画面の背景（無ければマップ背景） |
-| [ ] | `art/stage/knight_down.png` | 自機「剣士」瀕死（HP35%以下） |
+| [ ] | `art/stage/shizuku_down.png` | 自機「シズク」瀕死（HP35%以下） |
 | [ ] | `art/cg/stray_win.png` | 「はぐれ兵」に勝利したときのCG |
 | [ ] | `art/cg/stray_lose.png` | 「はぐれ兵」に敗北したときのCG |
 | [ ] | `art/cg/scout_win.png` | 「斥候」に勝利したときのCG |

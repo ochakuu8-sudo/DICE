@@ -651,6 +651,13 @@ class SpriteView:
 		set(v):
 			flash = v
 			queue_redraw()
+	# What colour that flash is. White is "something hit you"; the callers
+	# that know *who* hit you set this to that enemy's own colour, so the
+	# figure reports the source of the blow and not just the fact of it.
+	var flash_color: Color = Color.WHITE:
+		set(v):
+			flash_color = v
+			queue_redraw()
 	var _time := 0.0
 
 	func _ready() -> void:
@@ -705,7 +712,8 @@ class SpriteView:
 		var at := ((size - span) * 0.5).floor()
 		draw_texture_rect(tex, Rect2(at, span), false)
 		if flash > 0.0:
-			draw_rect(Rect2(at, span), Color(1.0, 1.0, 1.0, clampf(flash, 0.0, 1.0) * 0.55))
+			draw_rect(Rect2(at, span), Color(flash_color.r, flash_color.g, flash_color.b,
+				clampf(flash, 0.0, 1.0) * 0.55))
 
 	func _draw_missing() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(1.0, 0.0, 0.85))
@@ -1836,8 +1844,8 @@ var reward_pool := [
 
 var hero_defs := {
 	"knight": {
-		"name": "剣士",
-		"art": "knight",
+		"name": "シズク",
+		"art": "shizuku",
 		"hp": 36,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
@@ -3970,7 +3978,8 @@ func _flash_enemy() -> void:
 # interruption; it is the stage figure changing clip for under a second
 # while play continues around it.
 
-func _play_hit_clip(view: SpriteView, actor: String, lock_hero: bool) -> void:
+func _play_hit_clip(view: SpriteView, actor: String, lock_hero: bool,
+		tint: Color = Color.WHITE) -> void:
 	if view == null or not is_instance_valid(view):
 		return
 	if lock_hero:
@@ -3978,6 +3987,7 @@ func _play_hit_clip(view: SpriteView, actor: String, lock_hero: bool) -> void:
 	else:
 		_enemy_clip_lock = true
 	_show_art(view, "stage", actor, ["hit", "idle"], false)
+	view.flash_color = tint
 	view.flash = 0.9
 	var tween := create_tween()
 	tween.tween_property(view, "flash", 0.0, 0.20)
@@ -4637,6 +4647,23 @@ func _arousal_color(ratio: float) -> Color:
 	if ratio <= 0.65:
 		return COL_CALM.lerp(COL_AROUSAL, ratio / 0.65)
 	return COL_AROUSAL.lerp(COL_AROUSAL_MAX, (ratio - 0.65) / 0.35)
+
+# What colour a blow from this enemy leaves on her figure. Built from the
+# enemy's own identity rather than from a per-enemy art file: a part
+# attack burns in the heat that part is already carrying, and anything
+# else takes the colour of the debuff that enemy spreads — the same
+# colour its squares wear on the board. So 疫病持ち reads green on her,
+# 重装 reads ice, 射手 reads fire, and a hit from an enemy with neither
+# is the plain white flash it always was.
+func _enemy_hit_tint(enemy: Dictionary) -> Color:
+	var part := str(enemy.get("part", ""))
+	if part != "" and PART_NAMES.has(part):
+		return _arousal_color(clampf(float(int(part_dev.get(part, 0)) + 1) \
+			/ float(PART_DEV_MAX), 0.0, 1.0))
+	var kind := str(enemy.get("debuff", ""))
+	if kind != "" and temp_defs.has(kind):
+		return Color(temp_defs[kind]["color"])
+	return Color.WHITE
 
 func _part_multiplier(part: String) -> float:
 	var dev := int(part_dev.get(part, 0))
@@ -6441,7 +6468,8 @@ func _resolve_pass_tile(pos: Vector2i) -> String:
 	var deb := _debuff_at(pos)
 	var burn := _debuff_damage(pos, "pass", selected_die)
 	if burn > 0:
-		_take_damage(burn)
+		# A square burns her in the colour the square itself is wearing.
+		_take_damage(burn, "", Color(deb["color"]) if not deb.is_empty() else Color.WHITE)
 		messages.append("%sのマス：HP-%d" % [_t(deb["name"]), burn])
 	elif not deb.is_empty() and int(deb.get("damage", 0)) > 0 \
 			and str(deb.get("on", "pass")) == "pass" and bool(selected_die.get("pierce", false)):
@@ -6472,7 +6500,7 @@ func _resolve_stop_tile(pos: Vector2i) -> String:
 	var deb := _debuff_at(pos)
 	var venom := _debuff_damage(pos, "stop", selected_die)
 	if venom > 0:
-		_take_damage(venom)
+		_take_damage(venom, "", Color(deb["color"]) if not deb.is_empty() else Color.WHITE)
 		messages.append("%sのマス：HP-%d" % [_t(deb["name"]), venom])
 	var tile: Dictionary = tile_defs[str(permanent_board[pos.y][pos.x])]
 	# Read before the thaw: stopping on a frozen square is what melts it,
@@ -6824,7 +6852,7 @@ func _strike_enemy(amount: int) -> int:
 
 # --- state changes, each one visible the moment it happens --------------
 
-func _take_damage(amount: int, part: String = "") -> int:
+func _take_damage(amount: int, part: String = "", tint: Color = Color.WHITE) -> int:
 	var blocked: int = min(player_shield, amount)
 	player_shield -= blocked
 	var hp_loss := amount - blocked
@@ -6844,7 +6872,7 @@ func _take_damage(amount: int, part: String = "") -> int:
 		_punch(hero_portrait, 1.18)
 		# Fired, not awaited: the turn does not stop for it, which is the
 		# whole reason this plays on the stage instead of over the screen.
-		_play_hit_clip(hero_sprite, _hero_art_id(), true)
+		_play_hit_clip(hero_sprite, _hero_art_id(), true, tint)
 	elif blocked > 0:
 		_spawn_floating_text(player_pos, "盾で防いだ", COL_SHIELD)
 		sfx.emit("shield")
@@ -6978,7 +7006,7 @@ func _enemy_turn() -> void:
 		if hit:
 			await _lunge_enemy()
 			var part := str(enemy.get("part", ""))
-			var taken := _take_damage(int(enemy["damage"]), part)
+			var taken := _take_damage(int(enemy["damage"]), part, _enemy_hit_tint(enemy))
 			if taken > 0:
 				if part != "" and PART_NAMES.has(part):
 					messages.append("%sの攻撃（%s）。%dダメージ" % [enemy_label, str(PART_NAMES[part]), taken])
