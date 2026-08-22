@@ -1070,6 +1070,7 @@ var action_caption: Label
 var hero_panel: PanelContainer
 var hero_sprite: SpriteView
 var hero_stage_name: Label
+var part_dev_label: Label
 
 var enemy_panel: Control
 var enemy_sprite: SpriteView
@@ -1149,6 +1150,11 @@ var hero_token_color := Color("#2E7BD6")
 var encounter := 0
 var player_hp := 30
 var player_max_hp := 30
+# Per-run only: how far each part has been developed by landed part
+# attacks this run. Resets with the run, not with the profile — carrying
+# it across runs is a later decision (陥落 / meta-progression), not this
+# one.
+var part_dev := {"chest": 0, "depths": 0, "tail": 0}
 var player_shield := 0
 var player_pos := Vector2i(0, 0)
 var player_step := 0
@@ -2117,6 +2123,10 @@ func _build_hero_zone() -> void:
 	hero_stage_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(hero_stage_name)
 
+	part_dev_label = _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	part_dev_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(part_dev_label)
+
 func _build_enemy_zone() -> void:
 	enemy_panel = PanelContainer.new()
 	enemy_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -3051,6 +3061,11 @@ func _refresh_hero_stage() -> void:
 	var hurt: bool = float(player_hp) / float(max(player_max_hp, 1)) <= 0.35
 	_show_art(hero_sprite, "stage", _hero_art_id(),
 		["down", "idle"] if hurt else ["idle"])
+	if part_dev_label != null:
+		var pieces := []
+		for part in PARTS:
+			pieces.append("%s%d" % [str(PART_NAMES[part]), int(part_dev.get(part, 0))])
+		part_dev_label.text = "　".join(pieces)
 
 func _refresh_enemy() -> void:
 	_refresh_place_panel()
@@ -3084,6 +3099,10 @@ func _refresh_enemy() -> void:
 	if kind != "" and temp_defs.has(kind):
 		note_lines.append("%s をマスにかける（%s）" % [
 			_t(temp_defs[kind]["name"]), _t(temp_defs[kind]["effect"])])
+	var part := str(enemy.get("part", ""))
+	if part != "" and PART_NAMES.has(part):
+		note_lines.append("%s狙い：昂り倍率 ×%.1f（開発度%d）" % [
+			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0))])
 	var traits := _enemy_trait_text(enemy)
 	if traits != "":
 		note_lines.append(traits)
@@ -4351,6 +4370,7 @@ func _start_run(key: String) -> void:
 	actions_per_turn = int(hero.get("actions", ACTIONS_PER_TURN))
 	player_hp = player_max_hp
 	player_shield = 0
+	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	next_enemy_uid = 0
 	run_damage_dealt = 0
 	run_turns = 0
@@ -4414,6 +4434,37 @@ const ENEMY_TRAIT_TEXT := {
 	"thorns": "棘%d：攻撃するたびこちらが%dダメージ受ける",
 }
 
+# A part is not a second HP bar — it is an attribute some enemy attacks
+# carry, the way a debuff is an attribute some enemy attacks leave on the
+# board. Most attacks hit for a flat number and nothing more. A part
+# attack hits for the same number, but the number is scaled up by how
+# developed that part already is, and lands a point of development on
+# its way through — so the same enemy roster gets more dangerous to be
+# near the longer a run goes, at three specific addresses rather than
+# everywhere at once.
+const PARTS := ["chest", "depths", "tail"]
+const PART_NAMES := {"chest": "胸", "depths": "秘所", "tail": "尻"}
+const PART_DEV_MAX := 5
+
+# Development level -> how much a landed hit on that part is scaled by.
+# Flat until 2, a step at 2 and again at 4 — the same shape debuffs and
+# armor already use elsewhere, so a developed part reads as one more
+# stacking modifier rather than a new kind of number.
+func _part_multiplier(part: String) -> float:
+	var dev := int(part_dev.get(part, 0))
+	if dev >= 5:
+		return 2.5
+	if dev >= 4:
+		return 2.0
+	if dev >= 2:
+		return 1.5
+	return 1.0
+
+func _develop_part(part: String) -> void:
+	if not part_dev.has(part):
+		return
+	part_dev[part] = min(PART_DEV_MAX, int(part_dev[part]) + 1)
+
 # "art" is the actor id its stage figure and its scene art resolve under —
 # res://art/stage/scout_idle.png, res://art/cg/scout_lose.png and so on. It
 # is a separate field from "name" so the Japanese name can be rewritten
@@ -4427,27 +4478,35 @@ const ENEMY_TRAIT_TEXT := {
 # enemy turn; an enemy with no debuff never fouls anything, which is what
 # keeps the opening fight a place to learn the rules rather than survive
 # them.
+# "part" is optional and most entries do not have one: only some enemy
+# attacks carry a body-part attribute, the rest are plain damage. Where
+# present, every landed hit from that enemy's own attack (not board
+# damage, not thorns) is scaled by that part's current development and
+# develops it further — see _part_multiplier / _develop_part. はぐれ兵
+# opens the run with none, same as it opens fouling nothing: the first
+# fight is still where the rules get learned before they get used against
+# you.
 var enemy_defs := [
 	{"name": "はぐれ兵", "art": "stray", "hp": 20, "damage": 5, "kind": "cell",
 		"mode": "relative", "cells": [2], "gold": 12},
 	{"name": "斥候", "art": "scout", "hp": 28, "damage": 6, "kind": "cell",
 		"mode": "relative", "cells": [2, 5], "gold": 15,
-		"debuff": "briar", "foul": 35},
+		"debuff": "briar", "foul": 35, "part": "tail"},
 	{"name": "射手", "art": "archer", "hp": 36, "damage": 7, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "gold": 18,
-		"debuff": "burn", "foul": 45},
+		"debuff": "burn", "foul": 45, "part": "chest"},
 	{"name": "重装", "art": "heavy", "hp": 44, "damage": 8, "kind": "cell",
 		"mode": "fixed", "cells": [2, 6, 10, 14], "armor": 3, "gold": 21,
-		"debuff": "freeze", "foul": 40},
+		"debuff": "freeze", "foul": 40, "part": "depths"},
 	{"name": "疫病持ち", "art": "plague", "hp": 46, "damage": 8, "kind": "cell",
 		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22,
-		"debuff": "venom", "foul": 55},
+		"debuff": "venom", "foul": 55, "part": "tail"},
 	{"name": "隊長", "art": "captain", "hp": 52, "damage": 9, "kind": "cell",
 		"mode": "relative", "cells": [2, 3, 4, 5], "thorns": 2, "gold": 25,
-		"debuff": "burn", "foul": 50},
+		"debuff": "burn", "foul": 50, "part": "chest"},
 	{"name": "ボス", "art": "boss", "hp": 62, "damage": 10, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "regen": 3, "gold": 40,
-		"debuff": "freeze", "foul": 55},
+		"debuff": "freeze", "foul": 55, "part": "depths"},
 ]
 
 # --- map screen ---------------------------------------------------------
@@ -5239,7 +5298,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5342,6 +5401,7 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"hero": hero_key,
 		"hp": player_hp,
 		"max_hp": player_max_hp,
+		"part_dev": part_dev,
 		"hand_limit": hand_limit,
 		"actions": actions_per_turn,
 		"gold": gold,
@@ -5411,6 +5471,10 @@ func _load_run() -> bool:
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(data.get("max_hp", hero["hp"]))
 	player_hp = int(data.get("hp", player_max_hp))
+	part_dev = {"chest": 0, "depths": 0, "tail": 0}
+	var saved_dev: Dictionary = data.get("part_dev", {})
+	for part in PARTS:
+		part_dev[part] = clampi(int(saved_dev.get(part, 0)), 0, PART_DEV_MAX)
 	hand_limit = int(data.get("hand_limit", hero.get("hand", 3)))
 	actions_per_turn = int(data.get("actions", ACTIONS_PER_TURN))
 	gold = int(data.get("gold", 0))
@@ -5640,6 +5704,7 @@ func _setup_encounter() -> void:
 		if def.has(trait_key):
 			enemy[trait_key] = int(def[trait_key])
 	enemy["debuff"] = str(def.get("debuff", ""))
+	enemy["part"] = str(def.get("part", ""))
 	if node != null and str(node.get("type", "")) == "elite":
 		enemy["max_hp"] = int(enemy["max_hp"]) * 3 / 2
 		enemy["hp"] = int(enemy["max_hp"])
@@ -6571,10 +6636,17 @@ func _strike_enemy(amount: int) -> int:
 
 # --- state changes, each one visible the moment it happens --------------
 
-func _take_damage(amount: int) -> int:
+func _take_damage(amount: int, part: String = "") -> int:
 	var blocked: int = min(player_shield, amount)
 	player_shield -= blocked
 	var hp_loss := amount - blocked
+	# The part attribute only touches what actually gets through the
+	# shield — shield still blocks the enemy's flat damage stat exactly
+	# as it always has. A part attack that gets fully blocked develops
+	# nothing, same as it deals nothing.
+	if part != "" and hp_loss > 0:
+		hp_loss = int(round(hp_loss * _part_multiplier(part)))
+		_develop_part(part)
 	player_hp -= hp_loss
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#FF6A4D"), hp_loss >= 6)
@@ -6717,9 +6789,13 @@ func _enemy_turn() -> void:
 		var enemy_label: String = str(enemy["type"])
 		if hit:
 			await _lunge_enemy()
-			var taken := _take_damage(int(enemy["damage"]))
+			var part := str(enemy.get("part", ""))
+			var taken := _take_damage(int(enemy["damage"]), part)
 			if taken > 0:
-				messages.append("%sの攻撃。%dダメージ" % [enemy_label, taken])
+				if part != "" and PART_NAMES.has(part):
+					messages.append("%sの攻撃（%s）。%dダメージ" % [enemy_label, str(PART_NAMES[part]), taken])
+				else:
+					messages.append("%sの攻撃。%dダメージ" % [enemy_label, taken])
 			else:
 				messages.append("%sの攻撃を盾で防いだ" % enemy_label)
 		else:
