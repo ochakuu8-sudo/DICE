@@ -4769,8 +4769,15 @@ class MapLinks:
 					var b: Vector2 = main._map_node_center(next.y, next.x)
 					var live: bool = row == main.map_row and col == main.map_col
 					var col_line: Color = main.COL_GOLD if live else Color("#8C7A55")
-					draw_line(a, b, Color("#2A2320"), 5.0, true)
-					draw_line(a, b, col_line, 2.0, true)
+					# Routes use a small orthogonal bend: vertical out of each node,
+					# horizontal through the gap, then vertical into the destination.
+					# This makes branches legible instead of reading as crossing diagonals.
+					var mid_y: float = (a.y + b.y) * 0.5
+					var points: Array[Vector2] = [a, Vector2(a.x, mid_y), Vector2(b.x, mid_y), b]
+					for i in range(points.size() - 1):
+						draw_line(points[i], points[i + 1], Color("#2A2320"), 5.0, true)
+					for i in range(points.size() - 1):
+						draw_line(points[i], points[i + 1], col_line, 2.0, true)
 
 func _map_canvas_size() -> Vector2:
 	return Vector2(MAP_COL_W * float(MAP_COLS), MAP_ROW_H * float(MAP_ROWS))
