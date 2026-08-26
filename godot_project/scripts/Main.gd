@@ -4912,6 +4912,10 @@ func _refresh_map() -> void:
 	zone_map.visible = state == "map"
 	if not zone_map.visible or map_nodes.is_empty():
 		return
+	# Links are a custom-drawn layer, so every map refresh must explicitly
+	# redraw the orthogonal paths after positions or reachability change.
+	if map_links != null:
+		map_links.queue_redraw()
 	map_canvas.custom_minimum_size = _map_canvas_size()
 	map_title.text = tr("第%d層 / %d層　%s") % [floor_index, FLOOR_COUNT,
 		"探索ダイス %d" % explore_roll if explore_roll > 0 else "探索ダイスを振る"]
