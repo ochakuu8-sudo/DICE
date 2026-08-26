@@ -1106,6 +1106,7 @@ var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
 var map_roll_button: Button
 var map_reroll_button: Button
+var map_roll_readout: Label
 var action_pip_box: HBoxContainer
 var action_caption: Label
 
@@ -1224,6 +1225,7 @@ var gold := 0
 var floor_index := 1
 var explore_roll := 0
 var explore_rerolls := 0
+var explore_is_rolling := false
 
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
@@ -4365,7 +4367,7 @@ func _show_title() -> void:
 	temp_board = _make_empty_board("none")
 	_refresh_all()
 	_set_log("")
-	_open_overlay("Dice Board Rogue", "画面をタップして伏せたダイスを振り、出た目から1つ選んで進む。使わなかった目は次のターンへ持ち越す。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % MAP_ROWS)
+	_open_overlay("Dice Board Rogue", "画面をタップして伏せたダイスを振り、出た目から1つ選んで進む。使わなかった目は次のターンへ持ち越す。踏んだマスの効果で戦う、すごろくローグライク。全%d層。" % FLOOR_COUNT)
 	# The drawn wordmark replaces the typeset one rather than sitting above
 	# it, so the title screen has one name on it either way.
 	overlay_title.visible = not _show_art(overlay_logo, "ui", "logo", ["default"])
@@ -4781,9 +4783,12 @@ var enemy_defs := [
 # and the boss at the top, so climbing it reads as climbing. The links are
 # painted by a single Control behind the buttons rather than by each node,
 # which keeps the lines beneath every node no matter the draw order.
-const MAP_NODE_SIZE := 54.0
-const MAP_ROW_H := 72.0
-const MAP_COL_W := 72.0
+# A full 8x8 board needs breathing room. The empty space between nodes is
+# intentional: routes remain legible at a glance instead of reading as one
+# dense wall of icons.
+const MAP_NODE_SIZE := 58.0
+const MAP_ROW_H := 104.0
+const MAP_COL_W := 104.0
 
 class MapLinks:
 	extends Control
@@ -4849,6 +4854,10 @@ func _build_map_zone() -> void:
 	_style_button(map_reroll_button, COL_SHIELD, COL_INK)
 	map_reroll_button.pressed.connect(Callable(self, "_on_explore_reroll_pressed"))
 	explore_actions.add_child(map_reroll_button)
+	map_roll_readout = _make_label(FS_HEAD, COL_GOLD, HORIZONTAL_ALIGNMENT_CENTER, true)
+	map_roll_readout.custom_minimum_size = Vector2(0, 34)
+	map_roll_readout.text = "D6　[ - ]"
+	col.add_child(map_roll_readout)
 
 	map_scroll = ScrollContainer.new()
 	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -4885,27 +4894,47 @@ func _show_map() -> void:
 	_scroll_map_to_current()
 
 func _on_explore_roll_pressed() -> void:
-	if state != "map" or explore_roll > 0:
+	if state != "map" or explore_roll > 0 or explore_is_rolling:
 		return
 	if afterglow_turns > 0:
 		afterglow_turns -= 1
 		_set_log("余韻で探索を休んだ。")
 		_refresh_map()
 		return
-	explore_roll = rng.randi_range(1, 6)
-	_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
-	_set_log("探索ダイス：%d。ちょうど%dマス先のマスを選んでください。" % [explore_roll, explore_roll])
-	sfx.emit("hit")
-	_refresh_map()
+	await _roll_exploration_die(false)
 
 func _on_explore_reroll_pressed() -> void:
-	if state != "map" or explore_roll <= 0:
+	if state != "map" or explore_roll <= 0 or explore_is_rolling:
 		return
+	await _roll_exploration_die(true)
+
+# Exploration uses one fixed D6, but it should feel like a roll rather than
+# an instant number swap. The short readout animation also makes the choice
+# lockout unambiguous before destination nodes light up.
+func _roll_exploration_die(is_reroll: bool) -> void:
+	explore_is_rolling = true
+	_refresh_map()
+	for beat in range(8):
+		var face := rng.randi_range(1, 6)
+		map_roll_readout.text = "D6　[ %d ]" % face
+		map_roll_readout.modulate = COL_TEXT if beat % 2 == 0 else COL_GOLD
+		map_roll_readout.scale = Vector2(1.08, 1.08)
+		map_roll_readout.pivot_offset = map_roll_readout.size * 0.5
+		var pulse := create_tween()
+		pulse.tween_property(map_roll_readout, "scale", Vector2.ONE, 0.07)
+		sfx.emit("hit")
+		await get_tree().create_timer(0.055 + 0.012 * float(beat)).timeout
 	explore_roll = rng.randi_range(1, 6)
-	explore_rerolls += 1
-	_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
-	_set_log("探索ダイスを振り直した：%d。ちょうど%dマス先のマスを選んでください。" % [explore_roll, explore_roll])
-	sfx.emit("hit")
+	if is_reroll:
+		explore_rerolls += 1
+		_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
+	else:
+		_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
+	map_roll_readout.text = "D6　[ %d ]　→ %dマス先を選択" % [explore_roll, explore_roll]
+	map_roll_readout.modulate = COL_GOLD
+	explore_is_rolling = false
+	_set_log("探索ダイス%s：%d。ちょうど%dマス先のマスを選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, explore_roll])
+	sfx.emit("reward")
 	_refresh_map()
 
 func _scroll_map_to_current() -> void:
@@ -4925,8 +4954,11 @@ func _refresh_map() -> void:
 	map_canvas.custom_minimum_size = _map_canvas_size()
 	map_title.text = tr("第%d層 / %d層　%s") % [floor_index, FLOOR_COUNT,
 		"探索ダイス %d" % explore_roll if explore_roll > 0 else "探索ダイスを振る"]
-	map_roll_button.disabled = explore_roll > 0
-	map_reroll_button.disabled = explore_roll <= 0
+	map_roll_button.disabled = explore_roll > 0 or explore_is_rolling
+	map_reroll_button.disabled = explore_roll <= 0 or explore_is_rolling
+	if not explore_is_rolling and explore_roll <= 0:
+		map_roll_readout.text = "D6　[ - ]"
+		map_roll_readout.modulate = COL_TEXT_SOFT
 
 	for row in range(MAP_ROWS):
 		for c in range(MAP_COLS):

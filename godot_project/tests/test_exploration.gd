@@ -25,7 +25,7 @@ func _init() -> void:
 
 	main.rng.seed = 7
 	var fatigue_before: int = int(main.player_fatigue)
-	main._on_explore_roll_pressed()
+	await main._on_explore_roll_pressed()
 	check("exploration roll has a face", main.explore_roll >= 1 and main.explore_roll <= 6, true)
 	check("rolling costs fatigue", main.player_fatigue, fatigue_before + main.EXPLORE_FATIGUE_PER_ROLL)
 	var targets: Array = main._map_reachable()
@@ -36,7 +36,7 @@ func _init() -> void:
 			abs(p.x - main.map_col) + abs(p.y - main.map_row), main.explore_roll)
 
 	var rolled: int = int(main.explore_roll)
-	main._on_explore_reroll_pressed()
+	await main._on_explore_reroll_pressed()
 	check("reroll costs fatigue", main.player_fatigue,
 		fatigue_before + main.EXPLORE_FATIGUE_PER_ROLL + main.EXPLORE_REROLL_FATIGUE)
 	check("reroll remains a legal face", main.explore_roll >= 1 and main.explore_roll <= 6, true)
