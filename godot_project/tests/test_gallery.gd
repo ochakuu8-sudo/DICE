@@ -1,8 +1,8 @@
 extends SceneTree
 
 # The CG catalog is fully browsable before art and achievement triggers are
-# implemented. These checks keep its stable IDs, condition text and gallery
-# fallback from regressing while the actual CG files are added later.
+# implemented. These checks keep its stable IDs, condition text and paged
+# viewer from regressing while the actual CG files are added later.
 
 var fails := 0
 
@@ -42,8 +42,16 @@ func _init() -> void:
 	check("all cards are listed without unlocks", main.gallery_grid.get_child_count(), 20)
 	var first: Dictionary = entries[0]
 	main._replay_scene(first)
-	check("missing CG opens the condition fallback", main.overlay.visible, true)
-	check("fallback names the selected CG", main.overlay_title.text, str(first["title"]))
+	check("CG opens the page viewer", main.scene_layer.visible, true)
+	check("first page starts at one of two", main.scene_page_label.text, "1 / 2")
+	check("narration page hides speaker", main.scene_speaker.visible, false)
+	check("first page text is loaded from data", main.scene_caption.text.contains("1ページ目"), true)
+	main._dismiss_scene()
+	check("tap advances to the next page", main.scene_page_label.text, "2 / 2")
+	check("named page shows its speaker", main.scene_speaker.text, "粘体")
+	check("named page displays the speaker field", main.scene_speaker.visible, true)
+	main._dismiss_scene()
+	check("viewer closes after its final page", main.scene_layer.visible, false)
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)

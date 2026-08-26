@@ -70,6 +70,7 @@ const DESIGN_SIZE := Vector2i(1024, 576)
 # not a gap. "placeholder" is that distinction, and it is the only reason
 # the loud magenta does not appear everywhere.
 const ART_ROOT := "res://art"
+const CG_SCRIPT_PATH := "res://data/cg_pages.json"
 const ART_KINDS := {
 	# The standing figure on the battle stage. Tall — roughly 3:4 or
 	# narrower — because it shares the screen with the board.
@@ -1156,9 +1157,16 @@ var overlay_footer: VBoxContainer
 # must cover the card too when a scene plays into a result screen.
 var scene_layer: Control
 var scene_sprite: SpriteView
+var scene_image_placeholder: Label
+var scene_text_panel: PanelContainer
+var scene_speaker: Label
 var scene_caption: Label
 var scene_hint: Label
+var scene_page_label: Label
 var scene_after := Callable()
+var scene_pages: Array = []
+var scene_page_index := 0
+var cg_scripts: Dictionary = {}
 
 var gallery_grid: GridContainer
 var gallery_scroll: ScrollContainer
@@ -1903,6 +1911,7 @@ func _ready() -> void:
 	# which is how an English browser ended up with three English buttons in
 	# an otherwise Japanese game.
 	_load_profile()
+	_load_cg_scripts()
 	_apply_locale()
 	_build_ui()
 	_apply_audio_settings()
@@ -2638,24 +2647,51 @@ func _build_scene_layer() -> void:
 	scene_layer.add_child(shade)
 
 	scene_sprite = SpriteView.new()
-	scene_sprite.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scene_sprite.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	scene_sprite.offset_bottom = -164
 	scene_sprite.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	scene_layer.add_child(scene_sprite)
 
+	scene_image_placeholder = _make_label(FS_HEAD, Color(1, 1, 1, 0.75), HORIZONTAL_ALIGNMENT_CENTER, true)
+	scene_image_placeholder.text = "CG画像未設定"
+	scene_image_placeholder.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	scene_image_placeholder.offset_bottom = -164
+	scene_image_placeholder.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	scene_image_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scene_layer.add_child(scene_image_placeholder)
+
+	scene_text_panel = PanelContainer.new()
+	scene_text_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	scene_text_panel.offset_left = 28
+	scene_text_panel.offset_right = -28
+	scene_text_panel.offset_top = -154
+	scene_text_panel.offset_bottom = -20
+	scene_text_panel.add_theme_stylebox_override("panel", _flat_style(Color(0.08, 0.06, 0.07, 0.94), Color("#E6D6B4"), 2, 14, 10))
+	scene_text_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	scene_layer.add_child(scene_text_panel)
+
 	var col := VBoxContainer.new()
-	col.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	col.add_theme_constant_override("separation", 4)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	scene_layer.add_child(col)
+	scene_text_panel.add_child(col)
 
-	scene_caption = _make_label(FS_HEAD, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
-	scene_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	scene_speaker = _make_label(FS_BODY, COL_GOLD, HORIZONTAL_ALIGNMENT_LEFT, true)
+	scene_speaker.autowrap_mode = TextServer.AUTOWRAP_OFF
+	col.add_child(scene_speaker)
+
+	scene_caption = _make_label(FS_BODY, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_LEFT)
+	scene_caption.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(scene_caption)
 
-	scene_hint = _make_label(FS_SMALL, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER)
+	var footer := HBoxContainer.new()
+	footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(footer)
+	scene_page_label = _make_label(FS_SMALL, Color("#E6D6B4"), HORIZONTAL_ALIGNMENT_LEFT)
+	scene_page_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	footer.add_child(scene_page_label)
+	scene_hint = _make_label(FS_SMALL, Color("#E6D6B4"), HORIZONTAL_ALIGNMENT_RIGHT)
 	scene_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
-	col.add_child(scene_hint)
+	footer.add_child(scene_hint)
 
 	# A transparent button over the whole layer, so anywhere is "continue".
 	var catcher := Button.new()
@@ -5410,15 +5446,27 @@ func _play_scene(actor: String, art_state: String, caption: String, after: Calla
 		if after.is_valid():
 			after.call()
 		return
+	scene_pages = []
+	scene_page_index = 0
 	scene_after = after
+	scene_speaker.visible = false
 	scene_caption.text = caption
+	scene_page_label.text = ""
+	scene_hint.text = tr("画面をタップで閉じる")
+	scene_image_placeholder.visible = false
 	_show_art(scene_sprite, "cg", actor, [art_state], false)
 	scene_layer.visible = true
 
 func _dismiss_scene() -> void:
 	if scene_layer == null or not scene_layer.visible:
 		return
+	if not scene_pages.is_empty() and scene_page_index < scene_pages.size() - 1:
+		scene_page_index += 1
+		_show_cg_page()
+		return
 	scene_layer.visible = false
+	scene_pages = []
+	scene_page_index = 0
 	var next := scene_after
 	scene_after = Callable()
 	if next.is_valid():
@@ -5497,15 +5545,41 @@ func _cg_kind_label(kind: String) -> String:
 	return "最終END"
 
 func _replay_scene(entry: Dictionary) -> void:
-	if _has_art("cg", str(entry["actor"]), str(entry["state"])):
-		scene_after = Callable()
-		scene_caption.text = _scene_title(entry)
-		_show_art(scene_sprite, "cg", str(entry["actor"]), [str(entry["state"])], false)
-		scene_layer.visible = true
+	var script: Dictionary = cg_scripts.get(str(entry["id"]), {})
+	var pages: Array = script.get("pages", [])
+	if pages.is_empty():
+		pages = [{"image": "", "name": "", "text": "CG準備中\n実績条件：%s" % str(entry["condition"])}]
+	_open_cg_pages(pages, _scene_title(entry))
+
+func _open_cg_pages(pages: Array, title: String) -> void:
+	scene_pages = pages
+	scene_page_index = 0
+	scene_after = Callable()
+	scene_layer.visible = true
+	_show_cg_page()
+
+func _show_cg_page() -> void:
+	if scene_pages.is_empty() or scene_page_index < 0 or scene_page_index >= scene_pages.size():
 		return
-	_open_overlay(_scene_title(entry), "CG準備中\n実績条件：%s\n\n現在は全CGを閲覧可能です。" % str(entry["condition"]))
-	_add_overlay_option("回想へ戻る", "CG画像を追加すると、このカードから再生できます。", COL_GOLD, "boot", Callable(self, "_close_overlay"))
-	_layout_overlay()
+	var page: Dictionary = scene_pages[scene_page_index]
+	var speaker := str(page.get("name", "")).strip_edges()
+	scene_speaker.visible = not speaker.is_empty()
+	scene_speaker.text = speaker
+	scene_caption.text = str(page.get("text", ""))
+	scene_page_label.text = "%d / %d" % [scene_page_index + 1, scene_pages.size()]
+	scene_hint.text = tr("タップで閉じる") if scene_page_index >= scene_pages.size() - 1 else tr("タップで次へ")
+	_show_cg_page_image(str(page.get("image", "")))
+
+func _show_cg_page_image(path: String) -> void:
+	if path.is_empty() or not ResourceLoader.exists(path, "Texture2D"):
+		scene_sprite.play([], "", 12.0, false)
+		scene_sprite.visible = false
+		scene_image_placeholder.visible = true
+		return
+	var texture: Texture2D = load(path)
+	scene_sprite.play([texture], path, 12.0, false)
+	scene_sprite.visible = true
+	scene_image_placeholder.visible = false
 
 func _close_gallery() -> void:
 	state = gallery_return_state
@@ -5854,6 +5928,13 @@ func _write_json(path: String, data: Dictionary) -> void:
 		return
 	file.store_string(JSON.stringify(data))
 	file.close()
+
+# Author-facing CG pages are data, not GDScript. Each catalog ID maps to a
+# `pages` array; a page contains `image`, `name` (empty for narration), and
+# `text`. Missing or malformed entries fall back to the gallery condition.
+func _load_cg_scripts() -> void:
+	var data := _read_json(CG_SCRIPT_PATH)
+	cg_scripts = data.get("scenes", data)
 
 # --- the run map --------------------------------------------------------
 # A column of rows the player climbs one step at a time, bottom to top,

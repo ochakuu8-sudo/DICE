@@ -1,0 +1,30 @@
+{
+  "_comment": "CG本文の編集用ファイル。scenesのキーはCGカタログID。pagesは上から順に再生され、imageはres://から始まる画像パス、nameは空文字ならナレーション、textはそのページの本文です。ページを増減して、画像と文章量を自由に調整できます。",
+  "scenes": {
+    "fatigue_end_stray": {
+      "pages": [
+        {"image": "res://art/cg/fatigue_end_stray_01.png", "name": "", "text": "ここに1ページ目のナレーションを書きます。"},
+        {"image": "res://art/cg/fatigue_end_stray_02.png", "name": "粘体", "text": "ここに話者名付きの2ページ目を書きます。"}
+      ]
+    },
+    "fatigue_end_scout": {"pages": [{"image": "res://art/cg/fatigue_end_scout_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "fatigue_end_archer": {"pages": [{"image": "res://art/cg/fatigue_end_archer_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "fatigue_end_heavy": {"pages": [{"image": "res://art/cg/fatigue_end_heavy_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "fatigue_end_plague": {"pages": [{"image": "res://art/cg/fatigue_end_plague_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "fatigue_end_captain": {"pages": [{"image": "res://art/cg/fatigue_end_captain_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "fatigue_end_boss": {"pages": [{"image": "res://art/cg/fatigue_end_boss_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_stray": {"pages": [{"image": "res://art/cg/climax_stray_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_scout": {"pages": [{"image": "res://art/cg/climax_scout_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_archer": {"pages": [{"image": "res://art/cg/climax_archer_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_heavy": {"pages": [{"image": "res://art/cg/climax_heavy_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_plague": {"pages": [{"image": "res://art/cg/climax_plague_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_captain": {"pages": [{"image": "res://art/cg/climax_captain_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "climax_boss": {"pages": [{"image": "res://art/cg/climax_boss_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_chest_l3": {"pages": [{"image": "res://art/cg/ending_chest_l3_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_depths_l3": {"pages": [{"image": "res://art/cg/ending_depths_l3_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_tail_l3": {"pages": [{"image": "res://art/cg/ending_tail_l3_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_multi_l3": {"pages": [{"image": "res://art/cg/ending_multi_l3_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_all_l0": {"pages": [{"image": "res://art/cg/ending_all_l0_01.png", "name": "", "text": "本文を入力してください。"}]},
+    "ending_normal": {"pages": [{"image": "res://art/cg/ending_normal_01.png", "name": "", "text": "本文を入力してください。"}]}
+  }
+}
