@@ -19,16 +19,16 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
-	# --- the board is twelve squares ----------------------------------
-	check("ring size", main.ring_cells.size(), 12)
-	check("board is 4x4", [main.BOARD_W, main.BOARD_H], [4, 4])
+	# --- the board is sixteen squares ---------------------------------
+	check("ring size", main.ring_cells.size(), 16)
+	check("board is 5x5", [main.BOARD_W, main.BOARD_H], [5, 5])
 	check("top-left corner warps to step 0", main.WARP_FACES[main.CORNER_TL]["step"], 0)
-	check("top-right corner warps to step 3", main.WARP_FACES[main.CORNER_TR]["step"], 3)
-	check("bottom-right corner warps to step 6", main.WARP_FACES[main.CORNER_BR]["step"], 6)
-	check("bottom-left corner warps to step 9", main.WARP_FACES[main.CORNER_BL]["step"], 9)
+	check("top-right corner warps to step 4", main.WARP_FACES[main.CORNER_TR]["step"], 4)
+	check("bottom-right corner warps to step 8", main.WARP_FACES[main.CORNER_BR]["step"], 8)
+	check("bottom-left corner warps to step 12", main.WARP_FACES[main.CORNER_BL]["step"], 12)
 	var perimeter := true
 	for cell in main.ring_cells:
-		if cell.x != 0 and cell.x != 3 and cell.y != 0 and cell.y != 3:
+		if cell.x != 0 and cell.x != 4 and cell.y != 0 and cell.y != 4:
 			perimeter = false
 	check("every ring cell is on the perimeter", perimeter, true)
 	check("hero tiles all sit on the ring",

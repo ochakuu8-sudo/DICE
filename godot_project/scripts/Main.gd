@@ -1,8 +1,8 @@
 extends Control
 
-const BOARD_W := 4
-const BOARD_H := 4
-const ACTIONS_PER_TURN := 1
+const BOARD_W := 5
+const BOARD_H := 5
+const ACTIONS_PER_TURN := 2
 const REROLLS_PER_TURN := 1
 const FATIGUE_MAX := 100
 const EXPLORE_FATIGUE_PER_MOVE := 2
@@ -11,7 +11,7 @@ const BATTLE_DEFEAT_FATIGUE := 15
 # fight ended with most of the ring poisoned and the player's own board
 # invisible underneath it. Scaled with the ring: five of sixteen leaves the
 # same proportion of the board readable as four of twelve did.
-const MAX_DEBUFFS := 4
+const MAX_DEBUFFS := 5
 # Cards on screen at once. The fractional part is deliberate: it leaves a
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
@@ -22,7 +22,7 @@ const HAND_GAP := 7.0
 # walking it. Sentinels far outside any real rolled distance (±1-8) so
 # they can never collide with one, mapped to the ring step each warps to
 # and the short label its face and log line show instead of a number.
-# RING's four corners are steps 0/3/6/9 — see _build_track_graph.
+# RING's four corners are steps 0/4/8/12 — see _build_track_graph.
 const RESET_FACE := 99
 const CORNER_TL := 90
 const CORNER_TR := 91
@@ -31,9 +31,9 @@ const CORNER_BL := 93
 const WARP_FACES := {
 	RESET_FACE: {"label": "帰", "step": 0},
 	CORNER_TL: {"label": "左上", "step": 0},
-	CORNER_TR: {"label": "右上", "step": 3},
-	CORNER_BR: {"label": "右下", "step": 6},
-	CORNER_BL: {"label": "左下", "step": 9},
+	CORNER_TR: {"label": "右上", "step": 4},
+	CORNER_BR: {"label": "右下", "step": 8},
+	CORNER_BL: {"label": "左下", "step": 12},
 }
 
 # Every size in this file is authored in these units, and the window's
@@ -1859,10 +1859,9 @@ var hero_defs := {
 		# The starting board is deliberately almost empty: the player should
 		# be the author of the ring, not the editor of someone else's.
 		"dice": ["normal", "normal", "blade", "guard_die"],
-		# Steps 2, 5 and 8 of twelve: three evenly spaced anchors around the
-		# compact ring.
+		# Three evenly spaced anchors around the sixteen-square ring.
 		"tiles": [
-			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
+			[3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
 		]
 	},
 }
@@ -7466,14 +7465,12 @@ func _flash_player_stop() -> void:
 # --- board graph -------------------------------------------------------
 
 func _build_track_graph() -> void:
-	# The perimeter of the 4x4 grid, clockwise from the top-left start.
-	# Twelve squares make each battle lap compact enough to support a longer
-	# exploration route without making a full expedition overstay its welcome.
+	# The perimeter of the 5x5 grid, clockwise from the top-left start.
 	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0),
-		Vector2i(3, 1), Vector2i(3, 2),
-		Vector2i(3, 3), Vector2i(2, 3), Vector2i(1, 3), Vector2i(0, 3),
-		Vector2i(0, 2), Vector2i(0, 1),
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
+		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3),
+		Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4),
+		Vector2i(0, 4), Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
 	]
 	ring_index_map = {}
 	ring_forward = {}
