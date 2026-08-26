@@ -1197,6 +1197,9 @@ var player_fatigue := 0
 # it across runs is a later decision (陥落 / meta-progression), not this
 # one.
 var part_dev := {"chest": 0, "depths": 0, "tail": 0}
+# Current progress toward the next climax for each part. Its ceiling depends
+# on that part's sensitivity level: Lv0=6, Lv1=5, Lv2=4, Lv3=3.
+var part_stacks := {"chest": 0, "depths": 0, "tail": 0}
 var player_shield := 0
 var player_pos := Vector2i(0, 0)
 var player_step := 0
@@ -2175,10 +2178,8 @@ func _build_hero_zone() -> void:
 	hero_stage_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(hero_stage_name)
 
-	# Development is a count that only ever goes up, so it is drawn as
-	# marks rather than as a number: five slots per part, filling in. A
-	# number tells you 3; five slots tell you 3 *out of five* and that
-	# two are left, which is the thing actually worth reading off it.
+	# The number carries the current sensitivity level and climax progress;
+	# the three marks remain a quick visual summary of Lv0–3.
 	part_box = VBoxContainer.new()
 	part_box.add_theme_constant_override("separation", 2)
 	part_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2192,7 +2193,7 @@ func _build_hero_zone() -> void:
 		part_box.add_child(row)
 		var name_label := _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT, true)
 		name_label.text = str(PART_NAMES[part])
-		name_label.custom_minimum_size = Vector2(38, 0)
+		name_label.custom_minimum_size = Vector2(82, 0)
 		name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 		row.add_child(name_label)
 		var pips := []
@@ -3203,6 +3204,9 @@ func _refresh_hero_stage() -> void:
 			continue
 		var row: Dictionary = part_rows[part]
 		var dev := int(part_dev.get(part, 0))
+		var stacks := int(part_stacks.get(part, 0))
+		var stack_limit := _climax_stack_limit(part)
+		(row["label"] as Label).text = "%s Lv%d  %d/%d" % [PART_NAMES[part], dev, stacks, stack_limit]
 		(row["label"] as Label).add_theme_color_override("font_color", faded)
 		var pips: Array = row["pips"]
 		for i in range(pips.size()):
@@ -3254,8 +3258,9 @@ func _refresh_enemy() -> void:
 	# is developed, so it is the line most worth re-reading, and the note
 	# is clipped at five lines that a boss's debuff text already fills.
 	if has_part:
-		note_lines.append("%s狙い：部位補正 ×%.1f（開発度%d）" % [
-			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0))])
+		note_lines.append("%s狙い：部位補正 ×%.1f（感度Lv%d・絶頂%d/%d）" % [
+			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0)),
+			int(part_stacks.get(part, 0)), _climax_stack_limit(part)])
 	var kind := str(enemy.get("debuff", ""))
 	if kind != "" and temp_defs.has(kind):
 		note_lines.append("%s をマスにかける（%s）" % [
@@ -4555,6 +4560,7 @@ func _start_run(key: String) -> void:
 	player_fatigue = 0
 	player_shield = 0
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
+	part_stacks = {"chest": 0, "depths": 0, "tail": 0}
 	next_enemy_uid = 0
 	run_damage_dealt = 0
 	run_turns = 0
@@ -4630,9 +4636,8 @@ const ENEMY_TRAIT_TEXT := {
 const PARTS := ["chest", "depths", "tail"]
 const PART_NAMES := {"chest": "胸", "depths": "秘所", "tail": "尻"}
 const PART_DEV_MAX := 3
-# Reserved for the future combat trigger. The gallery documents these rules
-# now, while the actual stack accumulation and cut-in playback remain out of
-# scope until CG insertion is implemented.
+# Each sensitivity level shortens the distance to the next climax. CG art
+# playback is still supplied separately, but the combat state is real.
 const CLIMAX_STACKS_BY_LEVEL := [6, 5, 4, 3]
 
 # Development level -> how much a landed hit on that part is scaled by.
@@ -4682,10 +4687,34 @@ func _part_multiplier(part: String) -> float:
 		return 1.5
 	return 1.0
 
+func _climax_stack_limit(part: String) -> int:
+	var level := clampi(int(part_dev.get(part, 0)), 0, PART_DEV_MAX)
+	return int(CLIMAX_STACKS_BY_LEVEL[level])
+
+# A fully effective part hit advances only the relevant climax meter. On
+# reaching its ceiling, the meter resets and raises sensitivity through Lv3;
+# at Lv3 it simply resets for the next climax.
+func _add_part_stack(part: String) -> bool:
+	if not part_dev.has(part):
+		return false
+	var limit := _climax_stack_limit(part)
+	var next := int(part_stacks.get(part, 0)) + 1
+	if next < limit:
+		part_stacks[part] = next
+		return false
+	part_stacks[part] = 0
+	if int(part_dev[part]) < PART_DEV_MAX:
+		part_dev[part] = int(part_dev[part]) + 1
+		_set_log("%s が絶頂に達した。感度Lv%dへ上昇。" % [PART_NAMES[part], int(part_dev[part])])
+	else:
+		_set_log("%s が絶頂に達した。" % PART_NAMES[part])
+	return true
+
 func _develop_part(part: String) -> void:
 	if not part_dev.has(part):
 		return
 	part_dev[part] = min(PART_DEV_MAX, int(part_dev[part]) + 1)
+	part_stacks[part] = 0
 
 # "art" is the actor id its stage figure and its scene art resolve under —
 # res://art/stage/scout_idle.png, res://art/cg/scout_lose.png and so on. It
@@ -5773,6 +5802,7 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"fatigue": player_fatigue,
 		"floor": floor_index,
 		"part_dev": part_dev,
+		"part_stacks": part_stacks,
 		"hand_limit": hand_limit,
 		"actions": actions_per_turn,
 		"gold": gold,
@@ -5844,6 +5874,10 @@ func _load_run() -> bool:
 	var saved_dev: Dictionary = data.get("part_dev", {})
 	for part in PARTS:
 		part_dev[part] = clampi(int(saved_dev.get(part, 0)), 0, PART_DEV_MAX)
+	part_stacks = {"chest": 0, "depths": 0, "tail": 0}
+	var saved_stacks: Dictionary = data.get("part_stacks", {})
+	for part in PARTS:
+		part_stacks[part] = clampi(int(saved_stacks.get(part, 0)), 0, _climax_stack_limit(part) - 1)
 	hand_limit = int(data.get("hand_limit", hero.get("hand", 3)))
 	actions_per_turn = int(data.get("actions", ACTIONS_PER_TURN))
 	gold = int(data.get("gold", 0))
@@ -7043,11 +7077,11 @@ func _take_damage(amount: int, part: String = "", tint: Color = Color.WHITE) -> 
 	var hp_loss := amount - blocked
 	# The part attribute only touches what actually gets through the
 	# shield — shield still blocks the enemy's flat damage stat exactly
-	# as it always has. A part attack that gets fully blocked develops
-	# nothing, same as it deals nothing.
+	# as it always has. A part attack that gets fully blocked gains no
+	# climax stack, same as it deals nothing.
 	if part != "" and hp_loss > 0:
 		hp_loss = int(round(hp_loss * _part_multiplier(part)))
-		_develop_part(part)
+		_add_part_stack(part)
 	player_hp -= hp_loss
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#FF6A4D"), hp_loss >= 6)

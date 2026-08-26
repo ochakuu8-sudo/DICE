@@ -90,23 +90,38 @@ func resource_display_case(main) -> void:
 	check("map display: caption is fatigue", main.hp_caption.text, "疲労")
 	check("map display: bar tracks fatigue", int(main.hp_bar.max_value), main.FATIGUE_MAX)
 
-# A landed part attack scales with development and develops the part
-# further; a plain hit with no part tag does neither.
+# A landed part attack scales with sensitivity and adds one stack. The
+# prescribed Lv0=6 / Lv1=5 / Lv2=4 / Lv3=3 ceilings advance the level only
+# when their own meter fills.
 func part_multiplier_case(main) -> void:
 	_reset(main)
 	main.player_hp = main.player_max_hp
 	main.player_shield = 0
 	main.part_dev = {"chest": 0, "depths": 0, "tail": 0}
+	main.part_stacks = {"chest": 0, "depths": 0, "tail": 0}
 
 	var taken1: int = main._take_damage(10, "chest")
 	check("part hit at dev 0: no multiplier yet", taken1, 10)
-	check("part hit at dev 0: develops by one", int(main.part_dev["chest"]), 1)
+	check("part hit at Lv0: level stays", int(main.part_dev["chest"]), 0)
+	check("part hit at Lv0: first of six stacks", int(main.part_stacks["chest"]), 1)
+	main.part_stacks["chest"] = 5
+	main.player_hp = main.player_max_hp
+	main._take_damage(10, "chest")
+	check("sixth stack at Lv0 develops to Lv1", int(main.part_dev["chest"]), 1)
+	check("Lv0 climax resets the stack", int(main.part_stacks["chest"]), 0)
 
 	main.part_dev["chest"] = 2
+	main.part_stacks["chest"] = 3
 	main.player_hp = main.player_max_hp
 	var taken2: int = main._take_damage(10, "chest")
 	check("part hit at dev 2: x1.5", taken2, 15)
-	check("part hit at dev 2: develops to 3", int(main.part_dev["chest"]), 3)
+	check("fourth stack at Lv2 develops to Lv3", int(main.part_dev["chest"]), 3)
+	check("level-up resets the climax stack", int(main.part_stacks["chest"]), 0)
+	main.part_stacks["chest"] = 2
+	main.player_hp = main.player_max_hp
+	main._take_damage(10, "chest")
+	check("third stack at Lv3 keeps Lv3", int(main.part_dev["chest"]), 3)
+	check("Lv3 climax resets its stack", int(main.part_stacks["chest"]), 0)
 	main._develop_part("chest")
 	check("part development caps at 3", int(main.part_dev["chest"]), 3)
 
@@ -114,9 +129,10 @@ func part_multiplier_case(main) -> void:
 	var taken3: int = main._take_damage(10, "")
 	check("plain hit: no multiplier", taken3, 10)
 	check("plain hit: leaves chest development alone", int(main.part_dev["chest"]), 3)
+	check("plain hit: leaves chest stack alone", int(main.part_stacks["chest"]), 0)
 
 	main.player_shield = 20
 	main.player_hp = main.player_max_hp
 	var taken4: int = main._take_damage(10, "chest")
 	check("part hit fully blocked: nothing gets through", taken4, 0)
-	check("part hit fully blocked: does not develop", int(main.part_dev["chest"]), 3)
+	check("part hit fully blocked: does not add a stack", int(main.part_stacks["chest"]), 0)
