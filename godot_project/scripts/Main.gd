@@ -108,19 +108,6 @@ const COL_GOLD := Color("#F2B33D")
 const COL_DANGER := Color("#FF7A18")
 const COL_HP := Color("#3EA95E")
 const COL_HP_LOW := Color("#E4453A")
-# 昂り is painted as temperature, not as health. Cold and composed at
-# zero, hot at the limit, so a bar that grows reads as something being
-# done to her — the COL_HP/COL_HP_LOW pair it replaces painted a
-# *growing green bar* for most of a fight, and a growing green bar means
-# "going well" in every visual language there is. The breakpoint is the
-# same 35%-HP line the hurt pose and the danger colour already use.
-const COL_CALM := Color("#5E8CA8")
-const COL_AROUSAL := Color("#C4506B")
-const COL_AROUSAL_MAX := Color("#7E1F3C")
-# Her own column sinks as she does. The board never does — that contrast
-# is the whole concept, so this colour exists for the hero panel and for
-# nothing else.
-const COL_HERO_DEEP := Color("#2E2026")
 const COL_SHIELD := Color("#2E7BD6")
 const COL_ENEMY := Color("#C2453A")
 const COL_TRACK := Color("#BFA87F")
@@ -163,10 +150,9 @@ class Backdrop:
 			tint_progress = clamp(v, 0.0, 1.0)
 			queue_redraw()
 
-	# How far gone she is, 0..1, straight off 昂り. The climb warms the
-	# room; this one puts the light out in it. Kept separate from
-	# tint_progress because they answer different questions — how deep
-	# into the dungeon, and how deep into her.
+	# An optional local darkness layer. It is kept separate from
+	# tint_progress so scene depth can be adjusted without changing the
+	# map's climb tint.
 	var heat: float = 0.0:
 		set(v):
 			heat = clamp(v, 0.0, 1.0)
@@ -1197,12 +1183,10 @@ var hero_token_color := Color("#2E7BD6")
 var encounter := 0
 var player_hp := 30
 var player_max_hp := 30
-## HP is reset for every encounter. Fatigue and arousal instead belong to
-## the whole expedition, so choosing to explore or retry a bad roll carries
-## forward into the boss fight.
+## HP is reset for every encounter. Fatigue belongs to the whole
+## expedition, so choosing to explore or retry a bad roll carries forward
+## into the boss fight.
 var player_fatigue := 0
-var player_arousal := 0
-var afterglow_turns := 0
 # Per-run only: how far each part has been developed by landed part
 # attacks this run. Resets with the run, not with the profile — carrying
 # it across runs is a later decision (陥落 / meta-progression), not this
@@ -1458,11 +1442,6 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "self_damage", "amount": 3},
 			{"on": "stop", "op": "attack", "amount": 16}],
 		"detail": "盤上で最も重い一撃だが、自分のHPを削って撃つ。押し切れる場面かどうかの判断を迫るマス。"},
-	"release": {"name": "解放陣", "kind": "昂り", "color": Color("#C2457E"), "icon": "shock",
-		"trigger": "stop", "effect": "昂り20以上で18ダメージ、昂り-20",
-		"effects": [{"on": "stop", "op": "attack", "amount": 18, "cond": {"min_arousal": 20}},
-			{"on": "stop", "op": "spend_arousal", "amount": 20, "cond": {"min_arousal": 20}}],
-		"detail": "昂りを力に変える専用の停止マス。高揚を管理できれば、未知の敵にも通る大技になる。"},
 	"firststrike": {"name": "先手", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "bow",
 		"trigger": "stop", "effect": "1手目なら12ダメージ、行動+1",
 		"effects": [{"on": "stop", "op": "attack", "amount": 12, "cond": {"action": 1}},
@@ -1853,7 +1832,7 @@ var reward_pool := [
 	{"type": "assault"}, {"type": "caution"},
 	{"type": "chain"}, {"type": "volley"}, {"type": "resonance"}, {"type": "spiral"},
 	{"type": "battery"}, {"type": "aim"}, {"type": "lance"},
-	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "release"}, {"type": "snipe"},
+	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
 	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
 	{"type": "lastblade"}, {"type": "unbowed"}, {"type": "bloodpath"}, {"type": "deathline"},
@@ -2033,9 +2012,8 @@ func _build_ui() -> void:
 
 func _build_top_zone() -> void:
 	# This strip is the bottom half of her column, not a separate HUD: it
-	# gets the same panel as the figure above it and sinks with her, so
-	# 昂り, the marks and her chips read as one object called "her"
-	# instead of as a status bar parked underneath a portrait.
+	# gets the same panel as the figure above it, so HP and the marks read
+	# as one object called "her" instead of as a status bar parked beneath.
 	top_panel = PanelContainer.new()
 	top_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
 	top_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 6, 6))
@@ -2079,7 +2057,7 @@ func _build_top_zone() -> void:
 	# height and slide under the enemy panel.
 	var hp_row := stat_row
 	hp_caption = _make_label(FS_SMALL, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_LEFT, true)
-	hp_caption.text = tr("昂り")
+	hp_caption.text = tr("HP")
 	hp_caption.custom_minimum_size = Vector2(34, 0)
 	hp_caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hp_caption.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -2298,7 +2276,7 @@ func _build_enemy_zone() -> void:
 	intent_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	intent_inner.add_child(intent_icon)
 	# The one number on this column the player re-reads every turn. It is
-	# set at the size the 昂り readout uses, because it is the same
+	# set at the size the status readout uses, because it is the same
 	# question asked from the other side.
 	intent_label = _make_label(FS_NUM_BIG, Color("#FFF7E6"), HORIZONTAL_ALIGNMENT_LEFT, true)
 	intent_label.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -2753,7 +2731,7 @@ func _layout_screen() -> void:
 	_place(zone_gallery, full)
 	if _is_landscape():
 		# Three columns, but not three equal claims. She is the subject —
-		# the run happens to her, and 昂り and the marks are read off her
+		# the run happens to her, and the status and marks are read off her
 		# column — so she gets the widest of the three. The enemy used to
 		# get more frame than she did; it is a dossier now. What it loses
 		# is split between her and the board.
@@ -3116,40 +3094,30 @@ func _refresh_top() -> void:
 	hero_portrait.face_color = hero_token_color
 	hero_portrait.hp_ratio = float(player_hp) / float(max(player_max_hp, 1))
 
-	# HP is encounter-local. This bar deliberately shows expedition fatigue
-	# instead, while the numeric readout keeps both global resources visible.
-	var fatigue: int = player_fatigue
-	var ratio: float = _arousal_ratio()
-	var heat_color := _arousal_color(ratio)
-	hp_caption.text = tr("疲労")
-	hp_bar.max_value = FATIGUE_MAX
-	hp_bar.segments = 12
-	hp_bar.value = fatigue
-	hp_bar.fill_color = heat_color
+	var in_battle := _in_battle_view()
+	if in_battle:
+		hp_caption.text = tr("HP")
+		hp_bar.max_value = player_max_hp
+		hp_bar.segments = 12
+		hp_bar.value = player_hp
+		hp_bar.fill_color = COL_HP if player_hp * 100 > player_max_hp * 35 else COL_HP_LOW
+		hp_label.text = "HP %d/%d　疲労%d%%" % [player_hp, player_max_hp, player_fatigue]
+	else:
+		hp_caption.text = tr("疲労")
+		hp_bar.max_value = FATIGUE_MAX
+		hp_bar.segments = 12
+		hp_bar.value = player_fatigue
+		hp_bar.fill_color = COL_GOLD
+		hp_label.text = "%d/%d" % [player_fatigue, FATIGUE_MAX]
 	_animate_gauge(hp_bar)
-	hp_label.text = tr("%d/%d　昂り%d") % [fatigue, FATIGUE_MAX, player_arousal]
-	# The room answers to her, not to the turn counter.
-	var sink: float = ratio * ratio
 	if backdrop_view != null:
-		backdrop_view.heat = ratio
-
-	# This strip shares her panel, so it sinks with her rather than with
-	# the room.
+		backdrop_view.heat = 0.0
 	if top_panel != null:
-		top_panel.add_theme_stylebox_override("panel",
-			_flat_style(COL_PANEL.lerp(COL_HERO_DEEP, sink), COL_INK, 3, 6, 6))
-
-	# Ink on cream becomes ink on nothing once the ground under it is
-	# dark, whether that ground is her panel or the room itself. The
-	# board's own labels are deliberately not in this list: the board
-	# keeps its light and its contrast no matter how far gone she is.
-	var on_dark := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
-	hp_label.add_theme_color_override("font_color",
-		COL_TEXT.lerp(COL_TEXT_ON_DARK, sink) if ratio < 0.65
-		else heat_color.lerp(COL_TEXT_ON_DARK, 0.45 * sink))
+		top_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 6, 6))
+	hp_label.add_theme_color_override("font_color", COL_TEXT)
 	for label in [run_label, hp_caption, action_caption, log_label]:
 		if label != null:
-			label.add_theme_color_override("font_color", on_dark)
+			label.add_theme_color_override("font_color", COL_TEXT_SOFT)
 
 	shield_label.text = str(player_shield)
 	shield_chip.modulate = Color(1, 1, 1, 1.0 if player_shield > 0 else 0.45)
@@ -3196,26 +3164,10 @@ func _refresh_hero_stage() -> void:
 	_show_art(hero_sprite, "stage", _hero_art_id(),
 		["down", "idle"] if hurt else ["idle"])
 
-	# Her column is the one panel on screen that answers to her state. The
-	# board keeps its own bright styling no matter what happens here.
-	var ratio: float = _arousal_ratio()
-	var sink: float = ratio * ratio
-	var heat_color := _arousal_color(ratio)
-	hero_panel.add_theme_stylebox_override("panel",
-		_flat_style(COL_PANEL.lerp(COL_HERO_DEEP, sink), COL_INK, 3, 6, 6))
-	# She takes on the heat rather than the dark: tinting toward rose
-	# reads as flush, where dimming her would just hide the one drawing
-	# on screen the player is here to look at. modulate is free — the hit
-	# clip animates `flash`, not this.
-	hero_sprite.modulate = Color.WHITE.lerp(Color("#EE8FA6"), sink * 0.30)
-	# Ink on cream is unreadable once the cream is gone, so the type
-	# crosses over with the panel it sits on.
-	hero_stage_name.add_theme_color_override("font_color",
-		COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink))
-
-	# Filled marks are lit in the same heat the gauge uses; empty ones
-	# cross over with the panel so they stay visible once it is dark.
-	var faded := COL_TEXT_SOFT.lerp(COL_TEXT_ON_DARK, sink)
+	hero_panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL, COL_INK, 3, 6, 6))
+	hero_sprite.modulate = Color.WHITE
+	hero_stage_name.add_theme_color_override("font_color", COL_TEXT_SOFT)
+	var faded := COL_TEXT_SOFT
 	for part in PARTS:
 		if not part_rows.has(part):
 			continue
@@ -3227,9 +3179,7 @@ func _refresh_hero_stage() -> void:
 			var pip: IconGlyph = pips[i]
 			var filled: bool = i < dev
 			pip.outlined = filled
-			# Each mark is hotter than the one before it, so a part at 4
-			# reads as further gone than a part at 2 without counting.
-			pip.glyph_color = _arousal_color(float(i + 1) / float(PART_DEV_MAX)) if filled else faded
+			pip.glyph_color = _development_color(float(i + 1) / float(PART_DEV_MAX)) if filled else faded
 			# Only `kind` has a setter that repaints; the colour fields are
 			# plain vars. These pips are built once and mutated in place
 			# (unlike the action pips, which are rebuilt every refresh), so
@@ -3274,7 +3224,7 @@ func _refresh_enemy() -> void:
 	# is developed, so it is the line most worth re-reading, and the note
 	# is clipped at five lines that a boss's debuff text already fills.
 	if has_part:
-		note_lines.append("%s狙い：昂り ×%.1f（開発度%d）" % [
+		note_lines.append("%s狙い：部位補正 ×%.1f（開発度%d）" % [
 			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0))])
 	var kind := str(enemy.get("debuff", ""))
 	if kind != "" and temp_defs.has(kind):
@@ -4577,8 +4527,6 @@ func _start_run(key: String) -> void:
 	actions_per_turn = int(hero.get("actions", ACTIONS_PER_TURN))
 	player_hp = player_max_hp
 	player_fatigue = 0
-	player_arousal = 0
-	afterglow_turns = 0
 	player_shield = 0
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	next_enemy_uid = 0
@@ -4666,13 +4614,8 @@ const PART_DEV_MAX := 5
 # 0 at full HP, 1 at the limit. Every part of the screen that reacts to
 # her state reads it from here, so the gauge, her column and the room can
 # never disagree about how far gone she is.
-func _arousal_ratio() -> float:
-	return clampf(float(player_arousal) / float(FATIGUE_MAX), 0.0, 1.0)
-
-func _arousal_color(ratio: float) -> Color:
-	if ratio <= 0.65:
-		return COL_CALM.lerp(COL_AROUSAL, ratio / 0.65)
-	return COL_AROUSAL.lerp(COL_AROUSAL_MAX, (ratio - 0.65) / 0.35)
+func _development_color(ratio: float) -> Color:
+	return COL_SHIELD.lerp(COL_GOLD, clampf(ratio, 0.0, 1.0))
 
 func _add_fatigue(amount: int, reason: String = "") -> void:
 	if amount <= 0:
@@ -4680,22 +4623,6 @@ func _add_fatigue(amount: int, reason: String = "") -> void:
 	player_fatigue = clampi(player_fatigue + amount, 0, FATIGUE_MAX)
 	if reason != "":
 		_set_log("%s　疲労+%d（%d/%d）" % [reason, amount, player_fatigue, FATIGUE_MAX])
-	_refresh_top()
-
-func _add_arousal(amount: int, reason: String = "") -> void:
-	if amount == 0:
-		return
-	player_arousal = clampi(player_arousal + amount, 0, FATIGUE_MAX)
-	if player_arousal >= FATIGUE_MAX:
-		# The recovery point keeps the resource useful after an overflow while
-		# preserving the one-turn cost in the combat / exploration controllers.
-		player_arousal = 40
-		afterglow_turns = 1
-		_add_fatigue(15, "絶頂")
-		if reason != "":
-			_set_log("%s　絶頂。疲労+15、昂りは40へ戻った" % reason)
-	elif reason != "":
-		_set_log("%s　昂り+%d（%d/%d）" % [reason, amount, player_arousal, FATIGUE_MAX])
 	_refresh_top()
 
 func _reset_encounter_hp() -> void:
@@ -4712,7 +4639,7 @@ func _reset_encounter_hp() -> void:
 func _enemy_hit_tint(enemy: Dictionary) -> Color:
 	var part := str(enemy.get("part", ""))
 	if part != "" and PART_NAMES.has(part):
-		return _arousal_color(clampf(float(int(part_dev.get(part, 0)) + 1) \
+		return _development_color(clampf(float(int(part_dev.get(part, 0)) + 1) \
 			/ float(PART_DEV_MAX), 0.0, 1.0))
 	var kind := str(enemy.get("debuff", ""))
 	if kind != "" and temp_defs.has(kind):
@@ -4895,11 +4822,6 @@ func _show_map() -> void:
 
 func _on_explore_roll_pressed() -> void:
 	if state != "map" or explore_roll > 0 or explore_is_rolling:
-		return
-	if afterglow_turns > 0:
-		afterglow_turns -= 1
-		_set_log("余韻で探索を休んだ。")
-		_refresh_map()
 		return
 	await _roll_exploration_die(false)
 
@@ -5124,14 +5046,13 @@ func _resolve_trap_node() -> void:
 	_open_overlay("適応の罠", "%s へ作用する罠。代償を払えば成長と報酬を得られる。" % PART_NAMES[part])
 	_add_overlay_option("抵抗する", "疲労+5。報酬なしで通過する。", COL_SHIELD, "guard",
 		Callable(self, "_take_trap_choice").bind(part, false))
-	_add_overlay_option("適応する", "疲労+8、昂り+15、部位開発+1。ランダム3択報酬。", Color("#9C3A6B"), "trap",
+	_add_overlay_option("適応する", "疲労+8、部位開発+1。ランダム3択報酬。", Color("#9C3A6B"), "trap",
 		Callable(self, "_take_trap_choice").bind(part, true))
 	_layout_overlay()
 
 func _take_trap_choice(part: String, adapt: bool) -> void:
 	if adapt:
 		_add_fatigue(8, "罠へ適応")
-		_add_arousal(15, "%sが反応した" % PART_NAMES[part])
 		_develop_part(part)
 		_close_overlay()
 		_show_reward()
@@ -5255,9 +5176,6 @@ func _take_event_choice(choice: Dictionary) -> void:
 					var recovered: int = min(player_fatigue, -amount)
 					player_fatigue -= recovered
 					notes.append("疲労-%d" % recovered)
-			"arousal":
-				_add_arousal(amount)
-				notes.append("昂り%+d" % amount)
 			"die":
 				dice_bag.append(_make_die(str(eff["id"])))
 				notes.append("%sダイスを入手" % str(dice_defs[str(eff["id"])]["name"]))
@@ -5674,7 +5592,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 4
+const SAVE_VERSION := 5
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5778,7 +5696,6 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"hp": player_hp,
 		"max_hp": player_max_hp,
 		"fatigue": player_fatigue,
-		"arousal": player_arousal,
 		"floor": floor_index,
 		"part_dev": part_dev,
 		"hand_limit": hand_limit,
@@ -5851,7 +5768,6 @@ func _load_run() -> bool:
 	player_max_hp = int(data.get("max_hp", hero["hp"]))
 	player_hp = int(data.get("hp", player_max_hp))
 	player_fatigue = clampi(int(data.get("fatigue", 0)), 0, FATIGUE_MAX)
-	player_arousal = clampi(int(data.get("arousal", 0)), 0, FATIGUE_MAX)
 	floor_index = clampi(int(data.get("floor", 1)), 1, 3)
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	var saved_dev: Dictionary = data.get("part_dev", {})
@@ -6174,13 +6090,6 @@ func _start_player_turn(message: String = "") -> void:
 	if message != "":
 		_set_log(message)
 	_refresh_all()
-	if afterglow_turns > 0:
-		afterglow_turns -= 1
-		actions_left = 0
-		_set_log("余韻で行動できない。自動効果だけが働く。")
-		_refresh_all()
-		_enemy_turn()
-		return
 	if _unthrown_dice().is_empty():
 		_hide_banner()
 	else:
@@ -6751,8 +6660,6 @@ func _cond_ok(cond: Dictionary) -> bool:
 		return false
 	if cond.has("min_poison") and _enemy_poison() < int(cond["min_poison"]):
 		return false
-	if cond.has("min_arousal") and player_arousal < int(cond["min_arousal"]):
-		return false
 	if cond.has("action") and action_index != int(cond["action"]):
 		return false
 	if cond.has("has_shield") and player_shield <= 0:
@@ -6856,8 +6763,6 @@ func _projected_cond_ok(cond: Dictionary, die: Dictionary, crossed: int) -> bool
 		return false
 	if cond.has("min_poison") and _projected_counter("poison", die, crossed) < int(cond["min_poison"]):
 		return false
-	if cond.has("min_arousal") and player_arousal < int(cond["min_arousal"]):
-		return false
 	if cond.has("action") and action_index + 1 != int(cond["action"]):
 		return false
 	if cond.has("has_shield") and _projected_counter("shield", die, crossed) <= 0:
@@ -6932,12 +6837,6 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 			sfx.emit("hurt")
 			_refresh_top()
 			return "%s：HP-%d" % [label, amount]
-		"spend_arousal":
-			if amount <= 0 or player_arousal < amount:
-				return ""
-			player_arousal -= amount
-			_refresh_top()
-			return "%s：昂り-%d（今%d）" % [label, amount, player_arousal]
 		"combo":
 			if amount <= 0:
 				return ""
@@ -7041,7 +6940,6 @@ func _take_damage(amount: int, part: String = "", tint: Color = Color.WHITE) -> 
 	if part != "" and hp_loss > 0:
 		hp_loss = int(round(hp_loss * _part_multiplier(part)))
 		_develop_part(part)
-		_add_arousal(max(4, hp_loss), "%sへの攻撃" % PART_NAMES.get(part, part))
 	player_hp -= hp_loss
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#FF6A4D"), hp_loss >= 6)

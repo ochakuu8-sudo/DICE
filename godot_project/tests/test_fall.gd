@@ -21,6 +21,7 @@ func _init() -> void:
 	mob_fall_case(main)
 	boss_limit_case(main)
 	next_encounter_heal_case(main)
+	resource_display_case(main)
 	part_multiplier_case(main)
 
 	print("\n%d failure(s)" % fails)
@@ -73,6 +74,21 @@ func next_encounter_heal_case(main) -> void:
 	main.player_hp = 1
 	main._start_encounter()
 	check("new battle: HP restored", main.player_hp, main.player_max_hp)
+
+# HP is the combat gauge. Fatigue uses a percentage in combat and its own
+# full gauge while choosing a destination on the exploration map.
+func resource_display_case(main) -> void:
+	_reset(main)
+	main.player_fatigue = 42
+	main.state = "player"
+	main._refresh_top()
+	check("battle display: caption is HP", main.hp_caption.text, "HP")
+	check("battle display: bar tracks HP", int(main.hp_bar.max_value), main.player_max_hp)
+	check("battle display: fatigue is a percentage", main.hp_label.text.contains("疲労42%"), true)
+	main.state = "map"
+	main._refresh_top()
+	check("map display: caption is fatigue", main.hp_caption.text, "疲労")
+	check("map display: bar tracks fatigue", int(main.hp_bar.max_value), main.FATIGUE_MAX)
 
 # A landed part attack scales with development and develops the part
 # further; a plain hit with no part tag does neither.
