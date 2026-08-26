@@ -8,7 +8,7 @@
 // Bump CACHE_NAME whenever a file in CACHED_ASSETS changes (e.g. a Godot
 // re-export produces a new index.wasm) so old clients pick up the new
 // version instead of serving a stale cached copy forever.
-const CACHE_NAME = 'dice-engine-v1';
+const CACHE_NAME = 'dice-engine-v2';
 const CACHED_ASSETS = [
 	'index.wasm',
 	'index.js',
@@ -33,6 +33,12 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
 	const url = new URL(event.request.url);
+	if (url.pathname.endsWith('.pck')) {
+		// GitHub Pages sends static files with a ten-minute browser cache.
+		// The pack is the game itself, so force a fresh request on every load.
+		event.respondWith(fetch(event.request, { cache: 'no-store' }));
+		return;
+	}
 	const isCachedAsset = CACHED_ASSETS.some((asset) => url.pathname.endsWith('/' + asset));
 	if (!isCachedAsset) {
 		// index.pck and everything else: normal network fetch, never
