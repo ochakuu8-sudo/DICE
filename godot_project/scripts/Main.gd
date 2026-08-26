@@ -2814,7 +2814,7 @@ func _layout_screen() -> void:
 		scene_layer.position = Vector2.ZERO
 		scene_layer.size = vp
 	if gallery_grid != null:
-		gallery_grid.columns = clampi(int((vp.x - 60.0) / 168.0), 2, 6)
+		gallery_grid.columns = clampi(int((vp.x - 60.0) / 216.0), 2, 4)
 	_layout_board_buttons()
 
 func _place(node: Control, rect: Rect2) -> void:
@@ -4335,11 +4335,7 @@ func _show_title() -> void:
 			Callable(self, "_start_run").bind(key)
 		)
 	_add_overlay_option("図鑑", "マスとダイスが何をするかの一覧。", COL_TEXT_SOFT, "focus", Callable(self, "_show_catalog"))
-	var seen := 0
-	for raw in _gallery_entries():
-		if _is_unlocked(str((raw as Dictionary)["key"])):
-			seen += 1
-	_add_overlay_option("回想", "見た場面をもう一度。%d / %d" % [seen, _gallery_entries().size()],
+	_add_overlay_option("回想", "CG一覧と、将来の実績開放条件を確認します。全%d枚を閲覧可能です。" % _gallery_entries().size(),
 		Color("#9C3A6B"), "warp", Callable(self, "_show_gallery"))
 	_add_overlay_option("設定", "音量を調整します。", COL_TEXT_SOFT, "dice", Callable(self, "_show_settings"))
 	_layout_overlay()
@@ -4605,7 +4601,11 @@ const ENEMY_TRAIT_TEXT := {
 # everywhere at once.
 const PARTS := ["chest", "depths", "tail"]
 const PART_NAMES := {"chest": "胸", "depths": "秘所", "tail": "尻"}
-const PART_DEV_MAX := 5
+const PART_DEV_MAX := 3
+# Reserved for the future combat trigger. The gallery documents these rules
+# now, while the actual stack accumulation and cut-in playback remain out of
+# scope until CG insertion is implemented.
+const CLIMAX_STACKS_BY_LEVEL := [6, 5, 4, 3]
 
 # Development level -> how much a landed hit on that part is scaled by.
 # Flat until 2, a step at 2 and again at 4 — the same shape debuffs and
@@ -4648,9 +4648,7 @@ func _enemy_hit_tint(enemy: Dictionary) -> Color:
 
 func _part_multiplier(part: String) -> float:
 	var dev := int(part_dev.get(part, 0))
-	if dev >= 5:
-		return 2.5
-	if dev >= 4:
+	if dev >= 3:
 		return 2.0
 	if dev >= 2:
 		return 1.5
@@ -4684,7 +4682,7 @@ func _develop_part(part: String) -> void:
 # you.
 var enemy_defs := [
 	{"name": "粘体", "art": "stray", "hp": 20, "damage": 5, "kind": "cell",
-		"mode": "relative", "cells": [2], "gold": 12},
+		"mode": "relative", "cells": [2], "gold": 12, "part": "chest"},
 	{"name": "絡み蔦", "art": "scout", "hp": 28, "damage": 6, "kind": "cell",
 		"mode": "relative", "cells": [2, 5], "gold": 15,
 		"debuff": "briar", "foul": 35, "part": "tail"},
@@ -5363,7 +5361,31 @@ func _close_settings() -> void:
 # show, remembering that it was shown, and letting the player see it again
 # afterwards.
 
-const CG_STATE_TEXT := {"win": "勝利", "lose": "敗北"}
+# Stable IDs, art slots and future achievement conditions live together.
+# All rows are deliberately viewable today; later, `condition_kind` and
+# `condition_data` become the single source for real unlock checks.
+const CG_CATALOG := [
+	{"id": "fatigue_end_stray", "kind": "fatigue_end", "actor": "stray", "state": "fatigue_end", "title": "粘体・限界疲労END", "condition": "疲労度100%で粘体との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "stray"}},
+	{"id": "fatigue_end_scout", "kind": "fatigue_end", "actor": "scout", "state": "fatigue_end", "title": "絡み蔦・限界疲労END", "condition": "疲労度100%で絡み蔦との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "scout"}},
+	{"id": "fatigue_end_archer", "kind": "fatigue_end", "actor": "archer", "state": "fatigue_end", "title": "灼眼・限界疲労END", "condition": "疲労度100%で灼眼との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "archer"}},
+	{"id": "fatigue_end_heavy", "kind": "fatigue_end", "actor": "heavy", "state": "fatigue_end", "title": "擬態箱・限界疲労END", "condition": "疲労度100%で擬態箱との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "heavy"}},
+	{"id": "fatigue_end_plague", "kind": "fatigue_end", "actor": "plague", "state": "fatigue_end", "title": "胞子塊・限界疲労END", "condition": "疲労度100%で胞子塊との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "plague"}},
+	{"id": "fatigue_end_captain", "kind": "fatigue_end", "actor": "captain", "state": "fatigue_end", "title": "贄喰い・限界疲労END", "condition": "疲労度100%で贄喰いとの戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "captain"}},
+	{"id": "fatigue_end_boss", "kind": "fatigue_end", "actor": "boss", "state": "fatigue_end", "title": "深淵の主・限界疲労END", "condition": "疲労度100%で深淵の主との戦闘に敗北", "condition_kind": "fatigue_defeat", "condition_data": {"enemy": "boss"}},
+	{"id": "climax_stray", "kind": "climax_cutin", "actor": "stray", "state": "climax", "title": "粘体・絶頂攻撃", "condition": "粘体の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "stray"}},
+	{"id": "climax_scout", "kind": "climax_cutin", "actor": "scout", "state": "climax", "title": "絡み蔦・絶頂攻撃", "condition": "絡み蔦の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "scout"}},
+	{"id": "climax_archer", "kind": "climax_cutin", "actor": "archer", "state": "climax", "title": "灼眼・絶頂攻撃", "condition": "灼眼の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "archer"}},
+	{"id": "climax_heavy", "kind": "climax_cutin", "actor": "heavy", "state": "climax", "title": "擬態箱・絶頂攻撃", "condition": "擬態箱の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "heavy"}},
+	{"id": "climax_plague", "kind": "climax_cutin", "actor": "plague", "state": "climax", "title": "胞子塊・絶頂攻撃", "condition": "胞子塊の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "plague"}},
+	{"id": "climax_captain", "kind": "climax_cutin", "actor": "captain", "state": "climax", "title": "贄喰い・絶頂攻撃", "condition": "贄喰いの対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "captain"}},
+	{"id": "climax_boss", "kind": "climax_cutin", "actor": "boss", "state": "climax", "title": "深淵の主・絶頂攻撃", "condition": "深淵の主の対象部位攻撃で絶頂スタックが上限に到達", "condition_kind": "climax_attack", "condition_data": {"enemy": "boss"}},
+	{"id": "ending_chest_l3", "kind": "ending", "actor": "ending", "state": "chest_l3", "title": "胸Lv3 END", "condition": "最終ボス撃破時、胸だけがLv3", "condition_kind": "single_part_l3", "condition_data": {"part": "chest"}},
+	{"id": "ending_depths_l3", "kind": "ending", "actor": "ending", "state": "depths_l3", "title": "秘所Lv3 END", "condition": "最終ボス撃破時、秘所だけがLv3", "condition_kind": "single_part_l3", "condition_data": {"part": "depths"}},
+	{"id": "ending_tail_l3", "kind": "ending", "actor": "ending", "state": "tail_l3", "title": "尻Lv3 END", "condition": "最終ボス撃破時、尻だけがLv3", "condition_kind": "single_part_l3", "condition_data": {"part": "tail"}},
+	{"id": "ending_multi_l3", "kind": "ending", "actor": "ending", "state": "multi_l3", "title": "複数部位Lv3 END", "condition": "最終ボス撃破時、Lv3の部位が2つ以上", "condition_kind": "multiple_parts_l3", "condition_data": {"minimum": 2}},
+	{"id": "ending_all_l0", "kind": "ending", "actor": "ending", "state": "all_l0", "title": "全部位Lv0 END", "condition": "最終ボス撃破時、全部位がLv0", "condition_kind": "all_parts_l0", "condition_data": {}},
+	{"id": "ending_normal", "kind": "ending", "actor": "ending", "state": "normal", "title": "ノーマルEND", "condition": "最終ボス撃破時、特殊END条件を満たさない", "condition_kind": "normal_ending", "condition_data": {}},
+]
 
 # The art id and display name of the fight in progress, kept separately from
 # `enemies` because the scene plays *after* the loser has been cleared off
@@ -5402,89 +5424,88 @@ func _dismiss_scene() -> void:
 	if next.is_valid():
 		next.call()
 
-# Every scene the game can contain, unlocked or not. Derived from the enemy
-# table rather than listed by hand, so a new enemy brings its gallery rows
-# with it.
 func _gallery_entries() -> Array:
-	var out := []
-	for raw in enemy_defs:
-		var def: Dictionary = raw
-		for art_state in ART_CG_STATES:
-			out.append({
-				"actor": str(def.get("art", "unknown")),
-				"state": str(art_state),
-				"name": _t(def["name"]),
-				"key": "cg:%s:%s" % [str(def.get("art", "unknown")), str(art_state)],
-			})
-	return out
+	return CG_CATALOG.duplicate(true)
 
 func _show_gallery() -> void:
 	gallery_return_state = state
 	state = "gallery"
 	_close_overlay()
 	var entries := _gallery_entries()
-	var found := 0
-	for raw in entries:
-		if _is_unlocked(str((raw as Dictionary)["key"])):
-			found += 1
-	gallery_title.text = tr("回想　%d / %d") % [found, entries.size()]
+	gallery_title.text = "回想　%d / %d　（全CG開放中）" % [entries.size(), entries.size()]
 	_clear_children(gallery_grid)
 	for raw in entries:
 		gallery_grid.add_child(_make_gallery_cell(raw))
 	_refresh_all()
 
 func _make_gallery_cell(entry: Dictionary) -> Control:
-	var open: bool = _is_unlocked(str(entry["key"]))
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(160, 122)
-	panel.add_theme_stylebox_override("panel",
-		_flat_style(COL_PANEL_SUNK if open else Color("#C4B394"), COL_INK, 2, 5, 5))
+	panel.custom_minimum_size = Vector2(200, 196)
+	panel.add_theme_stylebox_override("panel", _flat_style(COL_PANEL_SUNK, COL_INK, 2, 6, 6))
 
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 3)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(col)
 
-	if open:
+	if _has_art("cg", str(entry["actor"]), str(entry["state"])):
 		var thumb := SpriteView.new()
-		thumb.custom_minimum_size = Vector2(0, 84)
+		thumb.custom_minimum_size = Vector2(0, 94)
 		thumb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		col.add_child(thumb)
 		_show_art(thumb, "cg", str(entry["actor"]), [str(entry["state"])], false)
 	else:
-		# A locked cell is a blank plate, not a dimmed picture: the point of
-		# the grid is that the player can count what they have not seen.
 		var blank := PanelContainer.new()
-		blank.custom_minimum_size = Vector2(0, 84)
+		blank.custom_minimum_size = Vector2(0, 94)
 		blank.add_theme_stylebox_override("panel", _flat_style(Color("#8E7F66"), COL_INK, 2, 0, 0))
 		blank.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		col.add_child(blank)
-		var lock := _make_label(FS_HEAD, Color(1, 1, 1, 0.7), HORIZONTAL_ALIGNMENT_CENTER, true)
-		lock.text = "？"
-		lock.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		lock.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		blank.add_child(lock)
+		var pending := _make_label(FS_BODY, Color(1, 1, 1, 0.8), HORIZONTAL_ALIGNMENT_CENTER, true)
+		pending.text = "CG準備中"
+		pending.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		pending.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		blank.add_child(pending)
 
-	var caption := _make_label(FS_SMALL, COL_TEXT if open else COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER, true)
-	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
-	caption.text = _scene_title(entry) if open else tr("未開放")
+	var caption := _make_label(FS_SMALL, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
+	caption.text = _scene_title(entry)
 	col.add_child(caption)
+	var category := _make_label(FS_SMALL - 1, COL_SHIELD, HORIZONTAL_ALIGNMENT_CENTER, true)
+	category.text = _cg_kind_label(str(entry["kind"]))
+	col.add_child(category)
+	var condition := _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_CENTER)
+	condition.text = "実績条件：%s" % str(entry["condition"])
+	condition.max_lines_visible = 2
+	col.add_child(condition)
 
-	if open:
-		var hit := Button.new()
-		hit.flat = true
-		hit.focus_mode = Control.FOCUS_NONE
-		hit.pressed.connect(Callable(self, "_replay_scene").bind(entry))
-		panel.add_child(hit)
+	var hit := Button.new()
+	hit.flat = true
+	hit.focus_mode = Control.FOCUS_NONE
+	hit.pressed.connect(Callable(self, "_replay_scene").bind(entry))
+	panel.add_child(hit)
 	return panel
 
 func _scene_title(entry: Dictionary) -> String:
-	var art_state := str(entry["state"])
-	return "%s・%s" % [str(entry["name"]), _t(CG_STATE_TEXT.get(art_state, art_state))]
+	return str(entry["title"])
+
+func _cg_kind_label(kind: String) -> String:
+	match kind:
+		"fatigue_end":
+			return "限界疲労END"
+		"climax_cutin":
+			return "絶頂攻撃カットイン"
+	return "最終END"
 
 func _replay_scene(entry: Dictionary) -> void:
-	_play_scene(str(entry["actor"]), str(entry["state"]), _scene_title(entry), Callable())
+	if _has_art("cg", str(entry["actor"]), str(entry["state"])):
+		scene_after = Callable()
+		scene_caption.text = _scene_title(entry)
+		_show_art(scene_sprite, "cg", str(entry["actor"]), [str(entry["state"])], false)
+		scene_layer.visible = true
+		return
+	_open_overlay(_scene_title(entry), "CG準備中\n実績条件：%s\n\n現在は全CGを閲覧可能です。" % str(entry["condition"]))
+	_add_overlay_option("回想へ戻る", "CG画像を追加すると、このカードから再生できます。", COL_GOLD, "boot", Callable(self, "_close_overlay"))
+	_layout_overlay()
 
 func _close_gallery() -> void:
 	state = gallery_return_state

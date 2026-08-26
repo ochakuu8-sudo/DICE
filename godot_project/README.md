@@ -53,6 +53,7 @@ PowerShellからまとめて書き出す場合:
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_newcontent.gd
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_fall.gd
 & "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_exploration.gd
+& "C:\Godot_v4.7.1-stable_win64.exe" --headless --path . --script tests/test_gallery.gd
 ```
 
 - `test_preview.gd`: ダイスの1タップ目が情報表示だけで、2タップ目で確定することを確認します。
@@ -63,6 +64,7 @@ PowerShellからまとめて書き出す場合:
   1〜6の外に面を持つダイス（居合の0、大車輪の7〜9）を確認します。
 - `test_fall.gd`: 戦闘HPのリセット、戦闘敗北時の疲労、限界時のボス敗北を確認します。
 - `test_exploration.gd`: 8x8探索盤、探索ダイスの疲労コスト、振り直し、移動、フロア遷移を確認します。
+- `test_gallery.gd`: 全20件のCGカタログ、実績条件、全初期開放、CG未配置時の閲覧フォールバックを確認します。
 
 どちらも失敗が0なら終了コード0を返します。
 

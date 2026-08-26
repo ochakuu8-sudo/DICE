@@ -107,6 +107,8 @@ func part_multiplier_case(main) -> void:
 	var taken2: int = main._take_damage(10, "chest")
 	check("part hit at dev 2: x1.5", taken2, 15)
 	check("part hit at dev 2: develops to 3", int(main.part_dev["chest"]), 3)
+	main._develop_part("chest")
+	check("part development caps at 3", int(main.part_dev["chest"]), 3)
 
 	main.player_hp = main.player_max_hp
 	var taken3: int = main._take_damage(10, "")
