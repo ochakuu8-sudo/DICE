@@ -19,6 +19,7 @@ func _init() -> void:
 
 	run_loss_case(main)
 	next_encounter_persistence_case(main)
+	exploration_recovery_case(main)
 	resource_display_case(main)
 	part_multiplier_case(main)
 
@@ -60,6 +61,15 @@ func next_encounter_persistence_case(main) -> void:
 	main.player_hp = 7
 	main._start_encounter()
 	check("new battle: HP carries over", main.player_hp, 7)
+
+# Recovery nodes replenish run HP and never lower fatigue.
+func exploration_recovery_case(main) -> void:
+	_reset(main)
+	main.player_hp = 5
+	main.player_fatigue = 42
+	main._resolve_rest_node()
+	check("rest restores run HP", main.player_hp, 23)
+	check("rest does not recover fatigue", main.player_fatigue, 42)
 
 # HP is the combat gauge. Fatigue uses a percentage in combat and its own
 # full gauge while choosing a destination on the exploration map.

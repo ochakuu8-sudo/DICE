@@ -5040,12 +5040,9 @@ func _enter_map_node() -> void:
 			_start_encounter()
 
 func _resolve_rest_node() -> void:
-	var recovered: int = min(player_fatigue, 18)
-	player_fatigue -= recovered
-	hp_bar.display_value = float(player_fatigue)
-	sfx.emit("shield")
-	_refresh_top()
-	_open_overlay("休憩", "呼吸を整えた。疲労が %d 回復（%d / %d）。" % [recovered, player_fatigue, FATIGUE_MAX])
+	var recovered: int = min(player_max_hp - player_hp, 18)
+	_heal(18)
+	_open_overlay("休憩", "呼吸を整えた。HPが %d 回復（%d / %d）。" % [recovered, player_hp, player_max_hp])
 	_add_overlay_option("探索へ戻る", "次のマスを選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 	state = "node_event"
@@ -5174,9 +5171,9 @@ func _take_event_choice(choice: Dictionary) -> void:
 				gold = max(0, gold + amount)
 				notes.append("%dG" % amount if amount < 0 else "+%dG" % amount)
 			"heal":
-				var gained: int = min(player_fatigue, amount)
-				player_fatigue -= gained
-				notes.append("疲労-%d" % gained)
+				var gained: int = min(player_max_hp - player_hp, amount)
+				_heal(amount)
+				notes.append("HP+%d" % gained)
 			"max_hp":
 				player_max_hp += amount
 				player_hp = max(1, player_hp + amount)
@@ -5189,9 +5186,9 @@ func _take_event_choice(choice: Dictionary) -> void:
 					_add_fatigue(amount)
 					notes.append("疲労+%d" % amount)
 				else:
-					var recovered: int = min(player_fatigue, -amount)
-					player_fatigue -= recovered
-					notes.append("疲労-%d" % recovered)
+					var recovered: int = min(player_max_hp - player_hp, -amount)
+					_heal(-amount)
+					notes.append("HP+%d" % recovered)
 			"die":
 				dice_bag.append(_make_die(str(eff["id"])))
 				notes.append("%sダイスを入手" % str(dice_defs[str(eff["id"])]["name"]))
@@ -5217,7 +5214,7 @@ func _node_reward_summary(kind: String) -> String:
 		"elite": return "レアダイス"
 		"chest": return "報酬3択"
 		"trap": return "開発＋報酬"
-		"rest": return "疲労回復"
+		"rest": return "HP回復"
 		"shop": return "ダイス購入"
 		"event": return "選択イベント"
 		"shortcut": return "1段スキップ"
@@ -5236,7 +5233,7 @@ var event_defs := {
 		]},
 	"spring": {"name": "湧き水", "body": "澄んだ水が湧いている。飲めば傷が癒えそうだ。",
 		"choices": [
-			{"label": "飲む", "detail": "疲労-12", "color": Color("#3EA95E"), "icon": "heal",
+			{"label": "飲む", "detail": "HP+12", "color": Color("#3EA95E"), "icon": "heal",
 				"effects": [{"op": "heal", "amount": 12}]},
 			{"label": "水を汲んで売る", "detail": "+18G", "color": Color("#C9A227"), "icon": "dice",
 				"effects": [{"op": "gold", "amount": 18}]},
@@ -5261,7 +5258,7 @@ var event_defs := {
 		"choices": [
 			{"label": "捧げる", "detail": "最大HP-5、ダイスを1つ", "color": Color("#C2453A"), "icon": "trap",
 				"effects": [{"op": "max_hp", "amount": -5}, {"op": "random_die"}]},
-			{"label": "祈るだけにする", "detail": "疲労-8", "color": Color("#3EA95E"), "icon": "heal",
+			{"label": "祈るだけにする", "detail": "HP+8", "color": Color("#3EA95E"), "icon": "heal",
 				"effects": [{"op": "heal", "amount": 8}]},
 		]},
 }
