@@ -1,7 +1,7 @@
 extends SceneTree
 
-# The expedition board is fully visible, costs fatigue to roll, and only
-# enables destinations that consume exactly the rolled distance.
+# The expedition is a directed, fully revealed route map. A D6 translates to
+# one through three connection steps, not a Manhattan-distance board jump.
 
 var fails := 0
 
@@ -18,10 +18,33 @@ func _init() -> void:
 	await process_frame
 
 	main._start_run("knight")
-	check("grid has eight rows", main.map_nodes.size(), main.MAP_ROWS)
-	check("grid has eight columns", (main.map_nodes[0] as Array).size(), main.MAP_COLS)
-	check("start is at origin", Vector2i(main.map_col, main.map_row), Vector2i(0, 0))
-	check("boss is published on the map", str(main.map_nodes[7][7]["type"]), "boss")
+	check("map has eight stages", main.map_nodes.size(), main.MAP_ROWS)
+	check("map keeps its layout width", (main.map_nodes[0] as Array).size(), main.MAP_COLS)
+	check("start is centred", Vector2i(main.map_col, main.map_row), Vector2i(3, 0))
+	check("boss is the final single node", str(main.map_nodes[7][4]["type"]), "boss")
+
+	var row_counts := []
+	var forward_only := true
+	var shortcut_found := false
+	for row in range(main.MAP_ROWS):
+		var count := 0
+		for col in range(main.MAP_COLS):
+			var node = main.map_nodes[row][col]
+			if node == null:
+				continue
+			count += 1
+			for target in main._node_link_positions(node):
+				if target.y <= row:
+					forward_only = false
+			if str(node["type"]) == "shortcut":
+				shortcut_found = true
+				for target in main._node_link_positions(node):
+					if target.y != row + 2:
+						shortcut_found = false
+		row_counts.append(count)
+	check("each route stage has two or three choices", row_counts, [1, 2, 3, 3, 3, 2, 2, 1])
+	check("all links move toward the boss", forward_only, true)
+	check("a shortcut skips exactly one stage", shortcut_found, true)
 
 	main.rng.seed = 7
 	var fatigue_before: int = int(main.player_fatigue)
@@ -29,34 +52,46 @@ func _init() -> void:
 	check("exploration roll has a face", main.explore_roll >= 1 and main.explore_roll <= 6, true)
 	check("rolling costs fatigue", main.player_fatigue, fatigue_before + main.EXPLORE_FATIGUE_PER_ROLL)
 	var targets: Array = main._map_reachable()
-	check("a roll produces destinations", targets.is_empty(), false)
+	check("a roll produces connected destinations", targets.is_empty(), false)
+	var forward_targets := true
 	for target in targets:
 		var p: Vector2i = target
-		check("destination has exact rolled distance",
-			abs(p.x - main.map_col) + abs(p.y - main.map_row), main.explore_roll)
+		if p.y <= main.map_row or main._map_node_at(p.y, p.x) == null:
+			forward_targets = false
+	check("destinations are only forward connected nodes", forward_targets, true)
 
-	var rolled: int = int(main.explore_roll)
+	main.explore_roll = 1
+	check("low roll means one stage", main._explore_steps(), 1)
+	var low_targets: Array = main._map_reachable()
+	check("low roll reaches only the next stage", low_targets.map(func(p): return p.y), [1, 1])
+	main.explore_roll = 6
+	check("high roll means three stages", main._explore_steps(), 3)
+	check("high roll reaches deeper rewards", main._map_reachable().any(func(p): return p.y >= 3), true)
+
 	await main._on_explore_reroll_pressed()
 	check("reroll costs fatigue", main.player_fatigue,
 		fatigue_before + main.EXPLORE_FATIGUE_PER_ROLL + main.EXPLORE_REROLL_FATIGUE)
-	check("reroll remains a legal face", main.explore_roll >= 1 and main.explore_roll <= 6, true)
 	check("a reroll was recorded", main.explore_rerolls, 1)
-	# Keep the value read so an optimiser cannot turn the test into a no-op.
-	check("first roll was recorded", rolled >= 1 and rolled <= 6, true)
 
-	# Movement consumes the pending roll and resolves the selected public node.
-	main.explore_roll = 4
-	main._on_map_node_pressed(0, 4)
-	check("movement updates the map position", Vector2i(main.map_col, main.map_row), Vector2i(4, 0))
+	# A legal rest route resolves outside combat and consumes the movement roll.
+	main.map_row = 5
+	main.map_col = 3
+	main.explore_roll = 1
+	main._on_map_node_pressed(6, 2)
+	check("movement updates the route position", Vector2i(main.map_col, main.map_row), Vector2i(2, 6))
 	check("movement consumes the exploration roll", main.explore_roll, 0)
 	check("rest node resolves outside battle", main.state, "node_event")
 	main._close_overlay()
 	main._show_map()
 
-	# A boss win advances the floor and creates a fresh public grid.
+	var saved: Array = main._serialize_map()
+	main._deserialize_map(saved)
+	check("saved map preserves a shortcut", str(main.map_nodes[3][6]["type"]), "shortcut")
+	check("saved map preserves route links", main._node_link_positions(main.map_nodes[3][6]).map(func(p): return p.y), [5, 5])
+
 	main._finish_floor()
 	check("boss win advances the floor", main.floor_index, 2)
-	check("next floor has a fresh grid", main.map_nodes.size(), main.MAP_ROWS)
+	check("next floor has a fresh route map", main.map_nodes.size(), main.MAP_ROWS)
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)

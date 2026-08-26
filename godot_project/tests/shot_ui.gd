@@ -13,7 +13,7 @@ func _init() -> void:
 
 	main._start_run("knight")
 	main.map_row = 0
-	main.map_col = 0
+	main.map_col = 3
 	main._start_encounter()
 	main._close_overlay()
 	await process_frame
@@ -23,11 +23,8 @@ func _init() -> void:
 	# its emptiest. はぐれ兵 would have shown an empty note and proved
 	# nothing about whether the note fits.
 	main.enemies = []
-	main.map_row = 6
-	main.map_col = 0
-	main._ensure_map_node(6, 0)
-	main.map_nodes[6][0]["type"] = "boss"
-	main.map_nodes[6][0]["enemy"] = main.enemy_defs.size() - 1
+	main.map_row = 7
+	main.map_col = 4
 	main._setup_encounter()
 	main._refresh_all()
 

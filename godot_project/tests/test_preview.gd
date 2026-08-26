@@ -43,7 +43,7 @@ func _init() -> void:
 
 	main._start_run("knight")
 	main.map_row = 0
-	main.map_col = 0
+	main.map_col = 3
 	main._start_encounter()
 	await process_frame
 

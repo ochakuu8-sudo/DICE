@@ -4747,7 +4747,7 @@ var enemy_defs := [
 # A full 8x8 board needs breathing room. The empty space between nodes is
 # intentional: routes remain legible at a glance instead of reading as one
 # dense wall of icons.
-const MAP_NODE_SIZE := 58.0
+const MAP_NODE_SIZE := 76.0
 const MAP_ROW_H := 104.0
 const MAP_COL_W := 104.0
 
@@ -4761,13 +4761,11 @@ class MapLinks:
 			return
 		for row in range(main.MAP_ROWS):
 			for col in range(main.MAP_COLS):
-				if main.map_nodes[row][col] == null:
+				var node = main.map_nodes[row][col]
+				if node == null:
 					continue
 				var a: Vector2 = main._map_node_center(row, col)
-				for delta in [Vector2i(1, 0), Vector2i(0, 1)]:
-					var next: Vector2i = Vector2i(col, row) + delta
-					if next.x >= main.MAP_COLS or next.y >= main.MAP_ROWS or main.map_nodes[next.y][next.x] == null:
-						continue
+				for next in main._node_link_positions(node):
 					var b: Vector2 = main._map_node_center(next.y, next.x)
 					var live: bool = row == main.map_row and col == main.map_col
 					var col_line: Color = main.COL_GOLD if live else Color("#8C7A55")
@@ -4886,10 +4884,10 @@ func _roll_exploration_die(is_reroll: bool) -> void:
 		_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
 	else:
 		_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
-	map_roll_readout.text = "D6　[ %d ]　→ %dマス先を選択" % [explore_roll, explore_roll]
+	map_roll_readout.text = "D6　[ %d ]　→ %d段先まで選択" % [explore_roll, _explore_steps()]
 	map_roll_readout.modulate = COL_GOLD
 	explore_is_rolling = false
-	_set_log("探索ダイス%s：%d。ちょうど%dマス先のマスを選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, explore_roll])
+	_set_log("探索ダイス%s：%d。接続された%d段先までのマスを選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, _explore_steps()])
 	sfx.emit("reward")
 	_refresh_map()
 
@@ -4950,7 +4948,7 @@ func _make_map_node_button(row: int, c: int) -> Button:
 	icon.offset_left = 12
 	icon.offset_top = 10
 	icon.offset_right = -12
-	icon.offset_bottom = -18
+	icon.offset_bottom = -33
 	button.add_child(icon)
 
 	# Choosing a route is choosing who to meet, so a node shows a face when
@@ -4965,7 +4963,7 @@ func _make_map_node_button(row: int, c: int) -> Button:
 	face.offset_left = 4
 	face.offset_top = 3
 	face.offset_right = -4
-	face.offset_bottom = -17
+	face.offset_bottom = -32
 	button.add_child(face)
 
 	var label := _make_label(FS_SMALL - 2, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
@@ -4974,9 +4972,19 @@ func _make_map_node_button(row: int, c: int) -> Button:
 	label.clip_text = true
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	label.offset_top = -18
-	label.offset_bottom = -2
+	label.offset_top = -33
+	label.offset_bottom = -18
 	button.add_child(label)
+
+	var reward := _make_label(FS_SMALL - 5, COL_TEXT_ON_DARK, HORIZONTAL_ALIGNMENT_CENTER, true)
+	reward.name = "NodeReward"
+	reward.autowrap_mode = TextServer.AUTOWRAP_OFF
+	reward.clip_text = true
+	reward.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	reward.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	reward.offset_top = -18
+	reward.offset_bottom = -2
+	button.add_child(reward)
 	return button
 
 func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void:
@@ -5005,6 +5013,8 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	if kind != "boss" and int(node.get("enemy", -1)) >= 0:
 		text = str(enemy_defs[int(node["enemy"])]["name"])
 	label.text = text
+	var reward: Label = button.find_child("NodeReward", true, false)
+	reward.text = _node_reward_summary(kind)
 
 	var fill: Color = Color(def["color"])
 	var border := COL_INK
@@ -5060,6 +5070,8 @@ func _enter_map_node() -> void:
 			_show_reward()
 		"trap":
 			_resolve_trap_node()
+		"shortcut":
+			_resolve_shortcut_node()
 		_:
 			_start_encounter()
 
@@ -5082,6 +5094,12 @@ func _resolve_trap_node() -> void:
 		Callable(self, "_take_trap_choice").bind(part, false))
 	_add_overlay_option("適応する", "疲労+8、部位開発+1。ランダム3択報酬。", Color("#9C3A6B"), "trap",
 		Callable(self, "_take_trap_choice").bind(part, true))
+	_layout_overlay()
+
+func _resolve_shortcut_node() -> void:
+	state = "node_event"
+	_open_overlay("近道", "崩れた回廊を抜けた。この先は一段飛ばして合流する。報酬を逃す代わりに、ボスへ早く近づける。")
+	_add_overlay_option("近道を進む", "次の探索ダイスで飛ばした先の分岐を選べます。", COL_NEXT, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 
 func _take_trap_choice(part: String, adapt: bool) -> void:
@@ -5228,6 +5246,19 @@ func _take_event_choice(choice: Dictionary) -> void:
 func _leave_node() -> void:
 	_close_overlay()
 	_show_map()
+
+func _node_reward_summary(kind: String) -> String:
+	match kind:
+		"battle": return "金＋報酬"
+		"elite": return "レアダイス"
+		"chest": return "報酬3択"
+		"trap": return "開発＋報酬"
+		"rest": return "疲労回復"
+		"shop": return "ダイス購入"
+		"event": return "選択イベント"
+		"shortcut": return "1段スキップ"
+		"boss": return "階層ボス"
+	return "出発"
 
 # Events are pure data: a body, and choices whose effects are a list of ops
 # run by _take_event_choice. Adding one is a row here.
@@ -5687,7 +5718,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 6
+const SAVE_VERSION := 7
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5816,14 +5847,12 @@ func _serialize_map() -> Array:
 			if node == null:
 				cells.append(null)
 				continue
-			var links := []
-			for key in (node["links"] as Dictionary).keys():
-				links.append(int(key))
 			cells.append({
+				"id": str(node.get("id", _map_node_id(row, col))),
 				"type": str(node["type"]),
 				"enemy": int(node.get("enemy", -1)),
 				"cleared": bool(node.get("cleared", false)),
-				"links": links,
+				"links": node.get("links", []).duplicate(),
 			})
 		rows.append(cells)
 	return rows
@@ -5837,15 +5866,13 @@ func _deserialize_map(rows: Array) -> void:
 			if raw == null:
 				cells.append(null)
 				continue
-			var links := {}
-			for c in (raw as Dictionary).get("links", []):
-				links[int(c)] = true
+			var raw_node: Dictionary = raw
 			cells.append({
-				"row": row, "col": col,
-				"type": str((raw as Dictionary).get("type", "battle")),
-				"enemy": int((raw as Dictionary).get("enemy", -1)),
-				"cleared": bool((raw as Dictionary).get("cleared", false)),
-				"links": links,
+				"id": str(raw_node.get("id", _map_node_id(row, col))), "row": row, "col": col,
+				"type": str(raw_node.get("type", "battle")),
+				"enemy": int(raw_node.get("enemy", -1)),
+				"cleared": bool(raw_node.get("cleared", false)),
+				"links": raw_node.get("links", []).duplicate(),
 			})
 		map_nodes.append(cells)
 
@@ -5961,39 +5988,23 @@ const NODE_DEFS := {
 	"rest": {"label": "休憩", "color": Color("#3EA95E"), "icon": "heal"},
 	"shop": {"label": "店", "color": Color("#C9A227"), "icon": "dice"},
 	"event": {"label": "イベント", "color": Color("#4F8C8A"), "icon": "focus"},
+	"shortcut": {"label": "近道", "color": Color("#4B79B8"), "icon": "boot"},
 	"boss": {"label": "ボス", "color": Color("#8E2F6B"), "icon": "enemy_boss"},
 }
 
-# Every floor uses a readable, fully revealed board. Content is not hidden
-# behind fog: the unknown is the boss and the random three-choice rewards.
-const EXPLORE_LAYOUT := [
-	["start", "battle", "event", "trap", "rest", "battle", "chest", "battle"],
-	["battle", "trap", "battle", "chest", "event", "battle", "elite", "rest"],
-	["event", "battle", "rest", "trap", "battle", "chest", "battle", "elite"],
-	["trap", "chest", "battle", "event", "elite", "battle", "rest", "battle"],
-	["battle", "rest", "trap", "battle", "chest", "event", "battle", "elite"],
-	["chest", "battle", "event", "trap", "rest", "battle", "elite", "battle"],
-	["battle", "elite", "rest", "battle", "trap", "chest", "battle", "event"],
-	["rest", "battle", "chest", "event", "battle", "elite", "battle", "boss"],
-]
-
-# Row -> what may appear there, as a weighted bag. The early rows are plain
-# fights so the game gets taught before it gets complicated; 強敵 only turn
-# up once there is a deck to beat them with; 休憩 get commoner as the run
-# wears the player down. This lands around 7 fights in the 12 stops.
-const NODE_WEIGHTS := [
-	{"battle": 1},                                        # row 0
-	{"battle": 4, "event": 2},                            # row 1
-	{"battle": 4, "event": 2, "shop": 1},                 # row 2
-	{"battle": 4, "rest": 2, "event": 2},                 # row 3
-	{"battle": 4, "elite": 1, "event": 2, "shop": 1},     # row 4
-	{"battle": 3, "elite": 2, "rest": 2, "event": 2},     # row 5
-	{"battle": 3, "elite": 2, "event": 2, "shop": 2},     # row 6
-	{"battle": 3, "elite": 2, "rest": 3, "event": 2},     # row 7
-	{"battle": 3, "elite": 3, "event": 2, "shop": 1},     # row 8
-	{"battle": 3, "elite": 3, "rest": 3, "event": 1},     # row 9
-	{"rest": 3, "shop": 2},                               # row 10 — before the boss
-	{"boss": 1},                                          # row 11
+# Each row is a stage on the climb. Links name the actual forward choices;
+# blank grid cells are deliberately absent, so the map reads as routes rather
+# than a board on which every square is interchangeable. The shortcut's links
+# leap from row 3 to row 5, giving up row 4's rewards for tempo.
+const MAP_LAYOUT := [
+	[{"col": 3, "type": "start", "links": ["1,1", "1,5"]}],
+	[{"col": 1, "type": "battle", "links": ["2,1", "2,3"]}, {"col": 5, "type": "chest", "links": ["2,3", "2,6"]}],
+	[{"col": 1, "type": "event", "links": ["3,1", "3,4"]}, {"col": 3, "type": "battle", "links": ["3,1", "3,4", "3,6"]}, {"col": 6, "type": "shop", "links": ["3,4", "3,6"]}],
+	[{"col": 1, "type": "chest", "links": ["4,2", "4,5"]}, {"col": 4, "type": "elite", "links": ["4,2", "4,5", "4,7"]}, {"col": 6, "type": "shortcut", "links": ["5,3", "5,6"]}],
+	[{"col": 2, "type": "rest", "links": ["5,3", "5,6"]}, {"col": 5, "type": "trap", "links": ["5,3", "5,6"]}, {"col": 7, "type": "battle", "links": ["5,6"]}],
+	[{"col": 3, "type": "battle", "links": ["6,2", "6,5"]}, {"col": 6, "type": "elite", "links": ["6,2", "6,5"]}],
+	[{"col": 2, "type": "rest", "links": ["7,4"]}, {"col": 5, "type": "chest", "links": ["7,4"]}],
+	[{"col": 4, "type": "boss", "links": []}],
 ]
 
 var map_nodes: Array = []          # [row][col] -> node Dictionary, or null
@@ -6003,24 +6014,30 @@ var map_col := 0
 func _generate_map() -> void:
 	map_nodes = []
 	for row in range(MAP_ROWS):
-		var cells := []
+		var cells: Array = []
 		for col in range(MAP_COLS):
-			var kind: String = str(EXPLORE_LAYOUT[row][col])
+			cells.append(null)
+		map_nodes.append(cells)
+	for row in range(MAP_ROWS):
+		for raw in MAP_LAYOUT[row]:
+			var spec: Dictionary = raw
+			var col: int = int(spec["col"])
+			var kind: String = str(spec["type"])
 			var enemy := _pick_enemy_for(row + (floor_index - 1) * MAP_ROWS, kind) \
 				if kind in ["battle", "elite", "boss"] else -1
-			cells.append({
-				"row": row, "col": col, "type": kind, "enemy": enemy,
-				"links": {}, "cleared": kind == "start",
-			})
-		map_nodes.append(cells)
+			map_nodes[row][col] = {
+				"id": _map_node_id(row, col), "row": row, "col": col,
+				"type": kind, "enemy": enemy, "links": spec["links"].duplicate(),
+				"cleared": kind == "start",
+			}
 	map_row = 0
-	map_col = 0
+	map_col = 3
 
 func _ensure_map_node(row: int, col: int) -> void:
 	if map_nodes[row][col] == null:
 		map_nodes[row][col] = {
-			"row": row, "col": col, "type": "battle", "enemy": -1,
-			"links": {}, "cleared": false,
+			"id": _map_node_id(row, col), "row": row, "col": col,
+			"type": "battle", "enemy": -1, "links": [], "cleared": false,
 		}
 
 # Enemies scale with both their position and the current floor, while the
@@ -6044,17 +6061,54 @@ func _map_node_at(row: int, col: int):
 		return null
 	return map_nodes[row][col]
 
-# A rolled exploration die can stop on any connected-grid cell at exactly
-# that Manhattan distance. The whole board is open, so no hidden pathfinder
-# is needed to promise a route the player cannot actually walk.
+# D6 pips become one to three forward stages. A high result reaches a more
+# distant reward or follows a shortcut, while a low result encourages taking
+# the safe node immediately ahead.
+func _explore_steps() -> int:
+	return clampi(int((explore_roll + 1) / 2), 1, 3)
+
+func _map_node_id(row: int, col: int) -> String:
+	return "%d,%d" % [row, col]
+
+func _node_link_positions(node: Dictionary) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for raw in node.get("links", []):
+		var bits := str(raw).split(",")
+		if bits.size() != 2:
+			continue
+		var row := int(bits[0])
+		var col := int(bits[1])
+		if _map_node_at(row, col) != null:
+			out.append(Vector2i(col, row))
+	return out
+
 func _map_reachable() -> Array:
-	var out := []
+	var out: Array[Vector2i] = []
 	if map_nodes.is_empty() or explore_roll <= 0:
 		return out
-	for row in range(MAP_ROWS):
-		for col in range(MAP_COLS):
-			if abs(row - map_row) + abs(col - map_col) == explore_roll:
-				out.append(Vector2i(col, row))
+	var origin: Dictionary = _map_node_at(map_row, map_col)
+	if origin == null:
+		return out
+	var frontier: Array[Dictionary] = [{"node": origin, "depth": 0}]
+	var visited := {_map_node_id(map_row, map_col): true}
+	while not frontier.is_empty():
+		var entry: Dictionary = frontier.pop_front()
+		var depth: int = int(entry["depth"])
+		if depth >= _explore_steps():
+			continue
+		for pos in _node_link_positions(entry["node"]):
+			var target: Dictionary = _map_node_at(pos.y, pos.x)
+			if target == null:
+				continue
+			var id := str(target["id"])
+			if visited.has(id):
+				continue
+			visited[id] = true
+			var next_depth := depth + 1
+			if not bool(target.get("cleared", false)):
+				out.append(pos)
+			if next_depth < _explore_steps():
+				frontier.append({"node": target, "depth": next_depth})
 	return out
 
 func _is_map_reachable(row: int, col: int) -> bool:
