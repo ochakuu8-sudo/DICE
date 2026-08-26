@@ -19,6 +19,7 @@ func _init() -> void:
 
 	run_loss_case(main)
 	next_encounter_persistence_case(main)
+	reroll_persistence_case(main)
 	exploration_recovery_case(main)
 	resource_display_case(main)
 	part_multiplier_case(main)
@@ -61,6 +62,16 @@ func next_encounter_persistence_case(main) -> void:
 	main.player_hp = 7
 	main._start_encounter()
 	check("new battle: HP carries over", main.player_hp, 7)
+
+# Rerolls begin at one, accumulate through the start tile, and do not reset
+# when a new combat turn begins.
+func reroll_persistence_case(main) -> void:
+	_reset(main)
+	check("new run starts with one reroll", main.rerolls_left, 1)
+	check("start square is a pass reroll tile", str(main.permanent_board[0][0]), "reroll_path")
+	main.rerolls_left = 3
+	main._start_player_turn()
+	check("rerolls persist across turns", main.rerolls_left, 3)
 
 # Recovery nodes replenish run HP and never lower fatigue.
 func exploration_recovery_case(main) -> void:

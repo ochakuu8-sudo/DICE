@@ -3,7 +3,7 @@ extends Control
 const BOARD_W := 5
 const BOARD_H := 5
 const ACTIONS_PER_TURN := 2
-const REROLLS_PER_TURN := 1
+const INITIAL_REROLLS := 1
 const FATIGUE_MAX := 100
 const EXPLORE_FATIGUE_PER_MOVE := 2
 const BATTLE_DEFEAT_FATIGUE := 15
@@ -1560,6 +1560,10 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "draw", "amount": 1},
 			{"on": "stop", "op": "reroll", "amount": 1}],
 		"detail": "打点は一切ないが、手札と選択肢を回復する。事故ったターンを立て直すためのマス。"},
+	"reroll_path": {"name": "巡り路", "kind": "補助", "color": Color("#4F8C8A"), "icon": "warp",
+		"trigger": "pass", "effect": "通過ごとに振り直し+1",
+		"effects": [{"on": "pass", "op": "reroll", "amount": 1}],
+		"detail": "通過するたびに振り直しを1回ためる。残り回数はターンをまたいで持ち越される。"},
 	"windfall": {"name": "好機", "kind": "補助", "color": Color("#C9A227"), "icon": "dice",
 		"trigger": "stop", "effect": "出目5以上で止まると行動+1",
 		"effects": [{"on": "stop", "op": "action", "amount": 1, "cond": {"min_roll": 5}}],
@@ -1861,7 +1865,7 @@ var hero_defs := {
 		"dice": ["normal", "normal", "blade", "guard_die"],
 		# Three evenly spaced anchors around the sixteen-square ring.
 		"tiles": [
-			[3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
+			[0, 0, "reroll_path"], [3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
 		]
 	},
 }
@@ -4539,6 +4543,7 @@ func _start_run(key: String) -> void:
 	player_hp = player_max_hp
 	player_fatigue = 0
 	player_shield = 0
+	rerolls_left = INITIAL_REROLLS
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	part_stacks = {"chest": 0, "depths": 0, "tail": 0}
 	next_enemy_uid = 0
@@ -5786,6 +5791,7 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"floor": floor_index,
 		"part_dev": part_dev,
 		"part_stacks": part_stacks,
+		"rerolls": rerolls_left,
 		"hand_limit": hand_limit,
 		"actions": actions_per_turn,
 		"gold": gold,
@@ -5861,6 +5867,7 @@ func _load_run() -> bool:
 	var saved_stacks: Dictionary = data.get("part_stacks", {})
 	for part in PARTS:
 		part_stacks[part] = clampi(int(saved_stacks.get(part, 0)), 0, _climax_stack_limit(part) - 1)
+	rerolls_left = max(0, int(data.get("rerolls", INITIAL_REROLLS)))
 	hand_limit = int(data.get("hand_limit", hero.get("hand", 3)))
 	actions_per_turn = int(data.get("actions", ACTIONS_PER_TURN))
 	gold = int(data.get("gold", 0))
@@ -6197,7 +6204,6 @@ func _start_player_turn(message: String = "") -> void:
 	action_index = 0
 	crossed_this_action = 0
 	move_dir = 1
-	rerolls_left = REROLLS_PER_TURN
 	preview_die_index = -1
 	# Every square banks a turn of waiting. Squares that reference charge
 	# are the only ones that will ever spend it, but the clock runs on all
@@ -6209,8 +6215,8 @@ func _start_player_turn(message: String = "") -> void:
 		hand_scroll.scroll_horizontal = 0
 	# Whatever survived last turn keeps the face it was already showing. A
 	# die held back is a face held back, which is the only reason holding one
-	# back is a decision — and it is what the turn's single reroll is now
-	# spent against, because a reroll throws the kept die with the rest. The
+	# back is a decision — and it is what a saved reroll is spent against,
+	# because a reroll throws the kept die with the rest. The
 	# dice drawn to fill the gaps arrive face down and wait for the tap.
 	_draw_to_hand(false)
 	if message != "":
@@ -6281,7 +6287,7 @@ func _throw_unthrown() -> void:
 	await _throw_faces(pending, throw_token)
 	_refresh_all()
 
-# Throws every die still in hand again. It costs the turn's reroll, and it
+# Throws every die still in hand again. It costs one saved reroll, and it
 # is all-or-nothing rather than one die at a time — a die carried over from
 # last turn is thrown with the rest, so keeping a good face and rerolling a
 # bad one in the same turn is exactly the thing the player cannot do.
