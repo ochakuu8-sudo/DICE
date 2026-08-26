@@ -4,6 +4,10 @@ const BOARD_W := 5
 const BOARD_H := 5
 const ACTIONS_PER_TURN := 2
 const REROLLS_PER_TURN := 1
+const FATIGUE_MAX := 100
+const EXPLORE_FATIGUE_PER_ROLL := 2
+const EXPLORE_REROLL_FATIGUE := 5
+const BATTLE_DEFEAT_FATIGUE := 15
 # How many squares an enemy can keep fouled at once. Uncapped, a long
 # fight ended with most of the ring poisoned and the player's own board
 # invisible underneath it. Scaled with the ring: five of sixteen leaves the
@@ -1100,6 +1104,8 @@ var map_canvas: Control
 var map_links: Control
 var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
+var map_roll_button: Button
+var map_reroll_button: Button
 var action_pip_box: HBoxContainer
 var action_caption: Label
 
@@ -1190,6 +1196,12 @@ var hero_token_color := Color("#2E7BD6")
 var encounter := 0
 var player_hp := 30
 var player_max_hp := 30
+## HP is reset for every encounter. Fatigue and arousal instead belong to
+## the whole expedition, so choosing to explore or retry a bad roll carries
+## forward into the boss fight.
+var player_fatigue := 0
+var player_arousal := 0
+var afterglow_turns := 0
 # Per-run only: how far each part has been developed by landed part
 # attacks this run. Resets with the run, not with the profile — carrying
 # it across runs is a later decision (陥落 / meta-progression), not this
@@ -1209,6 +1221,9 @@ var run_turns := 0
 # Spending money for the map's shop nodes. Earned by killing things, so the
 # only way to afford a removal is to have fought for it.
 var gold := 0
+var floor_index := 1
+var explore_roll := 0
+var explore_rerolls := 0
 
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
@@ -1441,6 +1456,11 @@ var tile_defs := {
 		"effects": [{"on": "stop", "op": "self_damage", "amount": 3},
 			{"on": "stop", "op": "attack", "amount": 16}],
 		"detail": "盤上で最も重い一撃だが、自分のHPを削って撃つ。押し切れる場面かどうかの判断を迫るマス。"},
+	"release": {"name": "解放陣", "kind": "昂り", "color": Color("#C2457E"), "icon": "shock",
+		"trigger": "stop", "effect": "昂り20以上で18ダメージ、昂り-20",
+		"effects": [{"on": "stop", "op": "attack", "amount": 18, "cond": {"min_arousal": 20}},
+			{"on": "stop", "op": "spend_arousal", "amount": 20, "cond": {"min_arousal": 20}}],
+		"detail": "昂りを力に変える専用の停止マス。高揚を管理できれば、未知の敵にも通る大技になる。"},
 	"firststrike": {"name": "先手", "kind": "狙撃", "color": Color("#8E6BD6"), "icon": "bow",
 		"trigger": "stop", "effect": "1手目なら12ダメージ、行動+1",
 		"effects": [{"on": "stop", "op": "attack", "amount": 12, "cond": {"action": 1}},
@@ -1831,7 +1851,7 @@ var reward_pool := [
 	{"type": "assault"}, {"type": "caution"},
 	{"type": "chain"}, {"type": "volley"}, {"type": "resonance"}, {"type": "spiral"},
 	{"type": "battery"}, {"type": "aim"}, {"type": "lance"},
-	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "snipe"},
+	{"type": "heavy"}, {"type": "bow"}, {"type": "trap"}, {"type": "release"}, {"type": "snipe"},
 	{"type": "fort"}, {"type": "thorns"}, {"type": "bastion"}, {"type": "reflect"},
 	{"type": "venom"}, {"type": "rot"}, {"type": "blight"},
 	{"type": "lastblade"}, {"type": "unbowed"}, {"type": "bloodpath"}, {"type": "deathline"},
@@ -3085,29 +3105,27 @@ func _refresh_top() -> void:
 	zone_top.visible = in_run
 	if not in_run:
 		return
-	run_label.text = tr("第%d戦") % max(encounter, 1)
-	run_track.total = MAP_ROWS
-	run_track.current = encounter
+	run_label.text = tr("第%d層 / %d層") % [floor_index, FLOOR_COUNT]
+	run_track.total = FLOOR_COUNT
+	run_track.current = floor_index
 	run_track.queue_redraw()
 
 	hero_portrait.hero_key = hero_key
 	hero_portrait.face_color = hero_token_color
 	hero_portrait.hp_ratio = float(player_hp) / float(max(player_max_hp, 1))
 
-	# The bar and label show 昂り (arousal), not remaining HP: the same
-	# underlying number, read from the other end. Internal HP stays the
-	# real currency — damage math, debuffs, the enemy AI, and the 35%
-	# threshold below all still read player_hp untouched. Only the paint
-	# is inverted, here and nowhere else.
-	var arousal: int = max(player_max_hp - player_hp, 0)
+	# HP is encounter-local. This bar deliberately shows expedition fatigue
+	# instead, while the numeric readout keeps both global resources visible.
+	var fatigue: int = player_fatigue
 	var ratio: float = _arousal_ratio()
 	var heat_color := _arousal_color(ratio)
-	hp_bar.max_value = player_max_hp
+	hp_caption.text = tr("疲労")
+	hp_bar.max_value = FATIGUE_MAX
 	hp_bar.segments = 12
-	hp_bar.value = arousal
+	hp_bar.value = fatigue
 	hp_bar.fill_color = heat_color
 	_animate_gauge(hp_bar)
-	hp_label.text = "%d/%d" % [arousal, player_max_hp]
+	hp_label.text = tr("%d/%d　昂り%d") % [fatigue, FATIGUE_MAX, player_arousal]
 	# The room answers to her, not to the turn counter.
 	var sink: float = ratio * ratio
 	if backdrop_view != null:
@@ -4376,9 +4394,6 @@ func _show_title() -> void:
 
 func _show_reward() -> void:
 	state = "reward_select"
-	if _is_boss_node():
-		_show_victory()
-		return
 	sfx.emit("reward")
 	_refresh_all()
 	_open_overlay(tr("戦闘に勝利"), tr("マスかダイスを1つ選びます。マスはコースに置いて残り、ダイスは手札に加わります。"))
@@ -4439,7 +4454,7 @@ func _show_victory() -> void:
 	_save_profile()
 	sfx.emit("kill")
 	_refresh_all()
-	_open_overlay("踏破成功", "%s は全%d層を踏破しました。" % [hero_name, MAP_ROWS])
+	_open_overlay("踏破成功", "%s は全%d層を踏破しました。" % [hero_name, FLOOR_COUNT])
 	_add_result_stats()
 	_add_overlay_option("もう一度、同じキャラで", "同じ盤面構成から新しいランを始めます。", COL_HP, "warp", Callable(self, "_restart_same_hero"))
 	_add_overlay_option("キャラを選び直す", "タイトルに戻ります。", COL_TEXT_SOFT, "dice", Callable(self, "_show_title"))
@@ -4459,16 +4474,18 @@ func _show_game_over(reason: String, by_enemy: bool = false) -> void:
 		return
 	_resolve_defeat(reason, by_enemy)
 
-# 陥落: 0 HP at an enemy's own hand is not automatically a run-ending
-# game over the way falling to a hazard tile still is. Every non-boss
-# fight only takes the encounter, not the run — full heal, the part
-# that finished her develops (already handled inside _take_damage,
-# before this ever runs), and the map is still there to walk back to.
-# The boss is the one fight this game cannot be walked away from twice.
+# A zero HP battle ends the encounter, not the expedition. The player takes
+# no reward and pays expedition fatigue; HP is restored only when another
+# battle begins. Reaching fatigue max makes a boss defeat the finisher.
 func _resolve_defeat(reason: String, by_enemy: bool) -> void:
-	if by_enemy and not _is_boss_node():
-		_resolve_fall()
-		return
+	if by_enemy:
+		if _is_boss_node() and player_fatigue >= FATIGUE_MAX:
+			# The boss is the explicit finishing blow once the expedition is at
+			# its limit. Other losses still return the player to exploration.
+			pass
+		else:
+			_resolve_fall()
+			return
 	state = "game_over"
 	_delete_run_save()
 	_bump_lifetime("losses")
@@ -4485,14 +4502,15 @@ func _resolve_defeat(reason: String, by_enemy: bool) -> void:
 
 func _resolve_fall() -> void:
 	_bump_lifetime("falls")
-	player_hp = player_max_hp
 	player_shield = 0
-	hp_bar.display_value = float(player_max_hp - player_hp)
+	var cost := BATTLE_DEFEAT_FATIGUE + (5 if _is_boss_node() else 0)
+	_add_fatigue(cost, "戦闘敗北")
+	hp_bar.display_value = float(player_fatigue)
 	_save_run()
 	sfx.emit("shield")
 	_refresh_all()
-	_open_overlay("陥落", tr("%s に意識を刈り取られた。目を覚ますと、傷だけが癒えていた。") % encounter_name)
-	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
+	_open_overlay("戦闘敗北", tr("%s に敗れ、報酬を逃した。疲労だけが残る。") % encounter_name)
+	_add_overlay_option("探索へ戻る", "次の戦闘ではHPは全回復します。", COL_HP, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 	state = "node_event"
 
@@ -4504,7 +4522,7 @@ func _add_result_stats() -> void:
 	stats.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay_list.add_child(stats)
 	var entries := [
-		["到達", "%d / %d層" % [max(map_row + 1, 0), MAP_ROWS]],
+		["到達", "%d / %d層" % [floor_index, FLOOR_COUNT]],
 		["与ダメージ", str(run_damage_dealt)],
 		["ターン", str(run_turns)],
 	]
@@ -4556,6 +4574,9 @@ func _start_run(key: String) -> void:
 	hand_limit = int(hero.get("hand", 3))
 	actions_per_turn = int(hero.get("actions", ACTIONS_PER_TURN))
 	player_hp = player_max_hp
+	player_fatigue = 0
+	player_arousal = 0
+	afterglow_turns = 0
 	player_shield = 0
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	next_enemy_uid = 0
@@ -4563,6 +4584,9 @@ func _start_run(key: String) -> void:
 	run_turns = 0
 	gold = 0
 	encounter = 0
+	floor_index = 1
+	explore_roll = 0
+	explore_rerolls = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
 	permanent_board = _make_empty_board("empty")
@@ -4571,7 +4595,7 @@ func _start_run(key: String) -> void:
 	dice_bag = []
 	for die_id in hero["dice"]:
 		dice_bag.append(_make_die(str(die_id)))
-	hp_bar.display_value = float(player_max_hp - player_hp)
+	hp_bar.display_value = 0.0
 	_generate_map()
 	_snap_player_visual()
 	_show_map()
@@ -4581,7 +4605,7 @@ func _start_encounter() -> void:
 	if backdrop_view != null:
 		backdrop_view.tint_progress = float(max(map_row, 0)) / float(max(MAP_ROWS - 1, 1))
 	player_pos = _pos_for_step(player_step)
-	player_shield = 0
+	_reset_encounter_hp()
 	actions_left = actions_per_turn
 	selected_die = {}
 	selected_roll = 0
@@ -4641,12 +4665,40 @@ const PART_DEV_MAX := 5
 # her state reads it from here, so the gauge, her column and the room can
 # never disagree about how far gone she is.
 func _arousal_ratio() -> float:
-	return clampf(float(player_max_hp - player_hp) / float(max(player_max_hp, 1)), 0.0, 1.0)
+	return clampf(float(player_arousal) / float(FATIGUE_MAX), 0.0, 1.0)
 
 func _arousal_color(ratio: float) -> Color:
 	if ratio <= 0.65:
 		return COL_CALM.lerp(COL_AROUSAL, ratio / 0.65)
 	return COL_AROUSAL.lerp(COL_AROUSAL_MAX, (ratio - 0.65) / 0.35)
+
+func _add_fatigue(amount: int, reason: String = "") -> void:
+	if amount <= 0:
+		return
+	player_fatigue = clampi(player_fatigue + amount, 0, FATIGUE_MAX)
+	if reason != "":
+		_set_log("%s　疲労+%d（%d/%d）" % [reason, amount, player_fatigue, FATIGUE_MAX])
+	_refresh_top()
+
+func _add_arousal(amount: int, reason: String = "") -> void:
+	if amount == 0:
+		return
+	player_arousal = clampi(player_arousal + amount, 0, FATIGUE_MAX)
+	if player_arousal >= FATIGUE_MAX:
+		# The recovery point keeps the resource useful after an overflow while
+		# preserving the one-turn cost in the combat / exploration controllers.
+		player_arousal = 40
+		afterglow_turns = 1
+		_add_fatigue(15, "絶頂")
+		if reason != "":
+			_set_log("%s　絶頂。疲労+15、昂りは40へ戻った" % reason)
+	elif reason != "":
+		_set_log("%s　昂り+%d（%d/%d）" % [reason, amount, player_arousal, FATIGUE_MAX])
+	_refresh_top()
+
+func _reset_encounter_hp() -> void:
+	player_hp = player_max_hp
+	player_shield = 0
 
 # What colour a blow from this enemy leaves on her figure. Built from the
 # enemy's own identity rather than from a per-enemy art file: a part
@@ -4729,9 +4781,9 @@ var enemy_defs := [
 # and the boss at the top, so climbing it reads as climbing. The links are
 # painted by a single Control behind the buttons rather than by each node,
 # which keeps the lines beneath every node no matter the draw order.
-const MAP_NODE_SIZE := 62.0
-const MAP_ROW_H := 92.0
-const MAP_COL_W := 150.0
+const MAP_NODE_SIZE := 54.0
+const MAP_ROW_H := 72.0
+const MAP_COL_W := 72.0
 
 class MapLinks:
 	extends Control
@@ -4741,30 +4793,20 @@ class MapLinks:
 	func _draw() -> void:
 		if main == null or main.map_nodes.is_empty():
 			return
-		for row in range(main.MAP_ROWS - 1):
+		for row in range(main.MAP_ROWS):
 			for col in range(main.MAP_COLS):
-				var node = main.map_nodes[row][col]
-				if node == null:
+				if main.map_nodes[row][col] == null:
 					continue
 				var a: Vector2 = main._map_node_center(row, col)
-				for raw in (node["links"] as Dictionary).keys():
-					var to_col := int(raw)
-					if main.map_nodes[row + 1][to_col] == null:
+				for delta in [Vector2i(1, 0), Vector2i(0, 1)]:
+					var next: Vector2i = Vector2i(col, row) + delta
+					if next.x >= main.MAP_COLS or next.y >= main.MAP_ROWS or main.map_nodes[next.y][next.x] == null:
 						continue
-					var b: Vector2 = main._map_node_center(row + 1, to_col)
-					# A link the player could take right now is lit; the rest
-					# of the map stays visible but recedes.
+					var b: Vector2 = main._map_node_center(next.y, next.x)
 					var live: bool = row == main.map_row and col == main.map_col
-					var walked: bool = row < main.map_row
-					var col_line := Color("#8C7A55")
-					var width := 4.0
-					if walked:
-						col_line = Color("#C0AC84")
-					if live:
-						col_line = main.COL_GOLD
-						width = 6.0
-					draw_line(a, b, Color("#2A2320"), width + 4.0, true)
-					draw_line(a, b, col_line, width, true)
+					var col_line: Color = main.COL_GOLD if live else Color("#8C7A55")
+					draw_line(a, b, Color("#2A2320"), 5.0, true)
+					draw_line(a, b, col_line, 2.0, true)
 
 func _map_canvas_size() -> Vector2:
 	return Vector2(MAP_COL_W * float(MAP_COLS), MAP_ROW_H * float(MAP_ROWS))
@@ -4788,6 +4830,25 @@ func _build_map_zone() -> void:
 	map_title = _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
 	map_title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(map_title)
+
+	var explore_actions := HBoxContainer.new()
+	explore_actions.alignment = BoxContainer.ALIGNMENT_CENTER
+	explore_actions.add_theme_constant_override("separation", 8)
+	col.add_child(explore_actions)
+	map_roll_button = Button.new()
+	map_roll_button.text = tr("探索ダイスを振る")
+	map_roll_button.focus_mode = Control.FOCUS_NONE
+	map_roll_button.custom_minimum_size = Vector2(190, 38)
+	_style_button(map_roll_button, COL_GOLD, COL_INK)
+	map_roll_button.pressed.connect(Callable(self, "_on_explore_roll_pressed"))
+	explore_actions.add_child(map_roll_button)
+	map_reroll_button = Button.new()
+	map_reroll_button.text = tr("疲労+%dで振り直す") % EXPLORE_REROLL_FATIGUE
+	map_reroll_button.focus_mode = Control.FOCUS_NONE
+	map_reroll_button.custom_minimum_size = Vector2(190, 38)
+	_style_button(map_reroll_button, COL_SHIELD, COL_INK)
+	map_reroll_button.pressed.connect(Callable(self, "_on_explore_reroll_pressed"))
+	explore_actions.add_child(map_reroll_button)
 
 	map_scroll = ScrollContainer.new()
 	map_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -4823,6 +4884,30 @@ func _show_map() -> void:
 	await get_tree().process_frame
 	_scroll_map_to_current()
 
+func _on_explore_roll_pressed() -> void:
+	if state != "map" or explore_roll > 0:
+		return
+	if afterglow_turns > 0:
+		afterglow_turns -= 1
+		_set_log("余韻で探索を休んだ。")
+		_refresh_map()
+		return
+	explore_roll = rng.randi_range(1, 6)
+	_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
+	_set_log("探索ダイス：%d。ちょうど%dマス先のマスを選んでください。" % [explore_roll, explore_roll])
+	sfx.emit("hit")
+	_refresh_map()
+
+func _on_explore_reroll_pressed() -> void:
+	if state != "map" or explore_roll <= 0:
+		return
+	explore_roll = rng.randi_range(1, 6)
+	explore_rerolls += 1
+	_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
+	_set_log("探索ダイスを振り直した：%d。ちょうど%dマス先のマスを選んでください。" % [explore_roll, explore_roll])
+	sfx.emit("hit")
+	_refresh_map()
+
 func _scroll_map_to_current() -> void:
 	if map_scroll == null:
 		return
@@ -4838,9 +4923,10 @@ func _refresh_map() -> void:
 	if not zone_map.visible or map_nodes.is_empty():
 		return
 	map_canvas.custom_minimum_size = _map_canvas_size()
-	map_title.text = tr("第%d層 / %d層") % [max(map_row + 1, 0) + (1 if map_row < 0 else 0), MAP_ROWS]
-	if map_row < 0:
-		map_title.text = tr("出発地点を選ぶ（全%d層）") % MAP_ROWS
+	map_title.text = tr("第%d層 / %d層　%s") % [floor_index, FLOOR_COUNT,
+		"探索ダイス %d" % explore_roll if explore_roll > 0 else "探索ダイスを振る"]
+	map_roll_button.disabled = explore_roll > 0
+	map_reroll_button.disabled = explore_roll <= 0
 
 	for row in range(MAP_ROWS):
 		for c in range(MAP_COLS):
@@ -4920,7 +5006,7 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	# A fight is identified by who is in it; everything else by what it is.
 	var face: SpriteView = button.find_child("NodeFace", true, false)
 	var face_id := kind
-	if int(node.get("enemy", -1)) >= 0:
+	if kind != "boss" and int(node.get("enemy", -1)) >= 0:
 		face_id = str((enemy_defs[int(node["enemy"])] as Dictionary).get("art", kind))
 	icon.visible = not _show_art(face, "face", face_id, ["node"])
 
@@ -4928,7 +5014,7 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	# A combat node says who is waiting there. Hiding it would defeat the
 	# point of letting the player choose a route.
 	var text := _t(def["label"])
-	if int(node.get("enemy", -1)) >= 0:
+	if kind != "boss" and int(node.get("enemy", -1)) >= 0:
 		text = str(enemy_defs[int(node["enemy"])]["name"])
 	label.text = text
 
@@ -4954,6 +5040,7 @@ func _on_map_node_pressed(row: int, c: int) -> void:
 	sfx.emit("step")
 	map_row = row
 	map_col = c
+	explore_roll = 0
 	_enter_map_node()
 
 # Every node type funnels through here, so adding one is a branch in a
@@ -4962,30 +5049,64 @@ func _enter_map_node() -> void:
 	var node = _map_node_at(map_row, map_col)
 	if node == null:
 		return
-	node["cleared"] = true
+	if bool(node.get("cleared", false)):
+		_show_map()
+		return
+	# A boss remains available after a failed attempt. All other exploration
+	# contents are single-use: losing a battle means losing its reward.
+	if str(node["type"]) != "boss":
+		node["cleared"] = true
 	# Recorded before the node resolves, so closing the game mid-fight
 	# resumes into this node instead of back onto the map.
 	_save_run(true)
 	match str(node["type"]):
+		"start":
+			_show_map()
 		"rest":
 			_resolve_rest_node()
 		"shop":
 			_resolve_shop_node()
 		"event":
 			_resolve_event_node()
+		"chest":
+			_show_reward()
+		"trap":
+			_resolve_trap_node()
 		_:
 			_start_encounter()
 
 func _resolve_rest_node() -> void:
-	var healed: int = min(player_max_hp - player_hp, int(round(player_max_hp * 0.3)))
-	player_hp += healed
-	hp_bar.display_value = float(player_max_hp - player_hp)
+	var recovered: int = min(player_fatigue, 18)
+	player_fatigue -= recovered
+	hp_bar.display_value = float(player_fatigue)
 	sfx.emit("shield")
 	_refresh_top()
-	_open_overlay("休憩", "傷を癒した。HPが %d 回復（%d / %d）。" % [healed, player_hp, player_max_hp])
-	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
+	_open_overlay("休憩", "呼吸を整えた。疲労が %d 回復（%d / %d）。" % [recovered, player_fatigue, FATIGUE_MAX])
+	_add_overlay_option("探索へ戻る", "次のマスを選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 	state = "node_event"
+
+func _resolve_trap_node() -> void:
+	state = "node_event"
+	var part: String = PARTS[(map_row + map_col + floor_index) % PARTS.size()]
+	_open_overlay("適応の罠", "%s へ作用する罠。代償を払えば成長と報酬を得られる。" % PART_NAMES[part])
+	_add_overlay_option("抵抗する", "疲労+5。報酬なしで通過する。", COL_SHIELD, "guard",
+		Callable(self, "_take_trap_choice").bind(part, false))
+	_add_overlay_option("適応する", "疲労+8、昂り+15、部位開発+1。ランダム3択報酬。", Color("#9C3A6B"), "trap",
+		Callable(self, "_take_trap_choice").bind(part, true))
+	_layout_overlay()
+
+func _take_trap_choice(part: String, adapt: bool) -> void:
+	if adapt:
+		_add_fatigue(8, "罠へ適応")
+		_add_arousal(15, "%sが反応した" % PART_NAMES[part])
+		_develop_part(part)
+		_close_overlay()
+		_show_reward()
+		return
+	_add_fatigue(5, "罠を抵抗")
+	_close_overlay()
+	_show_map()
 
 func _resolve_shop_node() -> void:
 	state = "node_event"
@@ -5084,16 +5205,27 @@ func _take_event_choice(choice: Dictionary) -> void:
 				gold = max(0, gold + amount)
 				notes.append("%dG" % amount if amount < 0 else "+%dG" % amount)
 			"heal":
-				var gained: int = min(player_max_hp - player_hp, amount)
-				player_hp += gained
-				notes.append("HP+%d" % gained)
+				var gained: int = min(player_fatigue, amount)
+				player_fatigue -= gained
+				notes.append("疲労-%d" % gained)
 			"max_hp":
 				player_max_hp += amount
 				player_hp = max(1, player_hp + amount)
 				notes.append("最大HP%+d" % amount)
 			"self_damage":
-				player_hp -= amount
-				notes.append("HP-%d" % amount)
+				_add_fatigue(amount)
+				notes.append("疲労+%d" % amount)
+			"fatigue":
+				if amount >= 0:
+					_add_fatigue(amount)
+					notes.append("疲労+%d" % amount)
+				else:
+					var recovered: int = min(player_fatigue, -amount)
+					player_fatigue -= recovered
+					notes.append("疲労-%d" % recovered)
+			"arousal":
+				_add_arousal(amount)
+				notes.append("昂り%+d" % amount)
 			"die":
 				dice_bag.append(_make_die(str(eff["id"])))
 				notes.append("%sダイスを入手" % str(dice_defs[str(eff["id"])]["name"]))
@@ -5102,12 +5234,9 @@ func _take_event_choice(choice: Dictionary) -> void:
 				pool.shuffle()
 				dice_bag.append(_make_die(str(pool[0])))
 				notes.append("%sダイスを入手" % str(dice_defs[str(pool[0])]["name"]))
-	hp_bar.display_value = float(player_max_hp - player_hp)
+	hp_bar.display_value = float(player_fatigue)
 	sfx.emit("reward")
 	_refresh_top()
-	if player_hp <= 0:
-		_show_game_over("道中で力尽きました。")
-		return
 	_open_overlay(_t(choice["label"]), " / ".join(notes) if not notes.is_empty() else "何も起きなかった。")
 	_add_overlay_option("地図に戻る", "次の層を選びます。", COL_HP, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
@@ -5128,14 +5257,14 @@ var event_defs := {
 		]},
 	"spring": {"name": "湧き水", "body": "澄んだ水が湧いている。飲めば傷が癒えそうだ。",
 		"choices": [
-			{"label": "飲む", "detail": "HP+12", "color": Color("#3EA95E"), "icon": "heal",
+			{"label": "飲む", "detail": "疲労-12", "color": Color("#3EA95E"), "icon": "heal",
 				"effects": [{"op": "heal", "amount": 12}]},
 			{"label": "水を汲んで売る", "detail": "+18G", "color": Color("#C9A227"), "icon": "dice",
 				"effects": [{"op": "gold", "amount": 18}]},
 		]},
 	"bargain": {"name": "怪しい行商", "body": "フードの奥は見えない。「いい取引がある」とだけ言う。",
 		"choices": [
-			{"label": "血を分ける", "detail": "HP-8 と引き換えにダイスを1つ", "color": Color("#9C3A6B"), "icon": "skull",
+			{"label": "力を分ける", "detail": "疲労+8 と引き換えにダイスを1つ", "color": Color("#9C3A6B"), "icon": "skull",
 				"effects": [{"op": "self_damage", "amount": 8}, {"op": "random_die"}]},
 			{"label": "鍛えてもらう", "detail": "最大HP+6", "color": Color("#2E7BD6"), "icon": "guard",
 				"effects": [{"op": "max_hp", "amount": 6}]},
@@ -5153,7 +5282,7 @@ var event_defs := {
 		"choices": [
 			{"label": "捧げる", "detail": "最大HP-5、ダイスを1つ", "color": Color("#C2453A"), "icon": "trap",
 				"effects": [{"op": "max_hp", "amount": -5}, {"op": "random_die"}]},
-			{"label": "祈るだけにする", "detail": "HP+8", "color": Color("#3EA95E"), "icon": "heal",
+			{"label": "祈るだけにする", "detail": "疲労-8", "color": Color("#3EA95E"), "icon": "heal",
 				"effects": [{"op": "heal", "amount": 8}]},
 		]},
 }
@@ -5513,7 +5642,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 3
+const SAVE_VERSION := 4
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5616,6 +5745,9 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"hero": hero_key,
 		"hp": player_hp,
 		"max_hp": player_max_hp,
+		"fatigue": player_fatigue,
+		"arousal": player_arousal,
+		"floor": floor_index,
 		"part_dev": part_dev,
 		"hand_limit": hand_limit,
 		"actions": actions_per_turn,
@@ -5686,6 +5818,9 @@ func _load_run() -> bool:
 	hero_token_color = Color(hero["color"])
 	player_max_hp = int(data.get("max_hp", hero["hp"]))
 	player_hp = int(data.get("hp", player_max_hp))
+	player_fatigue = clampi(int(data.get("fatigue", 0)), 0, FATIGUE_MAX)
+	player_arousal = clampi(int(data.get("arousal", 0)), 0, FATIGUE_MAX)
+	floor_index = clampi(int(data.get("floor", 1)), 1, 3)
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	var saved_dev: Dictionary = data.get("part_dev", {})
 	for part in PARTS:
@@ -5721,7 +5856,7 @@ func _load_run() -> bool:
 	temp_board = _make_empty_board("none")
 	enemies = []
 	next_enemy_uid = 0
-	hp_bar.display_value = float(player_max_hp - player_hp)
+	hp_bar.display_value = float(player_fatigue)
 	_snap_player_visual()
 
 	# Mid-node when the game was closed: re-enter that node rather than
@@ -5763,18 +5898,34 @@ func _write_json(path: String, data: Dictionary) -> void:
 # cells a walker touched become real nodes. Connectivity, and "every node
 # can still reach the boss", are therefore true by construction — no repair
 # pass, and no possibility of a dead end.
-const MAP_ROWS := 12          # row 0 is the first choice, row 11 is the boss
-const MAP_COLS := 3
-const MAP_WALKERS := 4        # paths carved; more walkers = wider map
+const FLOOR_COUNT := 3
+const MAP_ROWS := 8
+const MAP_COLS := 8
 
 const NODE_DEFS := {
+	"start": {"label": "入口", "color": Color("#6B5C49"), "icon": "boot"},
 	"battle": {"label": "戦闘", "color": Color("#C2453A"), "icon": "slash"},
 	"elite": {"label": "強敵", "color": Color("#8E2F6B"), "icon": "skull"},
+	"chest": {"label": "宝箱", "color": Color("#C9A227"), "icon": "dice"},
+	"trap": {"label": "罠", "color": Color("#9C3A6B"), "icon": "trap"},
 	"rest": {"label": "休憩", "color": Color("#3EA95E"), "icon": "heal"},
 	"shop": {"label": "店", "color": Color("#C9A227"), "icon": "dice"},
 	"event": {"label": "イベント", "color": Color("#4F8C8A"), "icon": "focus"},
 	"boss": {"label": "ボス", "color": Color("#8E2F6B"), "icon": "enemy_boss"},
 }
+
+# Every floor uses a readable, fully revealed board. Content is not hidden
+# behind fog: the unknown is the boss and the random three-choice rewards.
+const EXPLORE_LAYOUT := [
+	["start", "battle", "event", "trap", "rest", "battle", "chest", "battle"],
+	["battle", "trap", "battle", "chest", "event", "battle", "elite", "rest"],
+	["event", "battle", "rest", "trap", "battle", "chest", "battle", "elite"],
+	["trap", "chest", "battle", "event", "elite", "battle", "rest", "battle"],
+	["battle", "rest", "trap", "battle", "chest", "event", "battle", "elite"],
+	["chest", "battle", "event", "trap", "rest", "battle", "elite", "battle"],
+	["battle", "elite", "rest", "battle", "trap", "chest", "battle", "event"],
+	["rest", "battle", "chest", "event", "battle", "elite", "battle", "boss"],
+]
 
 # Row -> what may appear there, as a weighted bag. The early rows are plain
 # fights so the game gets taught before it gets complicated; 強敵 only turn
@@ -5804,32 +5955,16 @@ func _generate_map() -> void:
 	for row in range(MAP_ROWS):
 		var cells := []
 		for col in range(MAP_COLS):
-			cells.append(null)
+			var kind: String = str(EXPLORE_LAYOUT[row][col])
+			var enemy := _pick_enemy_for(row + (floor_index - 1) * MAP_ROWS, kind) \
+				if kind in ["battle", "elite", "boss"] else -1
+			cells.append({
+				"row": row, "col": col, "type": kind, "enemy": enemy,
+				"links": {}, "cleared": kind == "start",
+			})
 		map_nodes.append(cells)
-	map_row = -1
+	map_row = 0
 	map_col = 0
-
-	for w in range(MAP_WALKERS):
-		var col := rng.randi_range(0, MAP_COLS - 1)
-		var prev_col := -1
-		for row in range(MAP_ROWS):
-			# The boss row is one node wide, so every walker funnels into it.
-			var here: int = 1 if row == MAP_ROWS - 1 else col
-			_ensure_map_node(row, here)
-			if prev_col >= 0:
-				(map_nodes[row - 1][prev_col] as Dictionary)["links"][here] = true
-			prev_col = here
-			if row < MAP_ROWS - 1:
-				col = clampi(here + rng.randi_range(-1, 1), 0, MAP_COLS - 1)
-
-	for row in range(MAP_ROWS):
-		for col in range(MAP_COLS):
-			var node = map_nodes[row][col]
-			if node == null:
-				continue
-			node["type"] = _pick_node_type(row)
-			if node["type"] in ["battle", "elite", "boss"]:
-				node["enemy"] = _pick_enemy_for(row, str(node["type"]))
 
 func _ensure_map_node(row: int, col: int) -> void:
 	if map_nodes[row][col] == null:
@@ -5838,21 +5973,8 @@ func _ensure_map_node(row: int, col: int) -> void:
 			"links": {}, "cleared": false,
 		}
 
-func _pick_node_type(row: int) -> String:
-	var weights: Dictionary = NODE_WEIGHTS[clampi(row, 0, NODE_WEIGHTS.size() - 1)]
-	var total := 0
-	for key in weights.keys():
-		total += int(weights[key])
-	var roll := rng.randi_range(1, max(total, 1))
-	for key in weights.keys():
-		roll -= int(weights[key])
-		if roll <= 0:
-			return str(key)
-	return "battle"
-
-# Enemies are drawn from the same table as before, but indexed by how far up
-# the map the fight sits rather than by a global counter — so two runs that
-# take different routes meet different rosters.
+# Enemies scale with both their position and the current floor, while the
+# grid itself stays readable and authored.
 func _pick_enemy_for(row: int, kind: String) -> int:
 	var last: int = enemy_defs.size() - 1
 	if kind == "boss":
@@ -5872,23 +5994,17 @@ func _map_node_at(row: int, col: int):
 		return null
 	return map_nodes[row][col]
 
-# What the player may enter next: any node on the bottom row before the run
-# has started, otherwise whatever the current node links up to.
+# A rolled exploration die can stop on any connected-grid cell at exactly
+# that Manhattan distance. The whole board is open, so no hidden pathfinder
+# is needed to promise a route the player cannot actually walk.
 func _map_reachable() -> Array:
 	var out := []
-	if map_nodes.is_empty():
+	if map_nodes.is_empty() or explore_roll <= 0:
 		return out
-	if map_row < 0:
+	for row in range(MAP_ROWS):
 		for col in range(MAP_COLS):
-			if map_nodes[0][col] != null:
-				out.append(Vector2i(col, 0))
-		return out
-	var node = _map_node_at(map_row, map_col)
-	if node == null:
-		return out
-	for col in (node["links"] as Dictionary).keys():
-		if _map_node_at(map_row + 1, int(col)) != null:
-			out.append(Vector2i(int(col), map_row + 1))
+			if abs(row - map_row) + abs(col - map_col) == explore_roll:
+				out.append(Vector2i(col, row))
 	return out
 
 func _is_map_reachable(row: int, col: int) -> bool:
@@ -6026,6 +6142,13 @@ func _start_player_turn(message: String = "") -> void:
 	if message != "":
 		_set_log(message)
 	_refresh_all()
+	if afterglow_turns > 0:
+		afterglow_turns -= 1
+		actions_left = 0
+		_set_log("余韻で行動できない。自動効果だけが働く。")
+		_refresh_all()
+		_enemy_turn()
+		return
 	if _unthrown_dice().is_empty():
 		_hide_banner()
 	else:
@@ -6383,7 +6506,7 @@ func _advance_player() -> void:
 		if pass_message != "":
 			await get_tree().create_timer(BEAT_EFFECT).timeout
 		if player_hp <= 0:
-			_show_game_over("移動の途中で倒れました。")
+			_show_game_over("移動の途中で倒れました。", true)
 			return
 		if not _any_enemy_alive():
 			_finish_encounter()
@@ -6433,7 +6556,7 @@ func _resolve_landing() -> void:
 	_refresh_all()
 	await get_tree().create_timer(BEAT_STOP).timeout
 	if player_hp <= 0:
-		_show_game_over("止まったマスで倒れました。")
+		_show_game_over("止まったマスで倒れました。", true)
 		return
 	if not _any_enemy_alive():
 		_finish_encounter()
@@ -6458,9 +6581,22 @@ func _finish_encounter() -> void:
 	if not scene_played_this_fight:
 		scene_played_this_fight = true
 		_play_scene(encounter_art, "win", tr("%s を下した") % encounter_name,
-			Callable(self, "_show_reward"))
+			Callable(self, "_finish_floor") if _is_boss_node() else Callable(self, "_show_reward"))
 		return
-	_show_reward()
+	if _is_boss_node():
+		_finish_floor()
+	else:
+		_show_reward()
+
+func _finish_floor() -> void:
+	if floor_index >= FLOOR_COUNT:
+		_show_victory()
+		return
+	floor_index += 1
+	explore_roll = 0
+	_generate_map()
+	_set_log("第%d層へ進んだ。未知のボスへ向けて探索を続ける。" % floor_index)
+	_show_map()
 
 func _resolve_pass_tile(pos: Vector2i) -> String:
 	charge_cell = pos
@@ -6583,6 +6719,8 @@ func _cond_ok(cond: Dictionary) -> bool:
 		return false
 	if cond.has("min_poison") and _enemy_poison() < int(cond["min_poison"]):
 		return false
+	if cond.has("min_arousal") and player_arousal < int(cond["min_arousal"]):
+		return false
 	if cond.has("action") and action_index != int(cond["action"]):
 		return false
 	if cond.has("has_shield") and player_shield <= 0:
@@ -6686,6 +6824,8 @@ func _projected_cond_ok(cond: Dictionary, die: Dictionary, crossed: int) -> bool
 		return false
 	if cond.has("min_poison") and _projected_counter("poison", die, crossed) < int(cond["min_poison"]):
 		return false
+	if cond.has("min_arousal") and player_arousal < int(cond["min_arousal"]):
+		return false
 	if cond.has("action") and action_index + 1 != int(cond["action"]):
 		return false
 	if cond.has("has_shield") and _projected_counter("shield", die, crossed) <= 0:
@@ -6760,6 +6900,12 @@ func _apply_op(op: String, amount: int, label: String) -> String:
 			sfx.emit("hurt")
 			_refresh_top()
 			return "%s：HP-%d" % [label, amount]
+		"spend_arousal":
+			if amount <= 0 or player_arousal < amount:
+				return ""
+			player_arousal -= amount
+			_refresh_top()
+			return "%s：昂り-%d（今%d）" % [label, amount, player_arousal]
 		"combo":
 			if amount <= 0:
 				return ""
@@ -6863,6 +7009,7 @@ func _take_damage(amount: int, part: String = "", tint: Color = Color.WHITE) -> 
 	if part != "" and hp_loss > 0:
 		hp_loss = int(round(hp_loss * _part_multiplier(part)))
 		_develop_part(part)
+		_add_arousal(max(4, hp_loss), "%sへの攻撃" % PART_NAMES.get(part, part))
 	player_hp -= hp_loss
 	if hp_loss > 0:
 		_spawn_floating_text(player_pos, "-%d" % hp_loss, Color("#FF6A4D"), hp_loss >= 6)
@@ -7088,10 +7235,7 @@ func _on_die_reward_selected(die_id: String) -> void:
 	sfx.emit("reward")
 	_set_log(tr("%sダイスを手に入れた（%s）。手札は全%d個から引かれます。") % [
 		_t(die_def["name"]), _t(die_def["effect"]), dice_bag.size()])
-	if _is_boss_node():
-		_show_victory()
-	else:
-		_show_map()
+	_show_map()
 
 func _can_place_reward(pos: Vector2i) -> bool:
 	if not _inside(pos):
@@ -7135,11 +7279,8 @@ func _on_cell_pressed(index: int) -> void:
 		preview_place_pos = Vector2i(-1, -1)
 		_hide_banner()
 		sfx.emit("reward")
-		if _is_boss_node():
-			_show_victory()
-		else:
-			_set_log(tr("%s を配置しました。") % pending_reward_name)
-			_show_map()
+		_set_log(tr("%s を配置しました。") % pending_reward_name)
+		_show_map()
 	elif ring_index_map.has(pos):
 		# Tapping the board is also how a considered die is put back down:
 		# the hand has no empty space to tap, and the board is the thing the
