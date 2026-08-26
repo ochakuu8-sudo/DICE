@@ -5,8 +5,7 @@ const BOARD_H := 4
 const ACTIONS_PER_TURN := 1
 const REROLLS_PER_TURN := 1
 const FATIGUE_MAX := 100
-const EXPLORE_FATIGUE_PER_ROLL := 2
-const EXPLORE_REROLL_FATIGUE := 5
+const EXPLORE_FATIGUE_PER_MOVE := 2
 const BATTLE_DEFEAT_FATIGUE := 15
 # How many squares an enemy can keep fouled at once. Uncapped, a long
 # fight ended with most of the ring poisoned and the player's own board
@@ -1091,8 +1090,6 @@ var map_canvas: Control
 var map_links: Control
 var map_title: Label
 var map_buttons: Dictionary = {}   # "row,col" -> Button
-var map_roll_button: Button
-var map_reroll_button: Button
 var map_roll_readout: Label
 var action_pip_box: HBoxContainer
 var action_caption: Label
@@ -1215,9 +1212,6 @@ var run_turns := 0
 # only way to afford a removal is to have fought for it.
 var gold := 0
 var floor_index := 1
-var explore_roll := 0
-var explore_rerolls := 0
-var explore_is_rolling := false
 
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
@@ -4567,8 +4561,6 @@ func _start_run(key: String) -> void:
 	gold = 0
 	encounter = 0
 	floor_index = 1
-	explore_roll = 0
-	explore_rerolls = 0
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
 	permanent_board = _make_empty_board("empty")
@@ -4807,27 +4799,9 @@ func _build_map_zone() -> void:
 	map_title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(map_title)
 
-	var explore_actions := HBoxContainer.new()
-	explore_actions.alignment = BoxContainer.ALIGNMENT_CENTER
-	explore_actions.add_theme_constant_override("separation", 8)
-	col.add_child(explore_actions)
-	map_roll_button = Button.new()
-	map_roll_button.text = tr("探索ダイスを振る")
-	map_roll_button.focus_mode = Control.FOCUS_NONE
-	map_roll_button.custom_minimum_size = Vector2(190, 38)
-	_style_button(map_roll_button, COL_GOLD, COL_INK)
-	map_roll_button.pressed.connect(Callable(self, "_on_explore_roll_pressed"))
-	explore_actions.add_child(map_roll_button)
-	map_reroll_button = Button.new()
-	map_reroll_button.text = tr("疲労+%dで振り直す") % EXPLORE_REROLL_FATIGUE
-	map_reroll_button.focus_mode = Control.FOCUS_NONE
-	map_reroll_button.custom_minimum_size = Vector2(190, 38)
-	_style_button(map_reroll_button, COL_SHIELD, COL_INK)
-	map_reroll_button.pressed.connect(Callable(self, "_on_explore_reroll_pressed"))
-	explore_actions.add_child(map_reroll_button)
 	map_roll_readout = _make_label(FS_HEAD, COL_GOLD, HORIZONTAL_ALIGNMENT_CENTER, true)
 	map_roll_readout.custom_minimum_size = Vector2(0, 34)
-	map_roll_readout.text = "D6　[ - ]"
+	map_roll_readout.text = "接続先から次の1マスを選択　移動ごとに疲労+%d" % EXPLORE_FATIGUE_PER_MOVE
 	col.add_child(map_roll_readout)
 
 	map_scroll = ScrollContainer.new()
@@ -4864,45 +4838,6 @@ func _show_map() -> void:
 	await get_tree().process_frame
 	_scroll_map_to_current()
 
-func _on_explore_roll_pressed() -> void:
-	if state != "map" or explore_roll > 0 or explore_is_rolling:
-		return
-	await _roll_exploration_die(false)
-
-func _on_explore_reroll_pressed() -> void:
-	if state != "map" or explore_roll <= 0 or explore_is_rolling:
-		return
-	await _roll_exploration_die(true)
-
-# Exploration uses one fixed D6, but it should feel like a roll rather than
-# an instant number swap. The short readout animation also makes the choice
-# lockout unambiguous before destination nodes light up.
-func _roll_exploration_die(is_reroll: bool) -> void:
-	explore_is_rolling = true
-	_refresh_map()
-	for beat in range(8):
-		var face := rng.randi_range(1, 6)
-		map_roll_readout.text = "D6　[ %d ]" % face
-		map_roll_readout.modulate = COL_TEXT if beat % 2 == 0 else COL_GOLD
-		map_roll_readout.scale = Vector2(1.08, 1.08)
-		map_roll_readout.pivot_offset = map_roll_readout.size * 0.5
-		var pulse := create_tween()
-		pulse.tween_property(map_roll_readout, "scale", Vector2.ONE, 0.07)
-		sfx.emit("hit")
-		await get_tree().create_timer(0.055 + 0.012 * float(beat)).timeout
-	explore_roll = rng.randi_range(1, 6)
-	if is_reroll:
-		explore_rerolls += 1
-		_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
-	else:
-		_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
-	map_roll_readout.text = "D6　[ %d ]　→ %dマス先を選択" % [explore_roll, _explore_steps()]
-	map_roll_readout.modulate = COL_GOLD
-	explore_is_rolling = false
-	_set_log("探索ダイス%s：%d。接続線を%dマス進んだ先を選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, _explore_steps()])
-	sfx.emit("reward")
-	_refresh_map()
-
 func _scroll_map_to_current() -> void:
 	if map_scroll == null:
 		return
@@ -4922,13 +4857,9 @@ func _refresh_map() -> void:
 	if map_links != null:
 		map_links.queue_redraw()
 	map_canvas.custom_minimum_size = _map_canvas_size()
-	map_title.text = tr("第%d層 / %d層　%s") % [floor_index, FLOOR_COUNT,
-		"探索ダイス %d" % explore_roll if explore_roll > 0 else "探索ダイスを振る"]
-	map_roll_button.disabled = explore_roll > 0 or explore_is_rolling
-	map_reroll_button.disabled = explore_roll <= 0 or explore_is_rolling
-	if not explore_is_rolling and explore_roll <= 0:
-		map_roll_readout.text = "D6　[ - ]"
-		map_roll_readout.modulate = COL_TEXT_SOFT
+	map_title.text = tr("第%d層 / %d層　次の1マスを選ぶ") % [floor_index, FLOOR_COUNT]
+	map_roll_readout.text = "接続先から次の1マスを選択　移動ごとに疲労+%d" % EXPLORE_FATIGUE_PER_MOVE
+	map_roll_readout.modulate = COL_GOLD
 
 	for row in range(MAP_ROWS):
 		for c in range(MAP_COLS):
@@ -5056,7 +4987,7 @@ func _on_map_node_pressed(row: int, c: int) -> void:
 	sfx.emit("step")
 	map_row = row
 	map_col = c
-	explore_roll = 0
+	_add_fatigue(EXPLORE_FATIGUE_PER_MOVE, "探索移動")
 	_enter_map_node()
 
 # Every node type funnels through here, so adding one is a branch in a
@@ -5117,7 +5048,7 @@ func _resolve_trap_node() -> void:
 func _resolve_shortcut_node() -> void:
 	state = "node_event"
 	_open_overlay("近道", "崩れた回廊を抜けた。この先は一段飛ばして合流する。報酬を逃す代わりに、ボスへ早く近づける。")
-	_add_overlay_option("近道を進む", "次の探索ダイスで飛ばした先の分岐を選べます。", COL_NEXT, "boot", Callable(self, "_leave_node"))
+	_add_overlay_option("近道を進む", "飛ばした先の次の分岐へ進めます。", COL_NEXT, "boot", Callable(self, "_leave_node"))
 	_layout_overlay()
 
 func _take_trap_choice(part: String, adapt: bool) -> void:
@@ -6083,12 +6014,6 @@ func _map_node_at(row: int, col: int):
 		return null
 	return map_nodes[row][col]
 
-# A die pip is one map connection. The highlighted line therefore reads like
-# a familiar sugoroku path: roll 3, then choose an endpoint exactly 3 links
-# ahead. Reaching the boss early is allowed because it is the finish line.
-func _explore_steps() -> int:
-	return max(explore_roll, 1)
-
 func _map_node_id(row: int, col: int) -> String:
 	return "%d,%d" % [row, col]
 
@@ -6106,28 +6031,15 @@ func _node_link_positions(node: Dictionary) -> Array[Vector2i]:
 
 func _map_reachable_routes() -> Array:
 	var routes: Array = []
-	if map_nodes.is_empty() or explore_roll <= 0:
+	if map_nodes.is_empty():
 		return routes
 	var origin: Dictionary = _map_node_at(map_row, map_col)
 	if origin == null:
 		return routes
-	var frontier: Array[Dictionary] = [{"node": origin, "depth": 0, "path": [Vector2i(map_col, map_row)]}]
-	while not frontier.is_empty():
-		var entry: Dictionary = frontier.pop_front()
-		var depth: int = int(entry["depth"])
-		for pos in _node_link_positions(entry["node"]):
-			var target: Dictionary = _map_node_at(pos.y, pos.x)
-			if target == null:
-				continue
-			var next_depth := depth + 1
-			var path: Array = (entry["path"] as Array).duplicate()
-			path.append(pos)
-			var is_finish := str(target.get("type", "")) == "boss"
-			if next_depth == _explore_steps() or is_finish:
-				if not bool(target.get("cleared", false)):
-					routes.append(path)
-			elif next_depth < _explore_steps():
-				frontier.append({"node": target, "depth": next_depth, "path": path})
+	for pos in _node_link_positions(origin):
+		var target: Dictionary = _map_node_at(pos.y, pos.x)
+		if target != null and not bool(target.get("cleared", false)):
+			routes.append([Vector2i(map_col, map_row), pos])
 	return routes
 
 func _map_reachable() -> Array:
@@ -6731,7 +6643,6 @@ func _finish_floor() -> void:
 		_show_victory()
 		return
 	floor_index += 1
-	explore_roll = 0
 	_generate_map()
 	_set_log("第%d層へ進んだ。未知のボスへ向けて探索を続ける。" % floor_index)
 	_show_map()
