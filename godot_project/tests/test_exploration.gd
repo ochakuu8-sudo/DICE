@@ -1,7 +1,7 @@
 extends SceneTree
 
 # The expedition is a directed, fully revealed route map. A D6 translates to
-# one through three connection steps, not a Manhattan-distance board jump.
+# one through six connection steps, not a Manhattan-distance board jump.
 
 var fails := 0
 
@@ -18,10 +18,10 @@ func _init() -> void:
 	await process_frame
 
 	main._start_run("knight")
-	check("map has eight stages", main.map_nodes.size(), main.MAP_ROWS)
+	check("map has twelve stages", main.map_nodes.size(), main.MAP_ROWS)
 	check("map keeps its layout width", (main.map_nodes[0] as Array).size(), main.MAP_COLS)
 	check("start is centred", Vector2i(main.map_col, main.map_row), Vector2i(3, 0))
-	check("boss is the final single node", str(main.map_nodes[7][4]["type"]), "boss")
+	check("boss is the final single node", str(main.map_nodes[11][3]["type"]), "boss")
 
 	var row_counts := []
 	var forward_only := true
@@ -42,7 +42,7 @@ func _init() -> void:
 					if target.y != row + 2:
 						shortcut_found = false
 		row_counts.append(count)
-	check("each route stage has two or three choices", row_counts, [1, 2, 3, 3, 3, 2, 2, 1])
+	check("each route stage has two or three choices", row_counts, [1, 2, 2, 3, 2, 3, 2, 3, 2, 3, 2, 1])
 	check("all links move toward the boss", forward_only, true)
 	check("a shortcut skips exactly one stage", shortcut_found, true)
 
@@ -75,11 +75,11 @@ func _init() -> void:
 	check("a reroll was recorded", main.explore_rerolls, 1)
 
 	# A legal rest route resolves outside combat and consumes the movement roll.
-	main.map_row = 5
+	main.map_row = 9
 	main.map_col = 3
 	main.explore_roll = 1
-	main._on_map_node_pressed(6, 2)
-	check("movement updates the route position", Vector2i(main.map_col, main.map_row), Vector2i(2, 6))
+	main._on_map_node_pressed(10, 2)
+	check("movement updates the route position", Vector2i(main.map_col, main.map_row), Vector2i(2, 10))
 	check("movement consumes the exploration roll", main.explore_roll, 0)
 	check("rest node resolves outside battle", main.state, "node_event")
 	main._close_overlay()
@@ -87,8 +87,8 @@ func _init() -> void:
 
 	var saved: Array = main._serialize_map()
 	main._deserialize_map(saved)
-	check("saved map preserves a shortcut", str(main.map_nodes[3][6]["type"]), "shortcut")
-	check("saved map preserves route links", main._node_link_positions(main.map_nodes[3][6]).map(func(p): return p.y), [5, 5])
+	check("saved map preserves a shortcut", str(main.map_nodes[5][5]["type"]), "shortcut")
+	check("saved map preserves route links", main._node_link_positions(main.map_nodes[5][5]).map(func(p): return p.y), [7])
 
 	main._finish_floor()
 	check("boss win advances the floor", main.floor_index, 2)

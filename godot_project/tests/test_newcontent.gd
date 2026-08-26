@@ -126,7 +126,7 @@ func wheel_case(main) -> void:
 	main.preview_die_index = 0
 	await main._on_die_pressed(0)
 	check("大車輪 9: walked nine squares",
-		((main.player_step - start) % 16 + 16) % 16, 9)
+		((main.player_step - start) % main.ring_cells.size() + main.ring_cells.size()) % main.ring_cells.size(), 9)
 	check("大車輪 9: landed where predicted", main.player_pos, predicted)
 	check("大車輪: charged 1 HP to swing", hp_before - main.player_hp, 1)
 

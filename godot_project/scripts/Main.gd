@@ -1,7 +1,7 @@
 extends Control
 
-const BOARD_W := 5
-const BOARD_H := 5
+const BOARD_W := 4
+const BOARD_H := 4
 const ACTIONS_PER_TURN := 1
 const REROLLS_PER_TURN := 1
 const FATIGUE_MAX := 100
@@ -12,7 +12,7 @@ const BATTLE_DEFEAT_FATIGUE := 15
 # fight ended with most of the ring poisoned and the player's own board
 # invisible underneath it. Scaled with the ring: five of sixteen leaves the
 # same proportion of the board readable as four of twelve did.
-const MAX_DEBUFFS := 5
+const MAX_DEBUFFS := 4
 # Cards on screen at once. The fractional part is deliberate: it leaves a
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
@@ -23,7 +23,7 @@ const HAND_GAP := 7.0
 # walking it. Sentinels far outside any real rolled distance (±1-8) so
 # they can never collide with one, mapped to the ring step each warps to
 # and the short label its face and log line show instead of a number.
-# RING's four corners are steps 0/4/8/12 — see _build_track_graph.
+# RING's four corners are steps 0/3/6/9 — see _build_track_graph.
 const RESET_FACE := 99
 const CORNER_TL := 90
 const CORNER_TR := 91
@@ -32,9 +32,9 @@ const CORNER_BL := 93
 const WARP_FACES := {
 	RESET_FACE: {"label": "帰", "step": 0},
 	CORNER_TL: {"label": "左上", "step": 0},
-	CORNER_TR: {"label": "右上", "step": 4},
-	CORNER_BR: {"label": "右下", "step": 8},
-	CORNER_BL: {"label": "左下", "step": 12},
+	CORNER_TR: {"label": "右上", "step": 3},
+	CORNER_BR: {"label": "右下", "step": 6},
+	CORNER_BL: {"label": "左下", "step": 9},
 }
 
 # Every size in this file is authored in these units, and the window's
@@ -1862,10 +1862,10 @@ var hero_defs := {
 		# The starting board is deliberately almost empty: the player should
 		# be the author of the ring, not the editor of someone else's.
 		"dice": ["normal", "normal", "blade", "guard_die"],
-		# Steps 3, 7 and 11 of sixteen — the same even thirds of the lap the
-		# twelve-square ring put them on.
+		# Steps 2, 5 and 8 of twelve: three evenly spaced anchors around the
+		# compact ring.
 		"tiles": [
-			[3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
+			[2, 0, "heavy"], [3, 2, "fort"], [1, 3, "heavy"]
 		]
 	},
 }
@@ -5736,7 +5736,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 7
+const SAVE_VERSION := 8
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5994,7 +5994,7 @@ func _load_cg_scripts() -> void:
 # can still reach the boss", are therefore true by construction — no repair
 # pass, and no possibility of a dead end.
 const FLOOR_COUNT := 3
-const MAP_ROWS := 8
+const MAP_ROWS := 12
 const MAP_COLS := 8
 
 const NODE_DEFS := {
@@ -6015,14 +6015,18 @@ const NODE_DEFS := {
 # than a board on which every square is interchangeable. The shortcut's links
 # leap from row 3 to row 5, giving up row 4's rewards for tempo.
 const MAP_LAYOUT := [
-	[{"col": 3, "type": "start", "links": ["1,1", "1,5"]}],
-	[{"col": 1, "type": "battle", "links": ["2,1", "2,3"]}, {"col": 5, "type": "chest", "links": ["2,3", "2,6"]}],
-	[{"col": 1, "type": "event", "links": ["3,1", "3,4"]}, {"col": 3, "type": "battle", "links": ["3,1", "3,4", "3,6"]}, {"col": 6, "type": "shop", "links": ["3,4", "3,6"]}],
-	[{"col": 1, "type": "chest", "links": ["4,2", "4,5"]}, {"col": 4, "type": "elite", "links": ["4,2", "4,5", "4,7"]}, {"col": 6, "type": "shortcut", "links": ["5,3", "5,6"]}],
-	[{"col": 2, "type": "rest", "links": ["5,3", "5,6"]}, {"col": 5, "type": "trap", "links": ["5,3", "5,6"]}, {"col": 7, "type": "battle", "links": ["5,6"]}],
-	[{"col": 3, "type": "battle", "links": ["6,2", "6,5"]}, {"col": 6, "type": "elite", "links": ["6,2", "6,5"]}],
-	[{"col": 2, "type": "rest", "links": ["7,4"]}, {"col": 5, "type": "chest", "links": ["7,4"]}],
-	[{"col": 4, "type": "boss", "links": []}],
+	[{"col": 3, "type": "start", "links": ["1,2", "1,4"]}],
+	[{"col": 2, "type": "battle", "links": ["2,2", "2,4"]}, {"col": 4, "type": "chest", "links": ["2,2", "2,4"]}],
+	[{"col": 2, "type": "event", "links": ["3,1", "3,3"]}, {"col": 4, "type": "battle", "links": ["3,3", "3,5"]}],
+	[{"col": 1, "type": "chest", "links": ["4,2"]}, {"col": 3, "type": "shop", "links": ["4,2", "4,4"]}, {"col": 5, "type": "battle", "links": ["4,4"]}],
+	[{"col": 2, "type": "rest", "links": ["5,1", "5,3"]}, {"col": 4, "type": "trap", "links": ["5,3", "5,5"]}],
+	[{"col": 1, "type": "battle", "links": ["6,2"]}, {"col": 3, "type": "elite", "links": ["6,2", "6,4"]}, {"col": 5, "type": "shortcut", "links": ["7,3"]}],
+	[{"col": 2, "type": "chest", "links": ["7,1", "7,3"]}, {"col": 4, "type": "event", "links": ["7,3", "7,5"]}],
+	[{"col": 1, "type": "battle", "links": ["8,2"]}, {"col": 3, "type": "shop", "links": ["8,2", "8,4"]}, {"col": 5, "type": "elite", "links": ["8,4"]}],
+	[{"col": 2, "type": "rest", "links": ["9,1", "9,3"]}, {"col": 4, "type": "trap", "links": ["9,3", "9,5"]}],
+	[{"col": 1, "type": "chest", "links": ["10,2"]}, {"col": 3, "type": "battle", "links": ["10,2", "10,4"]}, {"col": 5, "type": "elite", "links": ["10,4"]}],
+	[{"col": 2, "type": "rest", "links": ["11,3"]}, {"col": 4, "type": "chest", "links": ["11,3"]}],
+	[{"col": 3, "type": "boss", "links": []}],
 ]
 
 var map_nodes: Array = []          # [row][col] -> node Dictionary, or null
@@ -6075,7 +6079,7 @@ func _is_boss_node() -> bool:
 	return node != null and str(node.get("type", "")) == "boss"
 
 func _map_node_at(row: int, col: int):
-	if row < 0 or row >= MAP_ROWS or col < 0 or col >= MAP_COLS:
+	if map_nodes.is_empty() or row < 0 or row >= map_nodes.size() or col < 0 or col >= MAP_COLS:
 		return null
 	return map_nodes[row][col]
 
@@ -7509,16 +7513,14 @@ func _flash_player_stop() -> void:
 # --- board graph -------------------------------------------------------
 
 func _build_track_graph() -> void:
-	# The perimeter of the 5x5 grid, clockwise from the top-left start.
-	# Sixteen squares rather than twelve: the extra four are the room the
-	# debuffs need to land in without burying the board the player built,
-	# and they push the far side of the ring out past a single 6 so a lap
-	# is a journey rather than two good rolls.
+	# The perimeter of the 4x4 grid, clockwise from the top-left start.
+	# Twelve squares make each battle lap compact enough to support a longer
+	# exploration route without making a full expedition overstay its welcome.
 	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
-		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3),
-		Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4),
-		Vector2i(0, 4), Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0),
+		Vector2i(3, 1), Vector2i(3, 2),
+		Vector2i(3, 3), Vector2i(2, 3), Vector2i(1, 3), Vector2i(0, 3),
+		Vector2i(0, 2), Vector2i(0, 1),
 	]
 	ring_index_map = {}
 	ring_forward = {}

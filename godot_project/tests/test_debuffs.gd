@@ -19,16 +19,16 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
-	# --- the board is sixteen squares ---------------------------------
-	check("ring size", main.ring_cells.size(), 16)
-	check("board is 5x5", [main.BOARD_W, main.BOARD_H], [5, 5])
+	# --- the board is twelve squares ----------------------------------
+	check("ring size", main.ring_cells.size(), 12)
+	check("board is 4x4", [main.BOARD_W, main.BOARD_H], [4, 4])
 	check("top-left corner warps to step 0", main.WARP_FACES[main.CORNER_TL]["step"], 0)
-	check("top-right corner warps to step 4", main.WARP_FACES[main.CORNER_TR]["step"], 4)
-	check("bottom-right corner warps to step 8", main.WARP_FACES[main.CORNER_BR]["step"], 8)
-	check("bottom-left corner warps to step 12", main.WARP_FACES[main.CORNER_BL]["step"], 12)
+	check("top-right corner warps to step 3", main.WARP_FACES[main.CORNER_TR]["step"], 3)
+	check("bottom-right corner warps to step 6", main.WARP_FACES[main.CORNER_BR]["step"], 6)
+	check("bottom-left corner warps to step 9", main.WARP_FACES[main.CORNER_BL]["step"], 9)
 	var perimeter := true
 	for cell in main.ring_cells:
-		if cell.x != 0 and cell.x != 4 and cell.y != 0 and cell.y != 4:
+		if cell.x != 0 and cell.x != 3 and cell.y != 0 and cell.y != 3:
 			perimeter = false
 	check("every ring cell is on the perimeter", perimeter, true)
 	check("hero tiles all sit on the ring",
@@ -102,7 +102,7 @@ func run_case(main, debuff: String, offsets: Array, roll: int, die_id: String,
 	var hp_before: int = main.player_hp
 	await main._on_die_pressed(0)
 	var lost: int = hp_before - main.player_hp
-	var walked: int = ((main.player_step - start_step) % 16 + 16) % 16
+	var walked: int = ((main.player_step - start_step) % main.ring_cells.size() + main.ring_cells.size()) % main.ring_cells.size()
 
 	var tag := "%s x%d roll%d %s" % [debuff, offsets.size(), roll, die_id]
 	check(tag + ": preview HP cost", promised, want_hp_loss)
