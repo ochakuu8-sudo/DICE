@@ -4748,7 +4748,7 @@ var enemy_defs := [
 # intentional: routes remain legible at a glance instead of reading as one
 # dense wall of icons.
 const MAP_NODE_SIZE := 76.0
-const MAP_ROW_H := 104.0
+const MAP_ROW_H := 140.0
 const MAP_COL_W := 104.0
 
 class MapLinks:
@@ -4759,6 +4759,7 @@ class MapLinks:
 	func _draw() -> void:
 		if main == null or main.map_nodes.is_empty():
 			return
+		var active_edges: Dictionary = main._map_reachable_edges()
 		for row in range(main.MAP_ROWS):
 			for col in range(main.MAP_COLS):
 				var node = main.map_nodes[row][col]
@@ -4768,16 +4769,20 @@ class MapLinks:
 				for next in main._node_link_positions(node):
 					var b: Vector2 = main._map_node_center(next.y, next.x)
 					var live: bool = row == main.map_row and col == main.map_col
-					var col_line: Color = main.COL_GOLD if live else Color("#8C7A55")
+					var edge_id := "%s>%s" % [str(node["id"]), main._map_node_id(next.y, next.x)]
+					var on_route: bool = active_edges.has(edge_id)
+					var col_line: Color = main.COL_NEXT if on_route else (main.COL_GOLD if live else Color("#8C7A55"))
+					var outer_width: float = 7.0 if on_route else 5.0
+					var inner_width: float = 3.0 if on_route else 2.0
 					# Routes use a small orthogonal bend: vertical out of each node,
 					# horizontal through the gap, then vertical into the destination.
 					# This makes branches legible instead of reading as crossing diagonals.
 					var mid_y: float = (a.y + b.y) * 0.5
 					var points: Array[Vector2] = [a, Vector2(a.x, mid_y), Vector2(b.x, mid_y), b]
 					for i in range(points.size() - 1):
-						draw_line(points[i], points[i + 1], Color("#2A2320"), 5.0, true)
+						draw_line(points[i], points[i + 1], Color("#2A2320"), outer_width, true)
 					for i in range(points.size() - 1):
-						draw_line(points[i], points[i + 1], col_line, 2.0, true)
+						draw_line(points[i], points[i + 1], col_line, inner_width, true)
 
 func _map_canvas_size() -> Vector2:
 	return Vector2(MAP_COL_W * float(MAP_COLS), MAP_ROW_H * float(MAP_ROWS))
@@ -4891,10 +4896,10 @@ func _roll_exploration_die(is_reroll: bool) -> void:
 		_add_fatigue(EXPLORE_REROLL_FATIGUE, "探索ダイス振り直し")
 	else:
 		_add_fatigue(EXPLORE_FATIGUE_PER_ROLL, "探索ダイス")
-	map_roll_readout.text = "D6　[ %d ]　→ %d段先まで選択" % [explore_roll, _explore_steps()]
+	map_roll_readout.text = "D6　[ %d ]　→ %dマス先を選択" % [explore_roll, _explore_steps()]
 	map_roll_readout.modulate = COL_GOLD
 	explore_is_rolling = false
-	_set_log("探索ダイス%s：%d。接続された%d段先までのマスを選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, _explore_steps()])
+	_set_log("探索ダイス%s：%d。接続線を%dマス進んだ先を選んでください。" % ["を振り直した" if is_reroll else "", explore_roll, _explore_steps()])
 	sfx.emit("reward")
 	_refresh_map()
 
@@ -5036,11 +5041,13 @@ func _style_map_node(button: Button, node: Dictionary, row: int, c: int) -> void
 	elif reachable:
 		border = COL_NEXT
 		width = 4
-	var dim: bool = not (here or reachable)
+	var dim := false
 	if done:
 		fill = fill.lerp(COL_PANEL_SUNK, 0.55)
 	button.disabled = not reachable
-	button.modulate = Color(1, 1, 1, 1.0 if (here or reachable) else 0.5)
+	# Future nodes remain fully readable. Only reachable destinations and the
+	# connection path are highlighted; completed nodes alone are subdued.
+	button.modulate = Color(1, 1, 1, 0.72 if done else 1.0)
 	_apply_cell_style(button, fill, border, width, dim and not done, "stop")
 
 func _on_map_node_pressed(row: int, c: int) -> void:
@@ -6072,11 +6079,11 @@ func _map_node_at(row: int, col: int):
 		return null
 	return map_nodes[row][col]
 
-# D6 pips become one to three forward stages. A high result reaches a more
-# distant reward or follows a shortcut, while a low result encourages taking
-# the safe node immediately ahead.
+# A die pip is one map connection. The highlighted line therefore reads like
+# a familiar sugoroku path: roll 3, then choose an endpoint exactly 3 links
+# ahead. Reaching the boss early is allowed because it is the finish line.
 func _explore_steps() -> int:
-	return clampi(int((explore_roll + 1) / 2), 1, 3)
+	return max(explore_roll, 1)
 
 func _map_node_id(row: int, col: int) -> String:
 	return "%d,%d" % [row, col]
@@ -6093,33 +6100,52 @@ func _node_link_positions(node: Dictionary) -> Array[Vector2i]:
 			out.append(Vector2i(col, row))
 	return out
 
-func _map_reachable() -> Array:
-	var out: Array[Vector2i] = []
+func _map_reachable_routes() -> Array:
+	var routes: Array = []
 	if map_nodes.is_empty() or explore_roll <= 0:
-		return out
+		return routes
 	var origin: Dictionary = _map_node_at(map_row, map_col)
 	if origin == null:
-		return out
-	var frontier: Array[Dictionary] = [{"node": origin, "depth": 0}]
-	var visited := {_map_node_id(map_row, map_col): true}
+		return routes
+	var frontier: Array[Dictionary] = [{"node": origin, "depth": 0, "path": [Vector2i(map_col, map_row)]}]
 	while not frontier.is_empty():
 		var entry: Dictionary = frontier.pop_front()
 		var depth: int = int(entry["depth"])
-		if depth >= _explore_steps():
-			continue
 		for pos in _node_link_positions(entry["node"]):
 			var target: Dictionary = _map_node_at(pos.y, pos.x)
 			if target == null:
 				continue
-			var id := str(target["id"])
-			if visited.has(id):
-				continue
-			visited[id] = true
 			var next_depth := depth + 1
-			if not bool(target.get("cleared", false)):
-				out.append(pos)
-			if next_depth < _explore_steps():
-				frontier.append({"node": target, "depth": next_depth})
+			var path: Array = (entry["path"] as Array).duplicate()
+			path.append(pos)
+			var is_finish := str(target.get("type", "")) == "boss"
+			if next_depth == _explore_steps() or is_finish:
+				if not bool(target.get("cleared", false)):
+					routes.append(path)
+			elif next_depth < _explore_steps():
+				frontier.append({"node": target, "depth": next_depth, "path": path})
+	return routes
+
+func _map_reachable() -> Array:
+	var out: Array[Vector2i] = []
+	var seen := {}
+	for route in _map_reachable_routes():
+		var path: Array = route
+		var endpoint: Vector2i = path[path.size() - 1]
+		var id := _map_node_id(endpoint.y, endpoint.x)
+		if not seen.has(id):
+			seen[id] = true
+			out.append(endpoint)
+	return out
+
+func _map_reachable_edges() -> Dictionary:
+	var out := {}
+	for route in _map_reachable_routes():
+		var path: Array = route
+		for i in range(path.size() - 1):
+			var from: Vector2i = path[i]
+			var to: Vector2i = path[i + 1]
+			out["%s>%s" % [_map_node_id(from.y, from.x), _map_node_id(to.y, to.x)]] = true
 	return out
 
 func _is_map_reachable(row: int, col: int) -> bool:

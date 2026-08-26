@@ -65,8 +65,9 @@ func _init() -> void:
 	var low_targets: Array = main._map_reachable()
 	check("low roll reaches only the next stage", low_targets.map(func(p): return p.y), [1, 1])
 	main.explore_roll = 6
-	check("high roll means three stages", main._explore_steps(), 3)
-	check("high roll reaches deeper rewards", main._map_reachable().any(func(p): return p.y >= 3), true)
+	check("die pips equal movement links", main._explore_steps(), 6)
+	check("high roll reaches the sixth stage", main._map_reachable().any(func(p): return p.y >= 6), true)
+	check("reachable paths are highlighted as edges", main._map_reachable_edges().is_empty(), false)
 
 	await main._on_explore_reroll_pressed()
 	check("reroll costs fatigue", main.player_fatigue,
