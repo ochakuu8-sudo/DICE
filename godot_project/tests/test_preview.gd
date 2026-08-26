@@ -132,7 +132,10 @@ func _init() -> void:
 	main._refresh_board()
 	check("committing clears the route", main.preview_route.is_empty())
 	check("committing leaves the strip at six", main.preview_path.size() == 6)
-	check("second tap spent the die", main.hand.size() == hand_before - 1)
+	# With one action the enemy phase begins immediately and refills the hand;
+	# with additional actions the spent die remains absent until the turn ends.
+	var expected_hand_after: int = hand_before if actions_before <= 1 else hand_before - 1
+	check("second tap consumed the die", main.hand.size() == expected_hand_after)
 	check("second tap landed where the preview promised",
 		main.player_pos == expected or not main._any_enemy_alive() or main.state == "game_over")
 

@@ -2,7 +2,7 @@ extends Control
 
 const BOARD_W := 5
 const BOARD_H := 5
-const ACTIONS_PER_TURN := 2
+const ACTIONS_PER_TURN := 1
 const REROLLS_PER_TURN := 1
 const FATIGUE_MAX := 100
 const EXPLORE_FATIGUE_PER_ROLL := 2
@@ -1847,7 +1847,7 @@ var hero_defs := {
 	"knight": {
 		"name": "シズク",
 		"art": "shizuku",
-		"hp": 36,
+		"hp": 20,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
@@ -5592,7 +5592,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 5
+const SAVE_VERSION := 6
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
