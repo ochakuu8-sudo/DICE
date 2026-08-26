@@ -1,8 +1,7 @@
 extends SceneTree
 
-# A battle HP loss grants no reward and adds expedition fatigue. HP is not
-# healed until the next encounter; only a boss defeat while already at the
-# fatigue cap becomes a run-ending finisher.
+# HP is a run-wide resource. A defeat ends the run and every new encounter
+# keeps the HP that the previous encounter left behind.
 
 var fails := 0
 
@@ -18,9 +17,8 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
-	mob_fall_case(main)
-	boss_limit_case(main)
-	next_encounter_heal_case(main)
+	run_loss_case(main)
+	next_encounter_persistence_case(main)
 	resource_display_case(main)
 	part_multiplier_case(main)
 
@@ -42,38 +40,26 @@ func _reset(main) -> void:
 	# run — or a previous case in this same run — already wrote.
 	main.lifetime = {}
 
-# A non-boss defeat keeps the run alive, adds fatigue, and does not restore
-# encounter HP while the defeat result is being shown.
-func mob_fall_case(main) -> void:
+# A defeat consumes the run and records the battle fatigue cost.
+func run_loss_case(main) -> void:
 	_reset(main)
 	main.player_hp = 1
 	main._ensure_map_node(0, 0)
 	main.map_nodes[0][0]["type"] = "battle"
 	var losses_before := int(main.lifetime.get("losses", 0))
 	main._resolve_defeat("test", true)
-	check("mob fall: run is not over", main.state != "game_over", true)
-	check("mob fall: HP stays at its battle result", main.player_hp, 1)
-	check("mob fall: fatigue was added", main.player_fatigue, main.BATTLE_DEFEAT_FATIGUE)
-	check("mob fall: counted as a fall", int(main.lifetime.get("falls", 0)), 1)
-	check("mob fall: not counted as a loss", int(main.lifetime.get("losses", 0)), losses_before)
+	check("battle defeat: run is over", main.state, "game_over")
+	check("battle defeat: HP stays at its battle result", main.player_hp, 1)
+	check("battle defeat: fatigue was added", main.player_fatigue, main.BATTLE_DEFEAT_FATIGUE)
+	check("battle defeat: counted as a loss", int(main.lifetime.get("losses", 0)), losses_before + 1)
 
-# A boss is only the finisher once fatigue is already maxed.
-func boss_limit_case(main) -> void:
+# Opening another battle retains run-wide HP instead of restoring it.
+func next_encounter_persistence_case(main) -> void:
 	_reset(main)
-	main.player_hp = 1
-	main._ensure_map_node(0, 0)
-	main.map_nodes[0][0]["type"] = "boss"
-	main.player_fatigue = main.FATIGUE_MAX
-	main._resolve_defeat("test", true)
-	check("boss defeat: run is over", main.state, "game_over")
-	check("boss defeat: counted as a loss", int(main.lifetime.get("losses", 0)), 1)
-
-# HP resets only when another battle is actually opened.
-func next_encounter_heal_case(main) -> void:
-	_reset(main)
-	main.player_hp = 1
+	check("new run starts at 30 HP", main.player_max_hp, 30)
+	main.player_hp = 7
 	main._start_encounter()
-	check("new battle: HP restored", main.player_hp, main.player_max_hp)
+	check("new battle: HP carries over", main.player_hp, 7)
 
 # HP is the combat gauge. Fatigue uses a percentage in combat and its own
 # full gauge while choosing a destination on the exploration map.

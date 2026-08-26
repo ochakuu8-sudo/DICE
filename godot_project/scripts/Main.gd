@@ -1852,7 +1852,7 @@ var hero_defs := {
 	"knight": {
 		"name": "シズク",
 		"art": "shizuku",
-		"hp": 20,
+		"hp": 30,
 		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
@@ -4457,18 +4457,12 @@ func _show_game_over(reason: String, by_enemy: bool = false) -> void:
 		return
 	_resolve_defeat(reason, by_enemy)
 
-# A zero HP battle ends the encounter, not the expedition. The player takes
-# no reward and pays expedition fatigue; HP is restored only when another
-# battle begins. Reaching fatigue max makes a boss defeat the finisher.
+# HP belongs to the whole run. A zero-HP defeat ends the run; fatigue is
+# still recorded as the expedition-wide consequence of that final battle.
 func _resolve_defeat(reason: String, by_enemy: bool) -> void:
 	if by_enemy:
-		if _is_boss_node() and player_fatigue >= FATIGUE_MAX:
-			# The boss is the explicit finishing blow once the expedition is at
-			# its limit. Other losses still return the player to exploration.
-			pass
-		else:
-			_resolve_fall()
-			return
+		player_shield = 0
+		_add_fatigue(BATTLE_DEFEAT_FATIGUE + (5 if _is_boss_node() else 0), "戦闘敗北")
 	state = "game_over"
 	_delete_run_save()
 	_bump_lifetime("losses")
@@ -4482,20 +4476,6 @@ func _resolve_defeat(reason: String, by_enemy: bool) -> void:
 	_add_overlay_option("キャラを選び直す", "タイトルに戻ります。", COL_TEXT_SOFT, "dice", Callable(self, "_show_title"))
 	_layout_overlay()
 	_play_result_flourish(Color(0.75, 0.2, 0.1, 0.4))
-
-func _resolve_fall() -> void:
-	_bump_lifetime("falls")
-	player_shield = 0
-	var cost := BATTLE_DEFEAT_FATIGUE + (5 if _is_boss_node() else 0)
-	_add_fatigue(cost, "戦闘敗北")
-	hp_bar.display_value = float(player_fatigue)
-	_save_run()
-	sfx.emit("shield")
-	_refresh_all()
-	_open_overlay("戦闘敗北", tr("%s に敗れ、報酬を逃した。疲労だけが残る。") % encounter_name)
-	_add_overlay_option("探索へ戻る", "次の戦闘ではHPは全回復します。", COL_HP, "boot", Callable(self, "_leave_node"))
-	_layout_overlay()
-	state = "node_event"
 
 # A run that ends with no record of what happened gives the player nothing
 # to carry into the next one.
@@ -4585,7 +4565,7 @@ func _start_encounter() -> void:
 	if backdrop_view != null:
 		backdrop_view.tint_progress = float(max(map_row, 0)) / float(max(MAP_ROWS - 1, 1))
 	player_pos = _pos_for_step(player_step)
-	_reset_encounter_hp()
+	_reset_encounter_state()
 	actions_left = actions_per_turn
 	selected_die = {}
 	selected_roll = 0
@@ -4658,8 +4638,7 @@ func _add_fatigue(amount: int, reason: String = "") -> void:
 		_set_log("%s　疲労+%d（%d/%d）" % [reason, amount, player_fatigue, FATIGUE_MAX])
 	_refresh_top()
 
-func _reset_encounter_hp() -> void:
-	player_hp = player_max_hp
+func _reset_encounter_state() -> void:
 	player_shield = 0
 
 # What colour a blow from this enemy leaves on her figure. Built from the
@@ -5703,7 +5682,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 8
+const SAVE_VERSION := 9
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
