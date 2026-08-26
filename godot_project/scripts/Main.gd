@@ -2178,8 +2178,8 @@ func _build_hero_zone() -> void:
 	hero_stage_name.autowrap_mode = TextServer.AUTOWRAP_OFF
 	col.add_child(hero_stage_name)
 
-	# The number carries the current sensitivity level and climax progress;
-	# the three marks remain a quick visual summary of Lv0–3.
+	# The number carries sensitivity level. The marks are exclusively the
+	# current climax meter: Lv0 shows six, then one fewer at each level.
 	part_box = VBoxContainer.new()
 	part_box.add_theme_constant_override("separation", 2)
 	part_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2193,11 +2193,11 @@ func _build_hero_zone() -> void:
 		part_box.add_child(row)
 		var name_label := _make_label(FS_SMALL - 1, COL_TEXT_SOFT, HORIZONTAL_ALIGNMENT_RIGHT, true)
 		name_label.text = str(PART_NAMES[part])
-		name_label.custom_minimum_size = Vector2(82, 0)
+		name_label.custom_minimum_size = Vector2(58, 0)
 		name_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 		row.add_child(name_label)
 		var pips := []
-		for i in range(PART_DEV_MAX):
+		for i in range(CLIMAX_STACKS_BY_LEVEL[0]):
 			var pip := IconGlyph.new()
 			pip.outline_color = COL_INK
 			pip.custom_minimum_size = Vector2(13, 13)
@@ -3206,12 +3206,13 @@ func _refresh_hero_stage() -> void:
 		var dev := int(part_dev.get(part, 0))
 		var stacks := int(part_stacks.get(part, 0))
 		var stack_limit := _climax_stack_limit(part)
-		(row["label"] as Label).text = "%s Lv%d  %d/%d" % [PART_NAMES[part], dev, stacks, stack_limit]
+		(row["label"] as Label).text = "%s Lv%d" % [PART_NAMES[part], dev]
 		(row["label"] as Label).add_theme_color_override("font_color", faded)
 		var pips: Array = row["pips"]
 		for i in range(pips.size()):
 			var pip: IconGlyph = pips[i]
-			var filled: bool = i < dev
+			var filled: bool = i < stacks
+			pip.visible = i < stack_limit
 			pip.outlined = filled
 			pip.glyph_color = _development_color(float(i + 1) / float(PART_DEV_MAX)) if filled else faded
 			# Only `kind` has a setter that repaints; the colour fields are
@@ -3258,9 +3259,9 @@ func _refresh_enemy() -> void:
 	# is developed, so it is the line most worth re-reading, and the note
 	# is clipped at five lines that a boss's debuff text already fills.
 	if has_part:
-		note_lines.append("%s狙い：部位補正 ×%.1f（感度Lv%d・絶頂%d/%d）" % [
+		note_lines.append("%s狙い：部位補正 ×%.1f（感度Lv%d・絶頂%s）" % [
 			str(PART_NAMES[part]), _part_multiplier(part), int(part_dev.get(part, 0)),
-			int(part_stacks.get(part, 0)), _climax_stack_limit(part)])
+			_climax_meter_text(part)])
 	var kind := str(enemy.get("debuff", ""))
 	if kind != "" and temp_defs.has(kind):
 		note_lines.append("%s をマスにかける（%s）" % [
@@ -4690,6 +4691,13 @@ func _part_multiplier(part: String) -> float:
 func _climax_stack_limit(part: String) -> int:
 	var level := clampi(int(part_dev.get(part, 0)), 0, PART_DEV_MAX)
 	return int(CLIMAX_STACKS_BY_LEVEL[level])
+
+func _climax_meter_text(part: String) -> String:
+	var filled := clampi(int(part_stacks.get(part, 0)), 0, _climax_stack_limit(part))
+	var text := ""
+	for i in range(_climax_stack_limit(part)):
+		text += "・" if i < filled else "○"
+	return text
 
 # A fully effective part hit advances only the relevant climax meter. On
 # reaching its ceiling, the meter resets and raises sensitivity through Lv3;
