@@ -1,7 +1,11 @@
 extends Control
 
-const BOARD_W := 5
-const BOARD_H := 5
+# The track is the perimeter of this grid, so the grid size *is* the ring
+# length: 3x3 leaves eight squares and no centre. Eight is the number the
+# starting board is authored for — every square carries a real tile, so a
+# turn cannot end on filler. Growing the ring means growing this grid.
+const BOARD_W := 3
+const BOARD_H := 3
 const ACTIONS_PER_TURN := 2
 const INITIAL_REROLLS := 1
 const FATIGUE_MAX := 100
@@ -9,9 +13,9 @@ const EXPLORE_FATIGUE_PER_MOVE := 2
 const BATTLE_DEFEAT_FATIGUE := 15
 # How many squares an enemy can keep fouled at once. Uncapped, a long
 # fight ended with most of the ring poisoned and the player's own board
-# invisible underneath it. Scaled with the ring: five of sixteen leaves the
-# same proportion of the board readable as four of twelve did.
-const MAX_DEBUFFS := 5
+# invisible underneath it. Scaled with the ring: two of eight keeps roughly
+# the proportion of readable board that five of sixteen did.
+const MAX_DEBUFFS := 2
 # Cards on screen at once. The fractional part is deliberate: it leaves a
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
@@ -22,7 +26,8 @@ const HAND_GAP := 7.0
 # walking it. Sentinels far outside any real rolled distance (±1-8) so
 # they can never collide with one, mapped to the ring step each warps to
 # and the short label its face and log line show instead of a number.
-# RING's four corners are steps 0/4/8/12 — see _build_track_graph.
+# RING's four corners are the quarter points of the ring — on the eight
+# square board that is steps 0/2/4/6 (see _build_track_graph).
 const RESET_FACE := 99
 const CORNER_TL := 90
 const CORNER_TR := 91
@@ -31,9 +36,9 @@ const CORNER_BL := 93
 const WARP_FACES := {
 	RESET_FACE: {"label": "帰", "step": 0},
 	CORNER_TL: {"label": "左上", "step": 0},
-	CORNER_TR: {"label": "右上", "step": 4},
-	CORNER_BR: {"label": "右下", "step": 8},
-	CORNER_BL: {"label": "左下", "step": 12},
+	CORNER_TR: {"label": "右上", "step": 2},
+	CORNER_BR: {"label": "右下", "step": 4},
+	CORNER_BL: {"label": "左下", "step": 6},
 }
 
 # Every size in this file is authored in these units, and the window's
@@ -1331,6 +1336,25 @@ var tile_defs := {
 		"trigger": "stop", "effect": "盾+1",
 		"effects": [{"on": "stop", "op": "shield", "amount": 1}],
 		"detail": "何も置いていないただの道。止まれば盾が1つだけ手に入る。"},
+	# The starting eight are all stop-type and all plain: one number, no
+	# condition, no counter. They are the yardstick the rest of the table is
+	# priced against — a stop-type square fires about once per action, so
+	# "6 damage" is what one action is worth before any build is on the
+	# board. 疾走 and the other pass-type kinds are read against a third of
+	# that, because a pass fires roughly three times as often (two actions
+	# times an average roll of three).
+	"strike": {"name": "斬撃", "kind": "基本", "color": Color("#C2453A"), "icon": "slash",
+		"trigger": "stop", "effect": "6ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 6}],
+		"detail": "止まった相手を素直に斬る。条件も溜めもない、盤上のダメージの基準値。"},
+	"ward": {"name": "守り", "kind": "基本", "color": Color("#2E7BD6"), "icon": "guard",
+		"trigger": "stop", "effect": "盾+5",
+		"effects": [{"on": "stop", "op": "shield", "amount": 5}],
+		"detail": "腰を据えて受ける。盾はターン開始で消えるので、殴られるターンに合わせて止まること。"},
+	"respite": {"name": "息継ぎ", "kind": "基本", "color": Color("#3EA95E"), "icon": "heal",
+		"trigger": "stop", "effect": "HP+3",
+		"effects": [{"on": "stop", "op": "heal", "amount": 3}],
+		"detail": "HPは戦闘をまたいで持ち越すので、削られたぶんはここで返すしかない。盾と違って腐らない。"},
 
 	# --- 疾走: 通過型。1マスあたりは軽いが、長い出目で何枚も踏むほど伸びる ---
 	"slash": {"name": "斬撃路", "kind": "疾走", "color": Color("#E4453A"), "icon": "slash",
@@ -1860,12 +1884,16 @@ var hero_defs := {
 		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
-		# The starting board is deliberately almost empty: the player should
-		# be the author of the ring, not the editor of someone else's.
 		"dice": ["normal", "normal", "blade", "guard_die"],
-		# Three evenly spaced anchors around the sixteen-square ring.
+		# All eight squares of the ring, filled. There is no such thing as an
+		# empty square to walk onto, so every action ends on something that
+		# pays. 攻撃3・防御3・回復1・巡り路1, with attack and defence
+		# alternating so no roll can reach two of a kind in a row, and the
+		# one heal sitting opposite the start.
 		"tiles": [
-			[0, 0, "reroll_path"], [3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
+			[0, 0, "reroll_path"], [1, 0, "strike"], [2, 0, "ward"],
+			[2, 1, "strike"], [2, 2, "ward"], [1, 2, "strike"],
+			[0, 2, "respite"], [0, 1, "ward"]
 		]
 	},
 }
@@ -4737,8 +4765,11 @@ var enemy_defs := [
 	{"name": "灼眼", "art": "archer", "hp": 36, "damage": 7, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "gold": 18,
 		"debuff": "burn", "foul": 45, "part": "chest"},
+	# Its squares are fixed points on the board rather than offsets from the
+	# player, so they are written as ring steps: opposite each other, a
+	# quarter of the ring either side of the start.
 	{"name": "擬態箱", "art": "heavy", "hp": 44, "damage": 8, "kind": "cell",
-		"mode": "fixed", "cells": [2, 6, 10, 14], "armor": 3, "gold": 21,
+		"mode": "fixed", "cells": [2, 6], "armor": 3, "gold": 21,
 		"debuff": "freeze", "foul": 40, "part": "depths"},
 	{"name": "胞子塊", "art": "plague", "hp": 46, "damage": 8, "kind": "cell",
 		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22,
@@ -5684,7 +5715,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 9
+const SAVE_VERSION := 10
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5949,6 +5980,10 @@ func _load_cg_scripts() -> void:
 # can still reach the boss", are therefore true by construction — no repair
 # pass, and no possibility of a dead end.
 const FLOOR_COUNT := 3
+# How many slots of the enemy table one floor's climb walks through. With
+# three floors each starting one slot higher, this spreads the whole roster
+# across the run while still giving every floor its own spread.
+const FLOOR_ROSTER_SPAN := 4
 const MAP_ROWS := 12
 const MAP_COLS := 8
 
@@ -6019,12 +6054,23 @@ func _ensure_map_node(row: int, col: int) -> void:
 
 # Enemies scale with both their position and the current floor, while the
 # grid itself stays readable and authored.
+#
+# A floor shifts which slice of the roster its climb walks, and the row
+# walks it. Written as one ramp over the whole run it did neither: round()
+# turned the very first battle row into slot 1, so 粘体 — the enemy the
+# opening fight is balanced around — was never fought at all, and by floor 2
+# the ramp had run off the end of the table and clamped, making every
+# non-boss node on two of the three floors the same 贄喰い.
 func _pick_enemy_for(row: int, kind: String) -> int:
 	var last: int = enemy_defs.size() - 1
 	if kind == "boss":
 		return last
-	var span: float = float(row) / float(max(MAP_ROWS - 2, 1))
-	var base: int = int(round(span * float(last - 1)))
+	# `row` arrives carrying its floor (row + (floor_index - 1) * MAP_ROWS),
+	# so split it back apart rather than ramping over the sum.
+	var floor_step: int = row / MAP_ROWS
+	var within: int = row % MAP_ROWS
+	var span: float = float(within) / float(max(MAP_ROWS - 2, 1))
+	var base: int = floor_step + int(span * float(FLOOR_ROSTER_SPAN))
 	if kind == "elite":
 		base += 1
 	return clampi(base, 0, last - 1)
@@ -7447,12 +7493,12 @@ func _flash_player_stop() -> void:
 # --- board graph -------------------------------------------------------
 
 func _build_track_graph() -> void:
-	# The perimeter of the 5x5 grid, clockwise from the top-left start.
+	# The perimeter of the 3x3 grid, clockwise from the top-left start:
+	# eight squares, with the centre left out of the track entirely.
 	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
-		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3),
-		Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4),
-		Vector2i(0, 4), Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
+		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0),
+		Vector2i(2, 1), Vector2i(2, 2),
+		Vector2i(1, 2), Vector2i(0, 2), Vector2i(0, 1),
 	]
 	ring_index_map = {}
 	ring_forward = {}

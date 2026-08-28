@@ -70,10 +70,11 @@ func _init() -> void:
 	# 貫通砲 reads the same square charge but does not empty it.
 	await run_case(main, "lance", "normal", 3, 15, 0, false, 0, 0, 5)
 
-	# 死線 only opens below 35%: 20 max, 12 lost leaves 40%, still shut.
-	await run_case(main, "deathline", "normal", 3, 0, 0, true, 0, 12)
-	# 14 lost leaves 6/20 = 30%, open.
-	await run_case(main, "deathline", "normal", 3, 25, 0, false, 0, 14)
+	# 死線 only opens at 35% or below. The hero has 30 HP, so the gate sits
+	# at 10: 18 lost leaves 12/30 = 40%, still shut.
+	await run_case(main, "deathline", "normal", 3, 0, 0, true, 0, 18)
+	# 20 lost leaves 10/30 = 33%, open.
+	await run_case(main, "deathline", "normal", 3, 25, 0, false, 0, 20)
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
