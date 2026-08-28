@@ -1,28 +1,30 @@
 extends Control
 
 # The track is a rectilinear loop built from four independent straight
-# runs — SIDE_NAMES — each with its own length in side_len. Growing a side
-# means growing side_len[name] by one; the four corners fall wherever the
-# adjacent sides currently end, so a side can be grown on its own without
-# touching the other three (see _build_track_graph). Two sides of
-# differing "reach" simply meet on a longer connecting line instead of a
-# crisp corner — BoardView already draws whatever line two consecutive
-# ring cells need, adjacent or not — so nothing stops the board from
-# growing lopsided as the player favours one side of it.
+# runs — SIDE_NAMES — each with its own length in side_len. Growing a
+# side means growing side_len[name] by one. ring_cells only ever holds a
+# trivial, unique per-square key (see _build_track_graph) — it carries no
+# geometry of its own — because where a square actually sits on screen is
+# answered separately, by _board_cell_center, off ring_side/
+# ring_side_index and the four fixed frame corners there. That is what
+# lets a side grow completely on its own: it only ever gets denser
+# between its own two corners, never moves anyone else's square, and
+# never leaves the kind of seam a shared, moving corner would.
 #
 # MAX_BOARD_W/H is a different thing: a fixed ceiling sized once for the
 # button pool, the storage arrays, and every index that has to stay
-# stable for the run's whole lifetime (see _idx) — big enough to hold any
-# side_len combination up to MAX_RING_LEN, however lopsided. Nothing
-# below the ceiling ever needs to move a button or resize an array; only
-# the ring's live extent (ring_extent, recomputed on every rebuild) and
-# the handful of layout functions that read it change.
-const MAX_BOARD_W := 13
-const MAX_BOARD_H := 13
+# stable for the run's whole lifetime (see _idx) — one row wide enough to
+# give every square up to MAX_RING_LEN its own trivial key. Nothing below
+# the ceiling ever needs to move a button or resize an array.
+const MAX_BOARD_W := 16
+const MAX_BOARD_H := 1
 const SIDE_NAMES := ["top", "right", "bottom", "left"]
 # The eight-square starting board, one length per side, clockwise from
 # the top-left start.
 var side_len := {"top": 3, "right": 2, "bottom": 2, "left": 1}
+# The frame every board is drawn into (see _board_cell_center) — fixed at
+# the starting board's own size and never recomputed, so the four corners
+# never move as side_len grows.
 var ring_extent := Vector2i(3, 3)
 # A tile reward grows the ring by exactly one square until the ring hits
 # this ceiling; past it, rewards fall back to replacing an existing
@@ -1248,8 +1250,11 @@ var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
 var ring_forward: Dictionary = {}
 # Parallel to ring_cells: which of SIDE_NAMES a ring cell belongs to, so a
-# tapped square can be traced back to the one side_len entry it grows.
+# tapped square can be traced back to the one side_len entry it grows —
+# and its 0-based position within that side, which is all
+# _board_cell_center needs to place it on screen (see there).
 var ring_side: Array[String] = []
+var ring_side_index: Array[int] = []
 var preview_path: Array[Vector2i] = []
 
 var permanent_board: Array = []
@@ -1911,16 +1916,13 @@ var hero_defs := {
 		"color": Color("#2E7BD6"),
 		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
 		"dice": ["normal", "normal", "blade", "guard_die"],
-		# All eight squares of the ring, filled. There is no such thing as an
-		# empty square to walk onto, so every action ends on something that
-		# pays. 攻撃3・防御3・回復1・巡り路1, with attack and defence
-		# alternating so no roll can reach two of a kind in a row, and the
-		# one heal sitting opposite the start.
-		"tiles": [
-			[0, 0, "reroll_path"], [1, 0, "strike"], [2, 0, "ward"],
-			[2, 1, "strike"], [2, 2, "ward"], [1, 2, "strike"],
-			[0, 2, "respite"], [0, 1, "ward"]
-		]
+		# All eight squares of the ring, filled and in ring order (step 0 is
+		# the start). There is no such thing as an empty square to walk
+		# onto, so every action ends on something that pays. 攻撃3・防御3・
+		# 回復1・巡り路1, with attack and defence alternating so no roll
+		# can reach two of a kind in a row, and the one heal sitting
+		# opposite the start.
+		"tiles": ["reroll_path", "strike", "ward", "strike", "ward", "strike", "respite", "ward"]
 	},
 }
 
@@ -3010,11 +3012,10 @@ func _board_spacing() -> float:
 	if board_view == null:
 		return 64.0
 	var available := board_view.size - Vector2(72, 72)
-	# The live bounding box of the current ring, not the storage ceiling:
-	# this is what makes the board read as filling more of its space as
-	# it grows, rather than staying the same size with new squares
-	# crammed into the gaps.
-	var raw: float = min(available.x / float(max(ring_extent.x - 1, 1)), available.y / float(max(ring_extent.y - 1, 1)))
+	# ring_extent never changes — the frame is always the eight-square
+	# starting board's own size (see _board_cell_center) — so this is the
+	# same fixed spacing calculation the board has always used.
+	var raw: float = min(available.x / float(ring_extent.x - 1), available.y / float(ring_extent.y - 1))
 	return clamp(raw, 52.0, 132.0)
 
 func _board_origin() -> Vector2:
@@ -3022,10 +3023,52 @@ func _board_origin() -> Vector2:
 	var board_size := Vector2(step * float(ring_extent.x - 1), step * float(ring_extent.y - 1))
 	return ((board_view.size - board_size) * 0.5).floor()
 
+# The four corners of the board — TL, TR, BR, BL, clockwise from the
+# start — never move: they sit at the corners of the fixed frame every
+# board opens on, the same square ring_extent has always described. A
+# side with more squares on it packs them more densely between its own
+# two corners; it does not stretch the frame to fit them. That is what
+# keeps two sides of very different lengths meeting cleanly instead of
+# leaving the long diagonal seam an earlier version of this board could
+# grow.
+#
+# Ownership of the four corners is not symmetric, and the interpolation
+# has to match it or a corner would be drawn twice (and a square skipped
+# elsewhere): top runs the whole first side, so it alone touches both TL
+# and TR. right and bottom each grow toward the one corner they end
+# on (BR, BL) without touching the corner before them, which belongs to
+# the side before it. left is the side that closes the loop back to the
+# start — TL already belongs to top — so left's squares sit strictly
+# between BL and TL, touching neither; how close they come depends only
+# on how many squares are on left, exactly as the original eight-square
+# board's own single left square always sat at the midpoint rather than
+# on either corner.
+const FRAME_TL := Vector2(0.0, 0.0)
+const FRAME_TR := Vector2(2.0, 0.0)
+const FRAME_BR := Vector2(2.0, 2.0)
+const FRAME_BL := Vector2(0.0, 2.0)
+
+func _side_render_pos(side: String, index: int, count: int) -> Vector2:
+	match side:
+		"top":
+			var t: float = float(index) / float(count - 1) if count > 1 else 0.0
+			return FRAME_TL.lerp(FRAME_TR, t)
+		"right":
+			return FRAME_TR.lerp(FRAME_BR, float(index + 1) / float(count))
+		"bottom":
+			return FRAME_BR.lerp(FRAME_BL, float(index + 1) / float(count))
+		_:  # "left"
+			return FRAME_BL.lerp(FRAME_TL, float(index + 1) / float(count + 1))
+
 func _board_cell_center(pos: Vector2i) -> Vector2:
 	var origin := _board_origin()
 	var step := _board_spacing()
-	return origin + Vector2(float(pos.x) * step, float(pos.y) * step)
+	var idx: int = int(ring_index_map.get(pos, -1))
+	if idx < 0 or idx >= ring_side.size():
+		return origin
+	var side: String = ring_side[idx]
+	var rel := _side_render_pos(side, ring_side_index[idx], int(side_len[side]))
+	return origin + rel * step
 
 # --- small builders ----------------------------------------------------
 
@@ -4640,8 +4683,10 @@ func _start_run(key: String) -> void:
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
 	permanent_board = _make_empty_board("empty")
-	for entry in hero["tiles"]:
-		permanent_board[int(entry[1])][int(entry[0])] = str(entry[2])
+	var start_tiles: Array = hero["tiles"]
+	for i in range(min(start_tiles.size(), ring_cells.size())):
+		var cell: Vector2i = ring_cells[i]
+		permanent_board[cell.y][cell.x] = str(start_tiles[i])
 	dice_bag = []
 	for die_id in hero["dice"]:
 		dice_bag.append(_make_die(str(die_id)))
@@ -7627,57 +7672,25 @@ func _flash_player_stop() -> void:
 
 # --- board graph -------------------------------------------------------
 
-# The four sides in side_len, walked clockwise from the top-left start.
-# Each side begins wherever the previous one ended — top always starts at
-# the fixed (0,0) start, and each of right/bottom/left simply continues
-# from the corner the side before it happens to currently reach. That is
-# what lets one side grow without moving any cell that belongs to another:
-# only the sides *after* the grown one, in walk order, can shift, and only
-# their grid position shifts (see _grow_ring_with_tile) — their content
-# rides along by ring order, same as any other rebuild.
+# ring_cells holds a STORAGE key per square — unique and stable, nothing
+# more; every lookup (permanent_board, ring_index_map, _inside) only ever
+# treats it as an opaque array index, never as a meaningful coordinate.
+# Assigning them is therefore just "one per square, in ring order": no
+# geometry, no risk of two sides' cells colliding as they grow at
+# different rates.
 #
-# Because each side's length is independent, the loop does not have to
-# close up neatly: if the last side (left) does not happen to reach back
-# adjacent to the start, the final edge is simply a longer line back to
-# it. BoardView draws that the same way it draws any other edge.
-#
-# This is purely a RENDER shape: it says where the ring's current squares
-# sit on screen, not what is on them — see _grow_ring_with_tile.
+# Where a square actually appears on screen is a separate question,
+# answered by _board_cell_center — see there for why the four corners
+# never move regardless of how lopsided side_len gets.
 func _build_track_graph() -> void:
 	ring_cells = []
 	ring_side = []
-	var cursor := Vector2i(0, 0)
-	var dir := Vector2i(1, 0)
+	ring_side_index = []
 	for side in SIDE_NAMES:
-		var n: int = int(side_len[side])
-		for i in range(n):
-			ring_cells.append(cursor)
+		for i in range(int(side_len[side])):
+			ring_cells.append(Vector2i(ring_cells.size(), 0))
 			ring_side.append(side)
-			cursor += dir
-		# The next side starts from this side's *last* cell, not from
-		# where cursor overshot to — otherwise the turn lands one square
-		# short of the actual corner.
-		var last_cell: Vector2i = cursor - dir
-		dir = Vector2i(-dir.y, dir.x)  # turn clockwise: right->down->left->up
-		cursor = last_cell + dir
-	# A side's length only ever grows, but nothing pins the loop to the
-	# non-negative quadrant as it does — a side that outgrows the ones
-	# before it walks into negative coordinates. Shift the whole ring so
-	# the storage arrays (always indexed from 0) can still hold it.
-	var min_x := 0
-	var min_y := 0
-	var max_x := 0
-	var max_y := 0
-	for cell in ring_cells:
-		min_x = mini(min_x, cell.x)
-		min_y = mini(min_y, cell.y)
-		max_x = maxi(max_x, cell.x)
-		max_y = maxi(max_y, cell.y)
-	var offset := Vector2i(-min_x, -min_y)
-	if offset != Vector2i.ZERO:
-		for i in range(ring_cells.size()):
-			ring_cells[i] += offset
-	ring_extent = Vector2i(max_x - min_x + 1, max_y - min_y + 1)
+			ring_side_index.append(i)
 	ring_index_map = {}
 	ring_forward = {}
 	for i in range(ring_cells.size()):
