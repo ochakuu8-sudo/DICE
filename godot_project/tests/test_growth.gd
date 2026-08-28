@@ -1,11 +1,11 @@
 extends SceneTree
 
-# A tile reward grows the ring instead of overwriting a square on it, until
-# the board hits its ceiling. This checks that growth never loses or
-# reorders a square the player already has, that both new squares carry
-# the tile just picked, that the schedule actually reaches the ceiling and
-# stops there, and that the corner warps keep resolving to real squares
-# once the board is no longer eight cells.
+# A tile reward grows the ring by exactly one square, at a square the
+# player taps, until the board hits its ceiling. This checks that growth
+# never loses or reorders a square the player already has, that it grows
+# only the tapped square's own side (column), that the schedule reaches
+# the ceiling one square at a time and stops there, and that the corner
+# warps keep resolving to real squares on an asymmetrically grown board.
 
 var fails := 0
 
@@ -22,50 +22,59 @@ func _init() -> void:
 	await process_frame
 	main._start_run("knight")
 
-	# Mark every current square with a unique, synthetic id — content the
-	# growth function never inspects (it moves strings around opaquely),
-	# so this pins down exactly which square is which regardless of what
-	# tile actually happens to sit there.
+	# --- every starting square knows its own side -----------------------
+	check("side lengths sum to the ring size",
+		int(main.side_len["top"]) + int(main.side_len["right"])
+			+ int(main.side_len["bottom"]) + int(main.side_len["left"]),
+		main.ring_cells.size())
+	var sides := []
+	for cell in main.ring_cells:
+		sides.append(main._side_of(cell))
+	check("sides read top,top,top,right,right,bottom,bottom,left", sides,
+		["top", "top", "top", "right", "right", "bottom", "bottom", "left"])
+
+	# --- one insertion grows exactly one square, on the tapped side -----
 	var old_ring: Array = main.ring_cells.duplicate()
 	for i in range(old_ring.size()):
 		var p: Vector2i = old_ring[i]
 		main.permanent_board[p.y][p.x] = "mark_%d" % i
 	var before := _ring_content(main)
-	check("starts at eight squares", before.size(), 8)
+	var tap: Vector2i = old_ring[3]  # the first "right" square
+	check("tapped square is on the right side", main._side_of(tap), "right")
 
-	var added: int = main._grow_ring_with_tile("respite")
+	var ok: bool = main._grow_ring_with_tile("respite", tap)
 	var after := _ring_content(main)
-	check("growth reports two squares added", added, 2)
-	check("the ring is now ten squares", after.size(), 10)
-	check("board dims grew to 4x3", [main.board_w, main.board_h], [4, 3])
-	check("both new squares are the reward tile", after.count("respite"), 2)
+	check("insertion succeeds", ok, true)
+	check("the ring grows by exactly one square", after.size(), before.size() + 1)
+	check("only the tapped side's length changed",
+		[main.side_len["top"], main.side_len["right"], main.side_len["bottom"], main.side_len["left"]],
+		[3, 3, 2, 1])
+	check("the new square lands right after the tapped one, in ring order",
+		after[4], "respite")
 
-	# Every original marker must still be present, and in its original
-	# relative order — dropping just the two "respite" entries (which
-	# cannot collide with a "mark_N" string) reproduces the old sequence.
-	var without_new := after.filter(func(id): return id != "respite")
-	check("every old square survives growth, in its old order",
-		without_new, before)
+	# Removing that one new entry must reproduce the pre-growth sequence
+	# exactly, in order — nothing already on the board was lost or moved.
+	var without_new: Array = after.duplicate()
+	without_new.remove_at(4)
+	check("every old square survives, in its old order", without_new, before)
 
-	# --- the schedule reaches the ceiling and stops --------------------
-	var sizes := [10]
+	# --- repeated growth on one side stays consistent, and stops at cap -
+	var sizes := [after.size()]
 	while main._can_grow_board():
-		main._grow_ring_with_tile("strike")
+		var last: Vector2i = main.ring_cells[main.ring_cells.size() - 1]
+		main._grow_ring_with_tile("strike", last)
 		sizes.append(main.ring_cells.size())
-	check("growth schedule reaches the ceiling", sizes, [10, 12, 14, 16])
-	check("board sits at the ceiling", [main.board_w, main.board_h],
-		[main.MAX_BOARD_W, main.MAX_BOARD_H])
-	check("no further growth once capped", main._grow_ring_with_tile("strike"), 0)
-	check("the ring stays sixteen squares", main.ring_cells.size(), 16)
+	check("growth reaches the ceiling one square at a time",
+		sizes, range(9, 17))
+	check("no further growth once capped",
+		main._grow_ring_with_tile("strike", main.ring_cells[0]), false)
+	check("the ring stays at the ceiling", main.ring_cells.size(), main.MAX_RING_LEN)
 
-	# --- corners still resolve on a grown board -------------------------
+	# --- corners still resolve on an asymmetrically grown board ---------
 	check("top-left corner is still the start", main._warp_face_step(main.CORNER_TL), 0)
-	check("top-right corner is the current board's actual corner",
-		main.ring_index_map.get(Vector2i(main.board_w - 1, 0), -1),
-		main._warp_face_step(main.CORNER_TR))
 	check("every corner lands on a distinct square", _corners_distinct(main), true)
 
-	# --- reward flow: grows below the ceiling, replaces once capped ----
+	# --- reward flow: tap to grow below the ceiling, replace at cap -----
 	await _reward_flow_case()
 
 	print("\n%d failure(s)" % fails)
@@ -92,15 +101,27 @@ func _reward_flow_case() -> void:
 
 	var before_len: int = main.ring_cells.size()
 	main._on_reward_selected("respite", "息継ぎマス")
-	check("a reward below the ceiling grows the board, no tap needed",
-		main.ring_cells.size(), before_len + 2)
-	check("growth does not enter the tap-to-place state", main.state != "reward_place", true)
+	check("a reward below the ceiling asks where to insert, not where to replace",
+		main.state, "reward_insert")
+	check("the ring has not grown yet — a spot still has to be tapped",
+		main.ring_cells.size(), before_len)
 
-	# Force the board to its ceiling, then confirm the same call now asks
-	# for a placement instead of growing further.
+	var target: Vector2i = main.ring_cells[2]
+	main._on_cell_pressed(main._idx(target.x, target.y))
+	check("the first tap previews without growing the ring",
+		main.ring_cells.size(), before_len)
+	check("the first tap marks the previewed square", main.preview_place_pos, target)
+	main._on_cell_pressed(main._idx(target.x, target.y))
+	check("the second tap confirms the insertion",
+		main.ring_cells.size(), before_len + 1)
+	check("confirming returns to the map", main.state, "map")
+
+	# Force the board to its ceiling, then confirm the same reward now
+	# asks for a replacement instead of an insertion point.
 	while main._can_grow_board():
-		main._grow_ring_with_tile("strike")
+		var last: Vector2i = main.ring_cells[main.ring_cells.size() - 1]
+		main._grow_ring_with_tile("strike", last)
 	main._on_reward_selected("respite", "息継ぎマス")
-	check("a reward at the ceiling falls back to placement",
+	check("a reward at the ceiling falls back to replacement",
 		main.state, "reward_place")
-	check("the ring does not grow past the ceiling", main.ring_cells.size(), 16)
+	check("the ring does not grow past the ceiling", main.ring_cells.size(), main.MAX_RING_LEN)

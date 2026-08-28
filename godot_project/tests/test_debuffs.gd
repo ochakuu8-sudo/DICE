@@ -21,7 +21,9 @@ func _init() -> void:
 
 	# --- the board is eight squares, and none of them are empty --------
 	check("ring size", main.ring_cells.size(), 8)
-	check("board is 3x3", [main.board_w, main.board_h], [3, 3])
+	check("starting side lengths are 3/2/2/1",
+		[main.side_len["top"], main.side_len["right"], main.side_len["bottom"], main.side_len["left"]],
+		[3, 2, 2, 1])
 	# The four corner warps are the quarter points of whatever ring exists,
 	# resolved live off the current board size (see _warp_face_step).
 	check("top-left corner warps to step 0", main._warp_face_step(main.CORNER_TL), 0)
