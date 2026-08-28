@@ -21,12 +21,13 @@ func _init() -> void:
 
 	# --- the board is eight squares, and none of them are empty --------
 	check("ring size", main.ring_cells.size(), 8)
-	check("board is 3x3", [main.BOARD_W, main.BOARD_H], [3, 3])
-	# The four corner warps are the quarter points of whatever ring exists.
-	check("top-left corner warps to step 0", main.WARP_FACES[main.CORNER_TL]["step"], 0)
-	check("top-right corner warps to step 2", main.WARP_FACES[main.CORNER_TR]["step"], 2)
-	check("bottom-right corner warps to step 4", main.WARP_FACES[main.CORNER_BR]["step"], 4)
-	check("bottom-left corner warps to step 6", main.WARP_FACES[main.CORNER_BL]["step"], 6)
+	check("board is 3x3", [main.board_w, main.board_h], [3, 3])
+	# The four corner warps are the quarter points of whatever ring exists,
+	# resolved live off the current board size (see _warp_face_step).
+	check("top-left corner warps to step 0", main._warp_face_step(main.CORNER_TL), 0)
+	check("top-right corner warps to step 2", main._warp_face_step(main.CORNER_TR), 2)
+	check("bottom-right corner warps to step 4", main._warp_face_step(main.CORNER_BR), 4)
+	check("bottom-left corner warps to step 6", main._warp_face_step(main.CORNER_BL), 6)
 	var perimeter := true
 	for cell in main.ring_cells:
 		if cell.x != 0 and cell.x != 2 and cell.y != 0 and cell.y != 2:
@@ -86,7 +87,7 @@ func _init() -> void:
 func _corner_steps_distinct(main) -> bool:
 	var seen := {}
 	for face in [main.CORNER_TL, main.CORNER_TR, main.CORNER_BR, main.CORNER_BL]:
-		seen[main._normalize_step(int(main.WARP_FACES[face]["step"]))] = true
+		seen[main._normalize_step(main._warp_face_step(face))] = true
 	return seen.size() == 4
 
 func _ring_fully_tiled(main) -> bool:
