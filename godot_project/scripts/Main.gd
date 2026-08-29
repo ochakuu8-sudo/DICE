@@ -3003,10 +3003,40 @@ func _is_stop_cell(pos: Vector2i) -> bool:
 		return false
 	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) != "pass"
 
+# The tightest gap between two neighbouring squares anywhere on the
+# current board, in the same grid-unit space _side_render_pos works in.
+# Mirrors that function's per-side spacing exactly: top splits FRAME_SPAN
+# across n-1 gaps (it touches both its corners); right/bottom split it
+# across n gaps (each touches only its own corner); left splits it across
+# n+1 (it touches neither corner — see _board_cell_center). The smallest
+# of the four is what actually limits how big a token can be anywhere on
+# the board without two of them overlapping.
+func _min_cell_pitch() -> float:
+	var span: float = FRAME_TR.x - FRAME_TL.x
+	var pitch: float = span
+	for side in SIDE_NAMES:
+		var n: int = int(side_len[side])
+		var divisions: int
+		match side:
+			"top":
+				divisions = n - 1
+			"left":
+				divisions = n + 1
+			_:  # "right", "bottom"
+				divisions = n
+		pitch = min(pitch, span / float(max(divisions, 1)))
+	return pitch
+
 func _board_token_size() -> float:
 	var step := _board_spacing()
-	# Never smaller than a comfortable touch target.
-	return clamp(step * 0.58, 46.0, 74.0)
+	# Sized off the tightest pitch on the board, not a flat fraction of
+	# the frame — a side packed toward MAX_SIDE_LEN needs smaller tokens
+	# than a bare eight-square opening board does, and this is what makes
+	# that automatic instead of overlapping once the tightest side gets
+	# there. 0.45 of even the roomiest (eight-square) pitch is
+	# deliberately smaller than a token needs to be at that point, so the
+	# board has visible headroom to grow into from the very first square.
+	return clamp(_min_cell_pitch() * step * 0.45, 22.0, 56.0)
 
 func _board_spacing() -> float:
 	if board_view == null:
@@ -3507,17 +3537,22 @@ func _refresh_board() -> void:
 					button.disabled = true
 					dim = true
 			elif inserting:
-				# Every ring square is a valid anchor to insert after — no
-				# square is destroyed the way a replace-flow target can be —
-				# so every one gets the same "you can tap this" highlight,
-				# and the tapped one steps up to the gold "confirm" border.
-				# Its own tile stays exactly as it was; only the border
-				# changes.
-				border_color = COL_NEXT
-				border_width = 4
-				if pos == preview_place_pos:
-					border_color = COL_GOLD
-					border_width = 6
+				# Every ring square whose own side still has room is a
+				# valid anchor to insert after — no square is destroyed the
+				# way a replace-flow target can be — so it gets the same
+				# "you can tap this" highlight, and the tapped one steps up
+				# to the gold "confirm" border. Its own tile stays exactly
+				# as it was; only the border changes. A square on a side
+				# already at MAX_SIDE_LEN just dims instead: still legible,
+				# but not offered as a place to grow.
+				if _can_insert_after(pos):
+					border_color = COL_NEXT
+					border_width = 4
+					if pos == preview_place_pos:
+						border_color = COL_GOLD
+						border_width = 6
+				else:
+					dim = true
 			elif state == "player" and ahead <= 0 and not is_player_cell and not on_route:
 				# Out of reach this turn: still legible, just quieter. A
 				# square the considered die runs over is never quiet, even
@@ -6002,7 +6037,7 @@ func _load_run() -> bool:
 	var total := 0
 	for side in SIDE_NAMES:
 		var n: int = clampi(int(saved_len.get(side, starting_len[side])),
-			int(starting_len[side]), MAX_RING_LEN)
+			int(starting_len[side]), MAX_SIDE_LEN)
 		side_len[side] = n
 		total += n
 	# A corrupted or hand-edited save could claim a ring past the ceiling;
@@ -7525,6 +7560,14 @@ func _on_cell_pressed(index: int) -> void:
 	if state == "reward_insert":
 		if not ring_index_map.has(pos):
 			return
+		if not _can_insert_after(pos):
+			# On the ring, but its own side is already at MAX_SIDE_LEN —
+			# say so rather than silently ignoring the tap, since neighbouring
+			# squares on a different side may still be open.
+			sfx.emit("step")
+			_set_log(tr("%s列はこれ以上伸ばせません（上限%d）。他の列のマスをタップしてください。") % [
+				SIDE_NAME_JA[_side_of(pos)], MAX_SIDE_LEN])
+			return
 		# Tap once to see what growing there means, tap again to commit —
 		# same two-stage pattern as the replace flow below, since touch has
 		# no hover either way.
@@ -7577,7 +7620,9 @@ func _insert_preview_text(pos: Vector2i) -> String:
 	var parts := []
 	parts.append("%s %s：%s" % [
 		_t(tile["name"]), _trigger_label(str(tile["trigger"])), _t(tile["effect"])])
-	parts.append("%s列に挿し込みます（既存のマスは壊れません）" % SIDE_NAME_JA[_side_of(pos)])
+	var side := _side_of(pos)
+	parts.append("%s列に挿し込みます（既存のマスは壊れません、%s列 %d/%d）" % [
+		SIDE_NAME_JA[side], SIDE_NAME_JA[side], int(side_len[side]), MAX_SIDE_LEN])
 	var ahead := _steps_ahead(pos)
 	if ahead > 0:
 		parts.append("現在地から%dマス先の直後" % ahead)
@@ -7703,10 +7748,32 @@ func _build_track_graph() -> void:
 # most of its length filling in squares that were never really there —
 # and which side grows, and where in it, is the player's choice (see
 # _on_cell_pressed's "reward_insert" branch), not something this session
-# decides for them. Once the ring reaches MAX_RING_LEN, tile rewards fall
-# back to replacing an existing square instead.
+# decides for them. Two ceilings bound it: no side may pass MAX_SIDE_LEN
+# on its own — the fixed frame only has so much room before one side
+# packed with squares starts crowding out the others (see
+# _board_token_size) — and the ring as a whole may not pass MAX_RING_LEN
+# even if every side is still under its own cap. Once neither ceiling
+# leaves any room, tile rewards fall back to replacing an existing square
+# instead.
+const MAX_SIDE_LEN := 5
+
 func _can_grow_board() -> bool:
-	return ring_cells.size() < MAX_RING_LEN
+	if ring_cells.size() >= MAX_RING_LEN:
+		return false
+	for side in SIDE_NAMES:
+		if int(side_len[side]) < MAX_SIDE_LEN:
+			return true
+	return false
+
+# Whether growing the specific side after_pos sits on is currently open —
+# distinct from _can_grow_board, which only asks whether *some* side
+# still has room. A side already at MAX_SIDE_LEN can be full while
+# others are not, and the player still has to be told which taps land
+# and which don't.
+func _can_insert_after(after_pos: Vector2i) -> bool:
+	if ring_cells.size() >= MAX_RING_LEN or not ring_index_map.has(after_pos):
+		return false
+	return int(side_len[_side_of(after_pos)]) < MAX_SIDE_LEN
 
 # Which side a ring square belongs to — the one side_len entry that
 # growing "after" this square would extend.
@@ -7729,9 +7796,10 @@ const SIDE_NAME_JA := {"top": "上", "right": "右", "bottom": "下", "left": "�
 # placed three floors ago keeps the same neighbours it always had; it
 # just answers to a different grid position afterward, the same way it
 # already would after a save/load. Returns false (and changes nothing) if
-# the ring is already at its ceiling or after_pos is not on it.
+# after_pos's side is already at MAX_SIDE_LEN, the ring is already at
+# MAX_RING_LEN, or after_pos is not on the ring at all.
 func _grow_ring_with_tile(tile_id: String, after_pos: Vector2i) -> bool:
-	if not _can_grow_board() or not ring_index_map.has(after_pos):
+	if not _can_insert_after(after_pos):
 		return false
 	var side := _side_of(after_pos)
 	var insert_index: int = int(ring_index_map[after_pos]) + 1

@@ -1,11 +1,13 @@
 extends SceneTree
 
 # A tile reward grows the ring by exactly one square, at a square the
-# player taps, until the board hits its ceiling. This checks that growth
-# never loses or reorders a square the player already has, that it grows
-# only the tapped square's own side (column), that the schedule reaches
-# the ceiling one square at a time and stops there, and that the corner
-# warps keep resolving to real squares on an asymmetrically grown board.
+# player taps, until either that square's own side or the ring as a
+# whole hits its ceiling. This checks that growth never loses or
+# reorders a square the player already has, that it grows only the
+# tapped square's own side (column), that a side stops accepting
+# insertions at MAX_SIDE_LEN while others still can, that the ring as a
+# whole stops at MAX_RING_LEN, and that the corner warps keep resolving
+# to real squares on an asymmetrically grown board.
 
 var fails := 0
 
@@ -58,17 +60,33 @@ func _init() -> void:
 	without_new.remove_at(4)
 	check("every old square survives, in its old order", without_new, before)
 
-	# --- repeated growth on one side stays consistent, and stops at cap -
-	var sizes := [after.size()]
+	# --- a single side stops at MAX_SIDE_LEN, well before the ring's own
+	# ceiling, while the other three still have room -----------------
+	var left_sizes := []
+	while true:
+		var left_cell: Vector2i = _find_side_cell(main, "left")
+		if not main._grow_ring_with_tile("strike", left_cell):
+			break
+		left_sizes.append(int(main.side_len["left"]))
+	check("left grows one at a time up to MAX_SIDE_LEN",
+		left_sizes, range(2, main.MAX_SIDE_LEN + 1))
+	check("left itself is now capped", int(main.side_len["left"]), main.MAX_SIDE_LEN)
+	check("a capped side refuses further insertion",
+		main._can_insert_after(_find_side_cell(main, "left")), false)
+	check("the board overall can still grow — other sides have room",
+		main._can_grow_board(), true)
+	check("growing a still-open side succeeds even though left is capped",
+		main._grow_ring_with_tile("strike", _find_side_cell(main, "top")), true)
+
+	# --- spread across sides, growth still reaches the ring's own ceiling
 	while main._can_grow_board():
-		var last: Vector2i = main.ring_cells[main.ring_cells.size() - 1]
-		main._grow_ring_with_tile("strike", last)
-		sizes.append(main.ring_cells.size())
-	check("growth reaches the ceiling one square at a time",
-		sizes, range(9, 17))
+		var cell := _any_growable_cell(main)
+		main._grow_ring_with_tile("strike", cell)
+	check("the ring reaches its own ceiling", main.ring_cells.size(), main.MAX_RING_LEN)
+	check("no side exceeds MAX_SIDE_LEN even at the ring ceiling",
+		_max_side_len(main) <= main.MAX_SIDE_LEN, true)
 	check("no further growth once capped",
 		main._grow_ring_with_tile("strike", main.ring_cells[0]), false)
-	check("the ring stays at the ceiling", main.ring_cells.size(), main.MAX_RING_LEN)
 
 	# --- corners still resolve on an asymmetrically grown board ---------
 	check("top-left corner is still the start", main._warp_face_step(main.CORNER_TL), 0)
@@ -85,6 +103,24 @@ func _ring_content(main) -> Array:
 	for cell in main.ring_cells:
 		out.append(str(main.permanent_board[cell.y][cell.x]))
 	return out
+
+func _find_side_cell(main, side: String) -> Vector2i:
+	for cell in main.ring_cells:
+		if main._side_of(cell) == side:
+			return cell
+	return main.ring_cells[0]
+
+func _any_growable_cell(main) -> Vector2i:
+	for cell in main.ring_cells:
+		if main._can_insert_after(cell):
+			return cell
+	return main.ring_cells[0]
+
+func _max_side_len(main) -> int:
+	var m := 0
+	for side in main.SIDE_NAMES:
+		m = max(m, int(main.side_len[side]))
+	return m
 
 func _corners_distinct(main) -> bool:
 	var seen := {}
@@ -116,11 +152,24 @@ func _reward_flow_case() -> void:
 		main.ring_cells.size(), before_len + 1)
 	check("confirming returns to the map", main.state, "map")
 
-	# Force the board to its ceiling, then confirm the same reward now
-	# asks for a replacement instead of an insertion point.
+	# A capped side's own square refuses the tap outright — no preview,
+	# no growth — while an open side right next to it still works.
+	while main._can_insert_after(_find_side_cell(main, "left")):
+		main._grow_ring_with_tile("strike", _find_side_cell(main, "left"))
+	main._on_reward_selected("strike", "斬撃マス")
+	var capped_cell: Vector2i = _find_side_cell(main, "left")
+	var len_before_tap: int = main.ring_cells.size()
+	main._on_cell_pressed(main._idx(capped_cell.x, capped_cell.y))
+	check("tapping a capped side's square does not start a preview",
+		main.preview_place_pos, Vector2i(-1, -1))
+	check("tapping a capped side's square does not grow the ring",
+		main.ring_cells.size(), len_before_tap)
+
+	# Force the board to its ring-wide ceiling, spreading growth across
+	# sides so MAX_SIDE_LEN is never what stops it, then confirm the same
+	# reward now asks for a replacement instead of an insertion point.
 	while main._can_grow_board():
-		var last: Vector2i = main.ring_cells[main.ring_cells.size() - 1]
-		main._grow_ring_with_tile("strike", last)
+		main._grow_ring_with_tile("strike", _any_growable_cell(main))
 	main._on_reward_selected("respite", "息継ぎマス")
 	check("a reward at the ceiling falls back to replacement",
 		main.state, "reward_place")
