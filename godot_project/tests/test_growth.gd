@@ -95,6 +95,10 @@ func _init() -> void:
 	# --- reward flow: tap to grow below the ceiling, replace at cap -----
 	await _reward_flow_case()
 
+	# --- the preview shows the real post-insert layout, not a ghost
+	# dropped into today's gap while its neighbours stay put ------------
+	await _preview_layout_case()
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
 
@@ -194,3 +198,70 @@ func _reward_flow_case() -> void:
 	check("a reward at the ceiling falls back to replacement",
 		main.state, "reward_place")
 	check("the ring does not grow past the ceiling", main.ring_cells.size(), main.MAX_RING_LEN)
+
+# A previewed insert used to drop a ghost into today's gap while every
+# other square on that side stayed exactly where it already was — right
+# up until confirming, when they all jumped to their real post-insert
+# spot at once. The preview should show that final, evenly-spaced layout
+# from the first tap: every square on the tapped side answers
+# _board_cell_center with where it will actually sit once there is one
+# more square to fit in, and the new square's own ghost sits in the one
+# slot nothing else owns yet.
+func _preview_layout_case() -> void:
+	var main = load("res://scripts/Main.gd").new()
+	root.add_child(main)
+	await process_frame
+	await process_frame
+	main._start_run("knight")
+
+	# top is 3 squares at ring_cells[0..2]; right is 2 at ring_cells[3..4].
+	var top_before := [
+		main._board_cell_center(main.ring_cells[0]),
+		main._board_cell_center(main.ring_cells[1]),
+		main._board_cell_center(main.ring_cells[2]),
+	]
+	var right_before: Vector2 = main._board_cell_center(main.ring_cells[3])
+
+	main._on_reward_selected("strike", "斬撃マス")
+	main._on_gap_pressed(0)  # the gap right after ring_cells[0], on top
+
+	# top grows from 3 squares to 4: the square before the tapped gap
+	# keeps its slot, the ghost takes the new one right after it, and
+	# both squares that were after the gap shift up by one slot each. Top
+	# is the one side that touches both of the frame's fixed corners
+	# (nothing else does — see _side_render_pos), so ring_cells[2] is a
+	# corner itself before and after: it is the one square on this side
+	# unmoved for a different reason than ring_cells[0] is.
+	check("the square before the tap keeps its own slot in the new layout",
+		main._board_cell_center(main.ring_cells[0]),
+		main._board_origin() + main._side_render_pos("top", 0, 4) * main._board_spacing())
+	check("the ghost takes the slot right after the tap",
+		main._preview_ghost_center(),
+		main._board_origin() + main._side_render_pos("top", 1, 4) * main._board_spacing())
+	check("the square after the tap shifts into the next slot",
+		main._board_cell_center(main.ring_cells[1]),
+		main._board_origin() + main._side_render_pos("top", 2, 4) * main._board_spacing())
+	check("the square after the tap actually moved from where it opened",
+		main._board_cell_center(main.ring_cells[1]) != top_before[1], true)
+	check("the last square on top is still the fixed top-right corner",
+		main._board_cell_center(main.ring_cells[2]), top_before[2])
+
+	# Every previewed position is distinct — nothing overlaps mid-preview.
+	var previewed := [
+		main._board_cell_center(main.ring_cells[0]), main._preview_ghost_center(),
+		main._board_cell_center(main.ring_cells[1]), main._board_cell_center(main.ring_cells[2]),
+	]
+	var distinct := {}
+	for p in previewed:
+		distinct[p] = true
+	check("all four top-side slots in the preview are distinct positions",
+		distinct.size(), 4)
+
+	# right is a different side; growing top must not move it.
+	check("a square on an unrelated side does not move during the preview",
+		main._board_cell_center(main.ring_cells[3]), right_before)
+
+	# Cancelling (tapping a square) restores the pre-preview layout.
+	main._on_cell_pressed(main._idx(main.ring_cells[0].x, main.ring_cells[0].y))
+	check("cancelling the preview restores the square that had moved",
+		main._board_cell_center(main.ring_cells[1]), top_before[1])

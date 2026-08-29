@@ -3139,6 +3139,12 @@ func _side_render_pos(side: String, index: int, count: int) -> Vector2:
 		_:  # "left"
 			return FRAME_BL.lerp(FRAME_TL, float(index + 1) / float(count + 1))
 
+# While a gap is previewed (see _on_gap_pressed), every square already on
+# that gap's side answers here with where it will sit AFTER the insert —
+# not where it sits now — so the preview shows the real outcome: the
+# whole column re-spacing to fit one more square, not a ghost dropped
+# into today's gap while its neighbours stay put. Squares on every other
+# side are untouched, because growing one side never moves another's.
 func _board_cell_center(pos: Vector2i) -> Vector2:
 	var origin := _board_origin()
 	var step := _board_spacing()
@@ -3146,8 +3152,26 @@ func _board_cell_center(pos: Vector2i) -> Vector2:
 	if idx < 0 or idx >= ring_side.size():
 		return origin
 	var side: String = ring_side[idx]
-	var rel := _side_render_pos(side, ring_side_index[idx], int(side_len[side]))
+	var local: int = ring_side_index[idx]
+	var count: int = int(side_len[side])
+	if preview_gap_index >= 0 and preview_gap_index < ring_side.size() \
+			and ring_side[preview_gap_index] == side:
+		var insert_local: int = ring_side_index[preview_gap_index] + 1
+		count += 1
+		if local >= insert_local:
+			local += 1
+	var rel := _side_render_pos(side, local, count)
 	return origin + rel * step
+
+# Where the previewed gap's new square itself belongs, under the same
+# post-insert layout _board_cell_center now answers every other square on
+# that side with — the one slot no existing ring cell owns yet.
+func _preview_ghost_center() -> Vector2:
+	var side: String = ring_side[preview_gap_index]
+	var insert_local: int = ring_side_index[preview_gap_index] + 1
+	var count: int = int(side_len[side]) + 1
+	var rel := _side_render_pos(side, insert_local, count)
+	return _board_origin() + rel * _board_spacing()
 
 # --- small builders ----------------------------------------------------
 
@@ -3642,12 +3666,35 @@ func _refresh_gap_buttons() -> void:
 	var inserting: bool = state == "reward_insert"
 	var n := ring_cells.size()
 	var token := _board_token_size()
+	# Only one gap is ever a live decision at a time, and the moment one is
+	# previewed its whole side re-spaces around it (_board_cell_center) —
+	# every other marker's "current" position would already be wrong for
+	# the layout on screen, so every other marker simply steps aside until
+	# this one is confirmed or cancelled.
+	var previewing: bool = preview_gap_index >= 0
 	for i in range(gap_buttons.size()):
 		var button: Button = gap_buttons[i]
 		var icon: IconGlyph = gap_icons[i]
-		if not inserting or i >= n:
+		if not inserting or i >= n or (previewing and i != preview_gap_index):
 			button.visible = false
 			button.disabled = true
+			continue
+		if i == preview_gap_index:
+			# The preview: the actual reward tile, at its real size, sitting
+			# exactly where it will land once every square on this side has
+			# re-spaced to make room for it — not just dropped into today's
+			# gap while its neighbours stay where they were.
+			button.visible = true
+			button.disabled = false
+			var tile: Dictionary = tile_defs.get(pending_reward_type, {})
+			var size := token
+			var center := _preview_ghost_center()
+			button.position = center - Vector2(size, size) * 0.5
+			button.size = Vector2(size, size)
+			icon.set_kind(str(tile.get("icon", "")))
+			icon.glyph_color = Color(1.0, 0.97, 0.90, 1.0)
+			icon.outline_color = COL_INK
+			_style_gap_button(button, Color(tile.get("color", COL_GOLD)), COL_GOLD, 6, size)
 			continue
 		var after_pos: Vector2i = ring_cells[i]
 		if not _can_insert_after(after_pos):
@@ -3659,28 +3706,16 @@ func _refresh_gap_buttons() -> void:
 		var a := _board_cell_center(after_pos)
 		var b := _board_cell_center(ring_cells[(i + 1) % n])
 		var mid := (a + b) * 0.5
-		if i == preview_gap_index:
-			# The preview: the actual reward tile, at its real size, right
-			# where it will land.
-			var tile: Dictionary = tile_defs.get(pending_reward_type, {})
-			var size := token
-			button.position = mid - Vector2(size, size) * 0.5
-			button.size = Vector2(size, size)
-			icon.set_kind(str(tile.get("icon", "")))
-			icon.glyph_color = Color(1.0, 0.97, 0.90, 1.0)
-			icon.outline_color = COL_INK
-			_style_gap_button(button, Color(tile.get("color", COL_GOLD)), COL_GOLD, 6, size)
-		else:
-			# At rest: a small "you can insert here" marker, deliberately
-			# smaller than a real square so it reads as a seam rather than
-			# a square of its own.
-			var size := token * 0.46
-			button.position = mid - Vector2(size, size) * 0.5
-			button.size = Vector2(size, size)
-			icon.set_kind("plus")
-			icon.glyph_color = COL_TEXT_ON_DARK
-			icon.outline_color = COL_INK
-			_style_gap_button(button, COL_NEXT, COL_INK, 3, size)
+		# At rest: a small "you can insert here" marker, deliberately
+		# smaller than a real square so it reads as a seam rather than a
+		# square of its own.
+		var size := token * 0.46
+		button.position = mid - Vector2(size, size) * 0.5
+		button.size = Vector2(size, size)
+		icon.set_kind("plus")
+		icon.glyph_color = COL_TEXT_ON_DARK
+		icon.outline_color = COL_INK
+		_style_gap_button(button, COL_NEXT, COL_INK, 3, size)
 
 func _style_gap_button(button: Button, fill: Color, border: Color, border_width: int, size: float) -> void:
 	var box := StyleBoxFlat.new()
