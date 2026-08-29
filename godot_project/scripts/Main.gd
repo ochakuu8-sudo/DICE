@@ -287,6 +287,8 @@ class IconGlyph:
 				_disc(c, s * 0.34, col, grow)
 			"pip_off":
 				_ring(c, s * 0.30, s * 0.09, col, grow)
+			"plus":
+				_plus(c, s, col, grow)
 
 	# --- primitives ---
 	func _poly(pts: PackedVector2Array, col: Color, grow: float) -> void:
@@ -410,6 +412,13 @@ class IconGlyph:
 	func _focus(c: Vector2, s: float, col: Color, grow: float) -> void:
 		_ring(c, s * 0.30, s * 0.08, col, grow)
 		_disc(c, s * 0.12, col, grow)
+
+	# The insertion gap marker: an unambiguous "add here", not borrowed
+	# from any tile's own iconography — nothing this shape is drawn for
+	# elsewhere on the board.
+	func _plus(c: Vector2, s: float, col: Color, grow: float) -> void:
+		_stroke(c + Vector2(-0.26, 0.0) * s, c + Vector2(0.26, 0.0) * s, s * 0.14, col, grow)
+		_stroke(c + Vector2(0.0, -0.26) * s, c + Vector2(0.0, 0.26) * s, s * 0.14, col, grow)
 
 	func _skull(c: Vector2, s: float, col: Color, grow: float) -> void:
 		_disc(c + Vector2(0.0, -0.06) * s, s * 0.30, col, grow)
@@ -1209,6 +1218,14 @@ var cell_step_labels: Array = []
 var cell_value_labels: Array = []
 var cell_danger_labels: Array = []
 var cell_debuff_labels: Array = []
+# One marker per possible gap between two ring squares (MAX_RING_LEN of
+# them, built once like cell_buttons — see _build_board_zone), shown only
+# during "reward_insert". Indexed by ring order: gap_buttons[i] sits
+# between ring_cells[i] and ring_cells[i+1], and tapping it inserts after
+# ring_cells[i] — the same operation a cell tap used to trigger, just
+# aimed at the seam between two squares instead of at a square itself.
+var gap_buttons: Array = []
+var gap_icons: Array = []
 
 # --- state -------------------------------------------------------------
 var state := "title"
@@ -1280,6 +1297,11 @@ var combo := 0
 var pending_reward_type := ""
 var pending_reward_name := ""
 var preview_place_pos := Vector2i(-1, -1)
+# Which gap marker (a ring-order index, see gap_buttons) is currently
+# previewed for insertion, or -1 for none. Separate from
+# preview_place_pos, which is the "reward_place" replace-flow's own
+# single-cell preview and never means the same thing.
+var preview_gap_index := -1
 # Both of the game's committing taps are two-stage: the first one shows what
 # the tap would do, the second one does it. Touch has no hover, so a preview
 # has to be a tap — and the alternative, committing on the first one, means
@@ -2487,6 +2509,29 @@ func _build_board_zone() -> void:
 		cell.add_child(debuff_label)
 		cell_debuff_labels.append(debuff_label)
 
+	# One marker per gap the ring could ever have (see gap_buttons above),
+	# built once at the ceiling and repositioned every layout pass exactly
+	# like the cell buttons are. Drawn above the cells (added after them,
+	# and Control children paint in sibling order) so a marker is never
+	# hidden under the squares it sits between.
+	for i in range(MAX_RING_LEN):
+		var gap := Button.new()
+		gap.focus_mode = Control.FOCUS_NONE
+		gap.mouse_filter = Control.MOUSE_FILTER_STOP
+		gap.pressed.connect(Callable(self, "_on_gap_pressed").bind(i))
+		board_view.add_child(gap)
+		gap_buttons.append(gap)
+
+		var gap_icon := IconGlyph.new()
+		gap_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		gap_icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+		gap_icon.offset_left = 4
+		gap_icon.offset_top = 3
+		gap_icon.offset_right = -4
+		gap_icon.offset_bottom = -7
+		gap.add_child(gap_icon)
+		gap_icons.append(gap_icon)
+
 	# The ring's middle is the one piece of free space on the board, so the
 	# lookahead lives there — right next to the road it describes, instead
 	# of floating above the board as an unlabelled row of chips.
@@ -2968,6 +3013,10 @@ func _layout_board_buttons() -> void:
 			var span: float = token if _is_stop_cell(Vector2i(x, y)) else token * 0.84
 			button.position = center - Vector2(span, span) * 0.5
 			button.size = Vector2(span, span)
+	# Gap markers sit between cell centres, so their own positions have to
+	# follow every layout pass a cell's does — a window resize with no
+	# other refresh in between must not leave them pointing at stale seams.
+	_refresh_gap_buttons()
 	_layout_ribbon()
 	if token_view != null:
 		token_view.queue_redraw()
@@ -3537,21 +3586,13 @@ func _refresh_board() -> void:
 					button.disabled = true
 					dim = true
 			elif inserting:
-				# Every ring square whose own side still has room is a
-				# valid anchor to insert after — no square is destroyed the
-				# way a replace-flow target can be — so it gets the same
-				# "you can tap this" highlight, and the tapped one steps up
-				# to the gold "confirm" border. Its own tile stays exactly
-				# as it was; only the border changes. A square on a side
-				# already at MAX_SIDE_LEN just dims instead: still legible,
-				# but not offered as a place to grow.
-				if _can_insert_after(pos):
-					border_color = COL_NEXT
-					border_width = 4
-					if pos == preview_place_pos:
-						border_color = COL_GOLD
-						border_width = 6
-				else:
+				# The tap target during insertion is the gap between two
+				# squares (gap_buttons/_refresh_gap_buttons), not a square
+				# itself, so a square's own styling here only has one job:
+				# a side already at MAX_SIDE_LEN dims to show it is not
+				# accepting new squares, the same reason a gap marker on
+				# that side does not exist at all right now.
+				if not _can_insert_after(pos):
 					dim = true
 			elif state == "player" and ahead <= 0 and not is_player_cell and not on_route:
 				# Out of reach this turn: still legible, just quieter. A
@@ -3586,6 +3627,85 @@ func _refresh_board() -> void:
 			_apply_cell_style(button, color, border_color, border_width, dim, trigger)
 	_refresh_ribbon()
 	board_view.queue_redraw()
+
+# The insertion tap targets: one marker in the seam between each pair of
+# ring-adjacent squares, visible only during "reward_insert" and only
+# where the square before it can still grow (see _can_insert_after) — a
+# side already at MAX_SIDE_LEN has no marker after any of its squares.
+# The previewed gap swells to roughly the size a real square would be and
+# wears the offered tile's own colour and icon, so confirming answers
+# "where does this actually land" by showing the thing itself rather than
+# describing it.
+func _refresh_gap_buttons() -> void:
+	if gap_buttons.is_empty():
+		return
+	var inserting: bool = state == "reward_insert"
+	var n := ring_cells.size()
+	var token := _board_token_size()
+	for i in range(gap_buttons.size()):
+		var button: Button = gap_buttons[i]
+		var icon: IconGlyph = gap_icons[i]
+		if not inserting or i >= n:
+			button.visible = false
+			button.disabled = true
+			continue
+		var after_pos: Vector2i = ring_cells[i]
+		if not _can_insert_after(after_pos):
+			button.visible = false
+			button.disabled = true
+			continue
+		button.visible = true
+		button.disabled = false
+		var a := _board_cell_center(after_pos)
+		var b := _board_cell_center(ring_cells[(i + 1) % n])
+		var mid := (a + b) * 0.5
+		if i == preview_gap_index:
+			# The preview: the actual reward tile, at its real size, right
+			# where it will land.
+			var tile: Dictionary = tile_defs.get(pending_reward_type, {})
+			var size := token
+			button.position = mid - Vector2(size, size) * 0.5
+			button.size = Vector2(size, size)
+			icon.set_kind(str(tile.get("icon", "")))
+			icon.glyph_color = Color(1.0, 0.97, 0.90, 1.0)
+			icon.outline_color = COL_INK
+			_style_gap_button(button, Color(tile.get("color", COL_GOLD)), COL_GOLD, 6, size)
+		else:
+			# At rest: a small "you can insert here" marker, deliberately
+			# smaller than a real square so it reads as a seam rather than
+			# a square of its own.
+			var size := token * 0.46
+			button.position = mid - Vector2(size, size) * 0.5
+			button.size = Vector2(size, size)
+			icon.set_kind("plus")
+			icon.glyph_color = COL_TEXT_ON_DARK
+			icon.outline_color = COL_INK
+			_style_gap_button(button, COL_NEXT, COL_INK, 3, size)
+
+func _style_gap_button(button: Button, fill: Color, border: Color, border_width: int, size: float) -> void:
+	var box := StyleBoxFlat.new()
+	box.bg_color = fill
+	box.border_color = border
+	var radius: int = int(size * 0.5)
+	box.border_width_left = border_width
+	box.border_width_top = border_width
+	box.border_width_right = border_width
+	box.border_width_bottom = border_width
+	box.corner_radius_top_left = radius
+	box.corner_radius_top_right = radius
+	box.corner_radius_bottom_left = radius
+	box.corner_radius_bottom_right = radius
+	box.shadow_color = Color(0.16, 0.12, 0.08, 0.30)
+	box.shadow_size = 4
+	box.shadow_offset = Vector2(0, 3)
+	button.add_theme_stylebox_override("normal", box)
+	var hover := box.duplicate()
+	hover.bg_color = fill.lightened(0.12)
+	button.add_theme_stylebox_override("hover", hover)
+	var pressed := box.duplicate()
+	pressed.bg_color = fill.darkened(0.10)
+	pressed.shadow_size = 0
+	button.add_theme_stylebox_override("pressed", pressed)
 
 # The number printed on a square, derived from its effects rather than a
 # separate hand-maintained field, so a tile can never show one thing and do
@@ -7479,17 +7599,18 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	pending_reward_type = tile_type
 	pending_reward_name = tile_name
 	preview_place_pos = Vector2i(-1, -1)
+	preview_gap_index = -1
 	_close_overlay()
 	# Below the board's ceiling, a tile reward grows the ring instead of
 	# asking where to overwrite — there is nothing on the board yet worth
-	# destroying for it. The player still picks the exact spot: which
-	# square to grow in after. Only once the board is as long as it ever
-	# gets does placement fall back to picking an existing square to
-	# replace instead.
+	# destroying for it. The player still picks the exact spot: which gap
+	# between two squares to grow into. Only once the board is as long as
+	# it ever gets does placement fall back to picking an existing square
+	# to replace instead.
 	if _can_grow_board():
 		state = "reward_insert"
 		_set_banner(tr("%s を挿し込む場所をタップ") % tile_name)
-		_set_log(tr("タップしたマスの直後に1マス加わります。既存のマスは壊れません。"))
+		_set_log(tr("マスとマスの間をタップすると、そこに1マス加わります。既存のマスは壊れません。"))
 		_refresh_all()
 		return
 	state = "reward_place"
@@ -7504,7 +7625,7 @@ func _confirm_insert(pos: Vector2i) -> void:
 	var side := _side_of(pos)
 	if not _grow_ring_with_tile(pending_reward_type, pos):
 		return
-	preview_place_pos = Vector2i(-1, -1)
+	preview_gap_index = -1
 	_hide_banner()
 	sfx.emit("reward")
 	_set_log(tr("%s を%s列に挿し込んだ（全%dマス）。") % [
@@ -7558,27 +7679,21 @@ func _on_cell_pressed(index: int) -> void:
 	# renumbered when the ring grows.
 	var pos := Vector2i(index % MAX_BOARD_W, int(index / MAX_BOARD_W))
 	if state == "reward_insert":
-		if not ring_index_map.has(pos):
-			return
-		if not _can_insert_after(pos):
-			# On the ring, but its own side is already at MAX_SIDE_LEN —
-			# say so rather than silently ignoring the tap, since neighbouring
-			# squares on a different side may still be open.
+		# Insertion is chosen by tapping the gap between two squares (see
+		# _on_gap_pressed), not a square itself — a square only offers to
+		# be looked at here, the same as it does outside any reward flow.
+		# Tapping one while a gap is previewed cancels that preview, the
+		# same way tapping the board cancels a considered die below.
+		if preview_gap_index != -1:
+			preview_gap_index = -1
+			_hide_banner()
 			sfx.emit("step")
-			_set_log(tr("%s列はこれ以上伸ばせません（上限%d）。他の列のマスをタップしてください。") % [
-				SIDE_NAME_JA[_side_of(pos)], MAX_SIDE_LEN])
+			_set_log(tr("挿し込みをやめました。マスとマスの間をタップしてください。"))
+			_refresh_all()
 			return
-		# Tap once to see what growing there means, tap again to commit —
-		# same two-stage pattern as the replace flow below, since touch has
-		# no hover either way.
-		if preview_place_pos != pos:
-			preview_place_pos = pos
-			sfx.emit("step")
-			_set_banner(tr("ここに挿し込む？ もう一度タップで確定"))
-			_set_log(_insert_preview_text(pos))
-			_refresh_board()
-			return
-		_confirm_insert(pos)
+		if ring_index_map.has(pos):
+			_show_cell_info(pos)
+		return
 	elif state == "reward_place":
 		if not _can_place_reward(pos):
 			return
@@ -7611,6 +7726,26 @@ func _on_cell_pressed(index: int) -> void:
 			_set_log(tr("ダイスを戻しました。もう一度ダイスを選んでください。"))
 			_refresh_all()
 		_show_cell_info(pos)
+
+# gap_buttons[i] is the marker between ring_cells[i] and its successor;
+# tapping it previews (then, tapped again, confirms) inserting after
+# ring_cells[i] — the "after" cell is looked up fresh here rather than
+# captured at button-build time, since which square sits at ring index i
+# changes as the ring grows.
+func _on_gap_pressed(i: int) -> void:
+	if state != "reward_insert" or i < 0 or i >= ring_cells.size():
+		return
+	var after_pos: Vector2i = ring_cells[i]
+	if not _can_insert_after(after_pos):
+		return
+	if preview_gap_index != i:
+		preview_gap_index = i
+		sfx.emit("step")
+		_set_banner(tr("ここに挿し込む？ もう一度タップで確定"))
+		_set_log(_insert_preview_text(after_pos))
+		_refresh_board()
+		return
+	_confirm_insert(after_pos)
 
 # The insertion equivalent of _place_preview_text — no destruction warning,
 # because insertion never overwrites anything: the tapped square keeps its

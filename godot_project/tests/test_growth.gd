@@ -139,30 +139,50 @@ func _reward_flow_case() -> void:
 	main._on_reward_selected("respite", "息継ぎマス")
 	check("a reward below the ceiling asks where to insert, not where to replace",
 		main.state, "reward_insert")
-	check("the ring has not grown yet — a spot still has to be tapped",
+	check("the ring has not grown yet — a gap still has to be tapped",
 		main.ring_cells.size(), before_len)
+	check("a gap marker exists after every square whose side is open",
+		main.gap_buttons[0].visible, true)
 
+	# Insertion is a gap between two squares now, not a square itself —
+	# tapping a square only inspects it.
 	var target: Vector2i = main.ring_cells[2]
 	main._on_cell_pressed(main._idx(target.x, target.y))
-	check("the first tap previews without growing the ring",
+	check("tapping a square does not start an insertion preview",
+		main.preview_gap_index, -1)
+
+	main._on_gap_pressed(2)
+	check("the first gap tap previews without growing the ring",
 		main.ring_cells.size(), before_len)
-	check("the first tap marks the previewed square", main.preview_place_pos, target)
+	check("the first gap tap marks that gap", main.preview_gap_index, 2)
+	check("the previewed gap swells to the size a real square would be",
+		main.gap_buttons[2].size, Vector2(main._board_token_size(), main._board_token_size()))
+
+	# Tapping a square while a gap is previewed cancels the preview
+	# instead of doing nothing, the same way tapping the board cancels a
+	# considered die.
 	main._on_cell_pressed(main._idx(target.x, target.y))
-	check("the second tap confirms the insertion",
+	check("tapping a square cancels an active gap preview", main.preview_gap_index, -1)
+
+	main._on_gap_pressed(2)
+	main._on_gap_pressed(2)
+	check("the second tap on the same gap confirms the insertion",
 		main.ring_cells.size(), before_len + 1)
 	check("confirming returns to the map", main.state, "map")
 
-	# A capped side's own square refuses the tap outright — no preview,
-	# no growth — while an open side right next to it still works.
+	# A capped side has no gap marker after any of its squares at all —
+	# while a gap right next to it, on an open side, still works.
 	while main._can_insert_after(_find_side_cell(main, "left")):
 		main._grow_ring_with_tile("strike", _find_side_cell(main, "left"))
 	main._on_reward_selected("strike", "斬撃マス")
-	var capped_cell: Vector2i = _find_side_cell(main, "left")
+	var capped_index: int = int(main.ring_index_map[_find_side_cell(main, "left")])
 	var len_before_tap: int = main.ring_cells.size()
-	main._on_cell_pressed(main._idx(capped_cell.x, capped_cell.y))
-	check("tapping a capped side's square does not start a preview",
-		main.preview_place_pos, Vector2i(-1, -1))
-	check("tapping a capped side's square does not grow the ring",
+	check("no gap marker follows a capped side's square",
+		main.gap_buttons[capped_index].visible, false)
+	main._on_gap_pressed(capped_index)
+	check("tapping where a capped side's marker would be does not preview",
+		main.preview_gap_index, -1)
+	check("tapping where a capped side's marker would be does not grow the ring",
 		main.ring_cells.size(), len_before_tap)
 
 	# Force the board to its ring-wide ceiling, spreading growth across
