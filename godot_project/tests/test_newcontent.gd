@@ -125,8 +125,13 @@ func wheel_case(main) -> void:
 	var predicted: Vector2i = main._landing_cell_for(9)
 	main.preview_die_index = 0
 	await main._on_die_pressed(0)
-	check("大車輪 9: walked nine squares",
-		((main.player_step - start) % main.ring_cells.size() + main.ring_cells.size()) % main.ring_cells.size(), 9)
+	# The ring is eight squares, so a 9 walks a full lap and one more: net
+	# travel is 1, but nine squares were entered and nine fired their
+	# pass effects. The count is the thing the die promises.
+	check("大車輪 9: walked nine squares", main.crossed_this_action, 9)
+	check("大車輪 9: which is one lap plus one on an eight-square ring",
+		((main.player_step - start) % main.ring_cells.size() + main.ring_cells.size()) % main.ring_cells.size(),
+		9 % main.ring_cells.size())
 	check("大車輪 9: landed where predicted", main.player_pos, predicted)
 	check("大車輪: charged 1 HP to swing", hp_before - main.player_hp, 1)
 

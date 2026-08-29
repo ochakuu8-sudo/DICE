@@ -76,5 +76,42 @@ func _init() -> void:
 	check("boss win advances the floor", main.floor_index, 2)
 	check("next floor has a fresh route map", main.map_nodes.size(), main.MAP_ROWS)
 
+	# --- the roster actually gets used --------------------------------
+	# Ramping one curve over the whole run left the first table entry
+	# unreachable (the opening row rounded past it) and clamped every
+	# non-boss node on floors 2 and 3 onto the same enemy.
+	check("the first battle of the run is the first enemy in the table",
+		_first_battle_enemy(main), 0)
+	for f in range(1, main.FLOOR_COUNT + 1):
+		check("floor %d fields more than one enemy" % f,
+			_floor_enemies(main, f).size() > 1, true)
+	var all_seen := {}
+	for f in range(1, main.FLOOR_COUNT + 1):
+		for idx in _floor_enemies(main, f):
+			all_seen[idx] = true
+	check("every enemy in the table is reachable across a run",
+		all_seen.size(), main.enemy_defs.size())
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
+
+# The enemy index the run's earliest battle node resolves to.
+func _first_battle_enemy(main) -> int:
+	for row in range(main.MAP_ROWS):
+		for raw in main.MAP_LAYOUT[row]:
+			var spec: Dictionary = raw
+			if str(spec["type"]) == "battle":
+				return main._pick_enemy_for(row, "battle")
+	return -1
+
+# Every distinct enemy index a given floor can field, boss included.
+func _floor_enemies(main, floor_index: int) -> Dictionary:
+	var seen := {}
+	for row in range(main.MAP_ROWS):
+		for raw in main.MAP_LAYOUT[row]:
+			var spec: Dictionary = raw
+			var kind := str(spec["type"])
+			if not (kind in ["battle", "elite", "boss"]):
+				continue
+			seen[main._pick_enemy_for(row + (floor_index - 1) * main.MAP_ROWS, kind)] = true
+	return seen

@@ -1,7 +1,36 @@
 extends Control
 
-const BOARD_W := 5
-const BOARD_H := 5
+# The track is a rectilinear loop built from four independent straight
+# runs — SIDE_NAMES — each with its own length in side_len. Growing a
+# side means growing side_len[name] by one. ring_cells only ever holds a
+# trivial, unique per-square key (see _build_track_graph) — it carries no
+# geometry of its own — because where a square actually sits on screen is
+# answered separately, by _board_cell_center, off ring_side/
+# ring_side_index and the four fixed frame corners there. That is what
+# lets a side grow completely on its own: it only ever gets denser
+# between its own two corners, never moves anyone else's square, and
+# never leaves the kind of seam a shared, moving corner would.
+#
+# MAX_BOARD_W/H is a different thing: a fixed ceiling sized once for the
+# button pool, the storage arrays, and every index that has to stay
+# stable for the run's whole lifetime (see _idx) — one row wide enough to
+# give every square up to MAX_RING_LEN its own trivial key. Nothing below
+# the ceiling ever needs to move a button or resize an array.
+const MAX_BOARD_W := 16
+const MAX_BOARD_H := 1
+const SIDE_NAMES := ["top", "right", "bottom", "left"]
+# The eight-square starting board, one length per side, clockwise from
+# the top-left start.
+var side_len := {"top": 3, "right": 2, "bottom": 2, "left": 1}
+# The frame every board is drawn into (see _board_cell_center) — fixed at
+# the starting board's own size and never recomputed, so the four corners
+# never move as side_len grows.
+var ring_extent := Vector2i(3, 3)
+# A tile reward grows the ring by exactly one square until the ring hits
+# this ceiling; past it, rewards fall back to replacing an existing
+# square. Sixteen is the size the very first version of a fully-tiled
+# board was checked against and read fine on screen.
+const MAX_RING_LEN := 16
 const ACTIONS_PER_TURN := 2
 const INITIAL_REROLLS := 1
 const FATIGUE_MAX := 100
@@ -9,31 +38,32 @@ const EXPLORE_FATIGUE_PER_MOVE := 2
 const BATTLE_DEFEAT_FATIGUE := 15
 # How many squares an enemy can keep fouled at once. Uncapped, a long
 # fight ended with most of the ring poisoned and the player's own board
-# invisible underneath it. Scaled with the ring: five of sixteen leaves the
-# same proportion of the board readable as four of twelve did.
-const MAX_DEBUFFS := 5
+# invisible underneath it. Scaled with the ring: two of eight keeps roughly
+# the proportion of readable board that five of sixteen did.
+const MAX_DEBUFFS := 2
 # Cards on screen at once. The fractional part is deliberate: it leaves a
 # sliver of the next card showing so the row reads as scrollable.
 const HAND_VISIBLE := 4.7
 const HAND_GAP := 7.0
 # A die face is normally the count of steps it moves you, signed for
 # direction — but some faces are not step counts at all: they warp the
-# piece straight to a fixed ring square, spending the action without
+# piece straight to a fixed board corner, spending the action without
 # walking it. Sentinels far outside any real rolled distance (±1-8) so
-# they can never collide with one, mapped to the ring step each warps to
-# and the short label its face and log line show instead of a number.
-# RING's four corners are steps 0/4/8/12 — see _build_track_graph.
+# they can never collide with one. Only the short label each shows instead
+# of a number lives here — which ring step a corner actually is depends on
+# the board's current size, so that is resolved live by _warp_face_step
+# rather than fixed at declaration time.
 const RESET_FACE := 99
 const CORNER_TL := 90
 const CORNER_TR := 91
 const CORNER_BR := 92
 const CORNER_BL := 93
 const WARP_FACES := {
-	RESET_FACE: {"label": "帰", "step": 0},
-	CORNER_TL: {"label": "左上", "step": 0},
-	CORNER_TR: {"label": "右上", "step": 4},
-	CORNER_BR: {"label": "右下", "step": 8},
-	CORNER_BL: {"label": "左下", "step": 12},
+	RESET_FACE: {"label": "帰"},
+	CORNER_TL: {"label": "左上"},
+	CORNER_TR: {"label": "右上"},
+	CORNER_BR: {"label": "右下"},
+	CORNER_BL: {"label": "左下"},
 }
 
 # Every size in this file is authored in these units, and the window's
@@ -1219,6 +1249,12 @@ var floor_index := 1
 var ring_cells: Array[Vector2i] = []
 var ring_index_map: Dictionary = {}
 var ring_forward: Dictionary = {}
+# Parallel to ring_cells: which of SIDE_NAMES a ring cell belongs to, so a
+# tapped square can be traced back to the one side_len entry it grows —
+# and its 0-based position within that side, which is all
+# _board_cell_center needs to place it on screen (see there).
+var ring_side: Array[String] = []
+var ring_side_index: Array[int] = []
 var preview_path: Array[Vector2i] = []
 
 var permanent_board: Array = []
@@ -1331,6 +1367,25 @@ var tile_defs := {
 		"trigger": "stop", "effect": "盾+1",
 		"effects": [{"on": "stop", "op": "shield", "amount": 1}],
 		"detail": "何も置いていないただの道。止まれば盾が1つだけ手に入る。"},
+	# The starting eight are all stop-type and all plain: one number, no
+	# condition, no counter. They are the yardstick the rest of the table is
+	# priced against — a stop-type square fires about once per action, so
+	# "6 damage" is what one action is worth before any build is on the
+	# board. 疾走 and the other pass-type kinds are read against a third of
+	# that, because a pass fires roughly three times as often (two actions
+	# times an average roll of three).
+	"strike": {"name": "斬撃", "kind": "基本", "color": Color("#C2453A"), "icon": "slash",
+		"trigger": "stop", "effect": "6ダメージ",
+		"effects": [{"on": "stop", "op": "attack", "amount": 6}],
+		"detail": "止まった相手を素直に斬る。条件も溜めもない、盤上のダメージの基準値。"},
+	"ward": {"name": "守り", "kind": "基本", "color": Color("#2E7BD6"), "icon": "guard",
+		"trigger": "stop", "effect": "盾+5",
+		"effects": [{"on": "stop", "op": "shield", "amount": 5}],
+		"detail": "腰を据えて受ける。盾はターン開始で消えるので、殴られるターンに合わせて止まること。"},
+	"respite": {"name": "息継ぎ", "kind": "基本", "color": Color("#3EA95E"), "icon": "heal",
+		"trigger": "stop", "effect": "HP+3",
+		"effects": [{"on": "stop", "op": "heal", "amount": 3}],
+		"detail": "HPは戦闘をまたいで持ち越すので、削られたぶんはここで返すしかない。盾と違って腐らない。"},
 
 	# --- 疾走: 通過型。1マスあたりは軽いが、長い出目で何枚も踏むほど伸びる ---
 	"slash": {"name": "斬撃路", "kind": "疾走", "color": Color("#E4453A"), "icon": "slash",
@@ -1860,13 +1915,14 @@ var hero_defs := {
 		"hand": 3,
 		"color": Color("#2E7BD6"),
 		"desc": "狙って止まり、重く殴る。攻撃と防御、両極端な二本を持って始まる。",
-		# The starting board is deliberately almost empty: the player should
-		# be the author of the ring, not the editor of someone else's.
 		"dice": ["normal", "normal", "blade", "guard_die"],
-		# Three evenly spaced anchors around the sixteen-square ring.
-		"tiles": [
-			[0, 0, "reroll_path"], [3, 0, "heavy"], [4, 3, "fort"], [1, 4, "heavy"]
-		]
+		# All eight squares of the ring, filled and in ring order (step 0 is
+		# the start). There is no such thing as an empty square to walk
+		# onto, so every action ends on something that pays. 攻撃3・防御3・
+		# 回復1・巡り路1, with attack and defence alternating so no roll
+		# can reach two of a kind in a row, and the one heal sitting
+		# opposite the start.
+		"tiles": ["reroll_path", "strike", "ward", "strike", "ward", "strike", "respite", "ward"]
 	},
 }
 
@@ -2335,19 +2391,20 @@ func _build_place_panel() -> void:
 func _refresh_place_panel() -> void:
 	if place_panel == null:
 		return
-	var placing: bool = state == "reward_place" and pending_reward_type != "" \
-		and tile_defs.has(pending_reward_type)
+	var placing: bool = (state == "reward_place" or state == "reward_insert") \
+		and pending_reward_type != "" and tile_defs.has(pending_reward_type)
 	place_panel.visible = placing
 	if not placing:
 		_place_card_type = ""
 		return
-	if _place_card_type == pending_reward_type:
+	var cache_key := "%s:%s" % [state, pending_reward_type]
+	if _place_card_type == cache_key:
 		return
-	_place_card_type = pending_reward_type
+	_place_card_type = cache_key
 	_clear_children(place_body)
 
 	var heading := _make_label(FS_HEAD, COL_TEXT, HORIZONTAL_ALIGNMENT_CENTER, true)
-	heading.text = tr("置くマス")
+	heading.text = tr("挿し込むマス") if state == "reward_insert" else tr("置くマス")
 	heading.autowrap_mode = TextServer.AUTOWRAP_OFF
 	place_body.add_child(heading)
 	place_body.add_child(_make_catalog_row(tile_defs[pending_reward_type]))
@@ -2363,7 +2420,9 @@ func _build_board_zone() -> void:
 	board_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	zone_board.add_child(board_view)
 
-	for i in range(BOARD_W * BOARD_H):
+	# Built once, at the run's ceiling size, and never resized: growth only
+	# changes which of these buttons the current ring uses (see _idx).
+	for i in range(MAX_BOARD_W * MAX_BOARD_H):
 		var cell := Button.new()
 		cell.focus_mode = Control.FOCUS_NONE
 		_apply_font(cell)
@@ -2894,8 +2953,12 @@ func _layout_board_buttons() -> void:
 	if board_view == null or cell_buttons.is_empty():
 		return
 	var token := _board_token_size()
-	for y in range(BOARD_H):
-		for x in range(BOARD_W):
+	# The whole pool, not just the active ring: an off-ring button's exact
+	# position never matters since _refresh_board hides it, and covering
+	# the full pool here keeps every index consistent with how _idx maps
+	# it, regardless of the ring's current size.
+	for y in range(MAX_BOARD_H):
+		for x in range(MAX_BOARD_W):
 			var index := _idx(x, y)
 			var button: Button = cell_buttons[index]
 			var center := _board_cell_center(Vector2i(x, y))
@@ -2915,7 +2978,7 @@ func _layout_board_buttons() -> void:
 		# the player to look at. It now wraps to the ring's interior — the
 		# same空 space the lookahead strip uses, and the two are never up at
 		# once.
-		var interior: float = max(_board_spacing() * float(BOARD_W - 2) - _board_token_size() - 16.0, 120.0)
+		var interior: float = max(_board_spacing() * float(ring_extent.x - 2) - _board_token_size() - 16.0, 120.0)
 		banner_label.custom_minimum_size = Vector2(interior, 0)
 		var wanted: Vector2 = banner.get_combined_minimum_size()
 		wanted.x = min(wanted.x, zone_board.size.x)
@@ -2929,7 +2992,7 @@ func _layout_ribbon() -> void:
 	var wanted: Vector2 = ribbon_box.get_combined_minimum_size()
 	ribbon_box.size = wanted
 	var step := _board_spacing()
-	var center := _board_origin() + Vector2(float(BOARD_W - 1), float(BOARD_H - 1)) * 0.5 * step
+	var center := _board_origin() + Vector2(float(ring_extent.x - 1), float(ring_extent.y - 1)) * 0.5 * step
 	ribbon_box.position = (center - wanted * 0.5).floor()
 
 func _is_stop_cell(pos: Vector2i) -> bool:
@@ -2940,27 +3003,102 @@ func _is_stop_cell(pos: Vector2i) -> bool:
 		return false
 	return str(tile_defs[str(permanent_board[pos.y][pos.x])]["trigger"]) != "pass"
 
+# The tightest gap between two neighbouring squares anywhere on the
+# current board, in the same grid-unit space _side_render_pos works in.
+# Mirrors that function's per-side spacing exactly: top splits FRAME_SPAN
+# across n-1 gaps (it touches both its corners); right/bottom split it
+# across n gaps (each touches only its own corner); left splits it across
+# n+1 (it touches neither corner — see _board_cell_center). The smallest
+# of the four is what actually limits how big a token can be anywhere on
+# the board without two of them overlapping.
+func _min_cell_pitch() -> float:
+	var span: float = FRAME_TR.x - FRAME_TL.x
+	var pitch: float = span
+	for side in SIDE_NAMES:
+		var n: int = int(side_len[side])
+		var divisions: int
+		match side:
+			"top":
+				divisions = n - 1
+			"left":
+				divisions = n + 1
+			_:  # "right", "bottom"
+				divisions = n
+		pitch = min(pitch, span / float(max(divisions, 1)))
+	return pitch
+
 func _board_token_size() -> float:
 	var step := _board_spacing()
-	# Never smaller than a comfortable touch target.
-	return clamp(step * 0.58, 46.0, 74.0)
+	# Sized off the tightest pitch on the board, not a flat fraction of
+	# the frame — a side packed toward MAX_SIDE_LEN needs smaller tokens
+	# than a bare eight-square opening board does, and this is what makes
+	# that automatic instead of overlapping once the tightest side gets
+	# there. 0.45 of even the roomiest (eight-square) pitch is
+	# deliberately smaller than a token needs to be at that point, so the
+	# board has visible headroom to grow into from the very first square.
+	return clamp(_min_cell_pitch() * step * 0.45, 22.0, 56.0)
 
 func _board_spacing() -> float:
 	if board_view == null:
 		return 64.0
 	var available := board_view.size - Vector2(72, 72)
-	var raw: float = min(available.x / float(BOARD_W - 1), available.y / float(BOARD_H - 1))
+	# ring_extent never changes — the frame is always the eight-square
+	# starting board's own size (see _board_cell_center) — so this is the
+	# same fixed spacing calculation the board has always used.
+	var raw: float = min(available.x / float(ring_extent.x - 1), available.y / float(ring_extent.y - 1))
 	return clamp(raw, 52.0, 132.0)
 
 func _board_origin() -> Vector2:
 	var step := _board_spacing()
-	var board_size := Vector2(step * float(BOARD_W - 1), step * float(BOARD_H - 1))
+	var board_size := Vector2(step * float(ring_extent.x - 1), step * float(ring_extent.y - 1))
 	return ((board_view.size - board_size) * 0.5).floor()
+
+# The four corners of the board — TL, TR, BR, BL, clockwise from the
+# start — never move: they sit at the corners of the fixed frame every
+# board opens on, the same square ring_extent has always described. A
+# side with more squares on it packs them more densely between its own
+# two corners; it does not stretch the frame to fit them. That is what
+# keeps two sides of very different lengths meeting cleanly instead of
+# leaving the long diagonal seam an earlier version of this board could
+# grow.
+#
+# Ownership of the four corners is not symmetric, and the interpolation
+# has to match it or a corner would be drawn twice (and a square skipped
+# elsewhere): top runs the whole first side, so it alone touches both TL
+# and TR. right and bottom each grow toward the one corner they end
+# on (BR, BL) without touching the corner before them, which belongs to
+# the side before it. left is the side that closes the loop back to the
+# start — TL already belongs to top — so left's squares sit strictly
+# between BL and TL, touching neither; how close they come depends only
+# on how many squares are on left, exactly as the original eight-square
+# board's own single left square always sat at the midpoint rather than
+# on either corner.
+const FRAME_TL := Vector2(0.0, 0.0)
+const FRAME_TR := Vector2(2.0, 0.0)
+const FRAME_BR := Vector2(2.0, 2.0)
+const FRAME_BL := Vector2(0.0, 2.0)
+
+func _side_render_pos(side: String, index: int, count: int) -> Vector2:
+	match side:
+		"top":
+			var t: float = float(index) / float(count - 1) if count > 1 else 0.0
+			return FRAME_TL.lerp(FRAME_TR, t)
+		"right":
+			return FRAME_TR.lerp(FRAME_BR, float(index + 1) / float(count))
+		"bottom":
+			return FRAME_BR.lerp(FRAME_BL, float(index + 1) / float(count))
+		_:  # "left"
+			return FRAME_BL.lerp(FRAME_TL, float(index + 1) / float(count + 1))
 
 func _board_cell_center(pos: Vector2i) -> Vector2:
 	var origin := _board_origin()
 	var step := _board_spacing()
-	return origin + Vector2(float(pos.x) * step, float(pos.y) * step)
+	var idx: int = int(ring_index_map.get(pos, -1))
+	if idx < 0 or idx >= ring_side.size():
+		return origin
+	var side: String = ring_side[idx]
+	var rel := _side_render_pos(side, ring_side_index[idx], int(side_len[side]))
+	return origin + rel * step
 
 # --- small builders ----------------------------------------------------
 
@@ -3298,8 +3436,12 @@ func _refresh_board() -> void:
 	_readout_route = preview_route
 	_readout_crossed = _readout_route.size() if _preview_walks() else 0
 	var placing: bool = state == "reward_place"
-	for y in range(BOARD_H):
-		for x in range(BOARD_W):
+	var inserting: bool = state == "reward_insert"
+	# The whole pool: cells outside the active ring hide themselves below
+	# (ring_index_map.has(pos) is false for them), so scanning the ceiling
+	# unconditionally needs no separate reset pass when the ring grows.
+	for y in range(MAX_BOARD_H):
+		for x in range(MAX_BOARD_W):
 			var idx := _idx(x, y)
 			var button: Button = cell_buttons[idx]
 			var icon: IconGlyph = cell_icons[idx]
@@ -3336,7 +3478,7 @@ func _refresh_board() -> void:
 				icon_kind = ""
 				value_text = ""
 
-			var is_player_cell := pos == player_pos and state != "reward_place"
+			var is_player_cell := pos == player_pos and state != "reward_place" and state != "reward_insert"
 			var is_start := pos == _start_pos()
 			if is_start and perm_type == "empty":
 				icon_kind = "flag_start"
@@ -3393,6 +3535,23 @@ func _refresh_board() -> void:
 						border_width = 6
 				else:
 					button.disabled = true
+					dim = true
+			elif inserting:
+				# Every ring square whose own side still has room is a
+				# valid anchor to insert after — no square is destroyed the
+				# way a replace-flow target can be — so it gets the same
+				# "you can tap this" highlight, and the tapped one steps up
+				# to the gold "confirm" border. Its own tile stays exactly
+				# as it was; only the border changes. A square on a side
+				# already at MAX_SIDE_LEN just dims instead: still legible,
+				# but not offered as a place to grow.
+				if _can_insert_after(pos):
+					border_color = COL_NEXT
+					border_width = 4
+					if pos == preview_place_pos:
+						border_color = COL_GOLD
+						border_width = 6
+				else:
 					dim = true
 			elif state == "player" and ahead <= 0 and not is_player_cell and not on_route:
 				# Out of reach this turn: still legible, just quieter. A
@@ -3594,7 +3753,7 @@ func _apply_cell_style(button: Button, color: Color, border_color: Color, border
 func _refresh_ribbon() -> void:
 	if ribbon_box == null:
 		return
-	var interior: float = _board_spacing() * float(BOARD_W - 2) - _board_token_size() - 12.0
+	var interior: float = _board_spacing() * float(ring_extent.x - 2) - _board_token_size() - 12.0
 	var moving: bool = state == "moving"
 	ribbon_caption.visible = state == "player" and _unthrown_dice().is_empty() \
 		and interior >= 96.0
@@ -4552,11 +4711,17 @@ func _start_run(key: String) -> void:
 	gold = 0
 	encounter = 0
 	floor_index = 1
+	# A previous run may have grown the board; a new one always opens at
+	# the eight-square starting size.
+	side_len = {"top": 3, "right": 2, "bottom": 2, "left": 1}
+	_build_track_graph()
 	player_step = _track_index(_start_pos())
 	player_pos = _pos_for_step(player_step)
 	permanent_board = _make_empty_board("empty")
-	for entry in hero["tiles"]:
-		permanent_board[int(entry[1])][int(entry[0])] = str(entry[2])
+	var start_tiles: Array = hero["tiles"]
+	for i in range(min(start_tiles.size(), ring_cells.size())):
+		var cell: Vector2i = ring_cells[i]
+		permanent_board[cell.y][cell.x] = str(start_tiles[i])
 	dice_bag = []
 	for die_id in hero["dice"]:
 		dice_bag.append(_make_die(str(die_id)))
@@ -4737,8 +4902,11 @@ var enemy_defs := [
 	{"name": "灼眼", "art": "archer", "hp": 36, "damage": 7, "kind": "guaranteed",
 		"mode": "relative", "cells": [], "armor": 2, "gold": 18,
 		"debuff": "burn", "foul": 45, "part": "chest"},
+	# Its squares are fixed points on the board rather than offsets from the
+	# player, so they are written as ring steps: opposite each other, a
+	# quarter of the ring either side of the start.
 	{"name": "擬態箱", "art": "heavy", "hp": 44, "damage": 8, "kind": "cell",
-		"mode": "fixed", "cells": [2, 6, 10, 14], "armor": 3, "gold": 21,
+		"mode": "fixed", "cells": [2, 6], "armor": 3, "gold": 21,
 		"debuff": "freeze", "foul": 40, "part": "depths"},
 	{"name": "胞子塊", "art": "plague", "hp": 46, "damage": 8, "kind": "cell",
 		"mode": "relative", "cells": [1, 2, 3], "regen": 4, "gold": 22,
@@ -5684,7 +5852,7 @@ func _hero_art_id() -> String:
 # (a whole map, a board, a bag) and ConfigFile flattens badly.
 const PROFILE_PATH := "user://profile.json"
 const RUN_PATH := "user://run.json"
-const SAVE_VERSION := 9
+const SAVE_VERSION := 12
 
 var sfx_volume: float = 0.8
 var bgm_volume: float = 0.7
@@ -5800,6 +5968,7 @@ func _save_run(node_in_progress: bool = false) -> void:
 		"turns": run_turns,
 		"bag": bag,
 		"board": board,
+		"side_len": side_len.duplicate(),
 		"map": _serialize_map(),
 		"map_row": map_row,
 		"map_col": map_col,
@@ -5859,6 +6028,24 @@ func _load_run() -> bool:
 	player_hp = int(data.get("hp", player_max_hp))
 	player_fatigue = clampi(int(data.get("fatigue", 0)), 0, FATIGUE_MAX)
 	floor_index = clampi(int(data.get("floor", 1)), 1, 3)
+	# The ring's shape has to be rebuilt before player_step is resolved to a
+	# position below, or a board a saved run had already grown would be
+	# read back at its starting size.
+	var starting_len := {"top": 3, "right": 2, "bottom": 2, "left": 1}
+	var saved_len: Dictionary = data.get("side_len", {})
+	side_len = {}
+	var total := 0
+	for side in SIDE_NAMES:
+		var n: int = clampi(int(saved_len.get(side, starting_len[side])),
+			int(starting_len[side]), MAX_SIDE_LEN)
+		side_len[side] = n
+		total += n
+	# A corrupted or hand-edited save could claim a ring past the ceiling;
+	# fall back to the starting board rather than build something this
+	# session never actually produced.
+	if total > MAX_RING_LEN:
+		side_len = starting_len.duplicate()
+	_build_track_graph()
 	part_dev = {"chest": 0, "depths": 0, "tail": 0}
 	var saved_dev: Dictionary = data.get("part_dev", {})
 	for part in PARTS:
@@ -5885,9 +6072,9 @@ func _load_run() -> bool:
 
 	permanent_board = _make_empty_board("empty")
 	var board: Array = data.get("board", [])
-	for y in range(min(board.size(), BOARD_H)):
+	for y in range(min(board.size(), MAX_BOARD_H)):
 		var row: Array = board[y]
-		for x in range(min(row.size(), BOARD_W)):
+		for x in range(min(row.size(), MAX_BOARD_W)):
 			if tile_defs.has(str(row[x])):
 				permanent_board[y][x] = str(row[x])
 
@@ -5949,6 +6136,10 @@ func _load_cg_scripts() -> void:
 # can still reach the boss", are therefore true by construction — no repair
 # pass, and no possibility of a dead end.
 const FLOOR_COUNT := 3
+# How many slots of the enemy table one floor's climb walks through. With
+# three floors each starting one slot higher, this spreads the whole roster
+# across the run while still giving every floor its own spread.
+const FLOOR_ROSTER_SPAN := 4
 const MAP_ROWS := 12
 const MAP_COLS := 8
 
@@ -6019,12 +6210,23 @@ func _ensure_map_node(row: int, col: int) -> void:
 
 # Enemies scale with both their position and the current floor, while the
 # grid itself stays readable and authored.
+#
+# A floor shifts which slice of the roster its climb walks, and the row
+# walks it. Written as one ramp over the whole run it did neither: round()
+# turned the very first battle row into slot 1, so 粘体 — the enemy the
+# opening fight is balanced around — was never fought at all, and by floor 2
+# the ramp had run off the end of the table and clamped, making every
+# non-boss node on two of the three floors the same 贄喰い.
 func _pick_enemy_for(row: int, kind: String) -> int:
 	var last: int = enemy_defs.size() - 1
 	if kind == "boss":
 		return last
-	var span: float = float(row) / float(max(MAP_ROWS - 2, 1))
-	var base: int = int(round(span * float(last - 1)))
+	# `row` arrives carrying its floor (row + (floor_index - 1) * MAP_ROWS),
+	# so split it back apart rather than ramping over the sum.
+	var floor_step: int = row / MAP_ROWS
+	var within: int = row % MAP_ROWS
+	var span: float = float(within) / float(max(MAP_ROWS - 2, 1))
+	var base: int = floor_step + int(span * float(FLOOR_ROSTER_SPAN))
 	if kind == "elite":
 		base += 1
 	return clampi(base, 0, last - 1)
@@ -7277,11 +7479,39 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 	pending_reward_type = tile_type
 	pending_reward_name = tile_name
 	preview_place_pos = Vector2i(-1, -1)
-	state = "reward_place"
 	_close_overlay()
+	# Below the board's ceiling, a tile reward grows the ring instead of
+	# asking where to overwrite — there is nothing on the board yet worth
+	# destroying for it. The player still picks the exact spot: which
+	# square to grow in after. Only once the board is as long as it ever
+	# gets does placement fall back to picking an existing square to
+	# replace instead.
+	if _can_grow_board():
+		state = "reward_insert"
+		_set_banner(tr("%s を挿し込む場所をタップ") % tile_name)
+		_set_log(tr("タップしたマスの直後に1マス加わります。既存のマスは壊れません。"))
+		_refresh_all()
+		return
+	state = "reward_place"
 	_set_banner(tr("%s を置くマスをタップ") % tile_name)
-	_set_log(tr("始点以外のどのマスにも置けます。置いたマスは次の戦いにも残ります。"))
+	_set_log(tr("盤はもう伸びないので、既にあるマスを選んで置き換えます。始点以外のどこにでも置けます。"))
 	_refresh_all()
+
+# Tap-to-preview, tap-again-to-confirm, same two-stage pattern as
+# _on_cell_pressed's "reward_place" branch — but confirming here inserts
+# a new square right after the tapped one instead of overwriting it.
+func _confirm_insert(pos: Vector2i) -> void:
+	var side := _side_of(pos)
+	if not _grow_ring_with_tile(pending_reward_type, pos):
+		return
+	preview_place_pos = Vector2i(-1, -1)
+	_hide_banner()
+	sfx.emit("reward")
+	_set_log(tr("%s を%s列に挿し込んだ（全%dマス）。") % [
+		pending_reward_name, SIDE_NAME_JA[side], ring_cells.size()])
+	_snap_player_visual()
+	_refresh_all()
+	_show_map()
 
 # A die reward needs no board placement, so it resolves straight into the
 # next encounter. It joins the bag rather than the hand: the new die has to
@@ -7323,8 +7553,33 @@ func _hide_banner() -> void:
 # --- input on the board ------------------------------------------------
 
 func _on_cell_pressed(index: int) -> void:
-	var pos := Vector2i(index % BOARD_W, int(index / BOARD_W))
-	if state == "reward_place":
+	# Must decode with the same stride the button pool was built with
+	# (_idx, MAX_BOARD_W) — the buttons themselves never move or get
+	# renumbered when the ring grows.
+	var pos := Vector2i(index % MAX_BOARD_W, int(index / MAX_BOARD_W))
+	if state == "reward_insert":
+		if not ring_index_map.has(pos):
+			return
+		if not _can_insert_after(pos):
+			# On the ring, but its own side is already at MAX_SIDE_LEN —
+			# say so rather than silently ignoring the tap, since neighbouring
+			# squares on a different side may still be open.
+			sfx.emit("step")
+			_set_log(tr("%s列はこれ以上伸ばせません（上限%d）。他の列のマスをタップしてください。") % [
+				SIDE_NAME_JA[_side_of(pos)], MAX_SIDE_LEN])
+			return
+		# Tap once to see what growing there means, tap again to commit —
+		# same two-stage pattern as the replace flow below, since touch has
+		# no hover either way.
+		if preview_place_pos != pos:
+			preview_place_pos = pos
+			sfx.emit("step")
+			_set_banner(tr("ここに挿し込む？ もう一度タップで確定"))
+			_set_log(_insert_preview_text(pos))
+			_refresh_board()
+			return
+		_confirm_insert(pos)
+	elif state == "reward_place":
 		if not _can_place_reward(pos):
 			return
 		# Tap once to see the tile in place, tap again to commit. Touch has
@@ -7356,6 +7611,22 @@ func _on_cell_pressed(index: int) -> void:
 			_set_log(tr("ダイスを戻しました。もう一度ダイスを選んでください。"))
 			_refresh_all()
 		_show_cell_info(pos)
+
+# The insertion equivalent of _place_preview_text — no destruction warning,
+# because insertion never overwrites anything: the tapped square keeps its
+# own tile, and the new one lands right after it in the same side/列.
+func _insert_preview_text(pos: Vector2i) -> String:
+	var tile: Dictionary = tile_defs[pending_reward_type]
+	var parts := []
+	parts.append("%s %s：%s" % [
+		_t(tile["name"]), _trigger_label(str(tile["trigger"])), _t(tile["effect"])])
+	var side := _side_of(pos)
+	parts.append("%s列に挿し込みます（既存のマスは壊れません、%s列 %d/%d）" % [
+		SIDE_NAME_JA[side], SIDE_NAME_JA[side], int(side_len[side]), MAX_SIDE_LEN])
+	var ahead := _steps_ahead(pos)
+	if ahead > 0:
+		parts.append("現在地から%dマス先の直後" % ahead)
+	return " / ".join(parts)
 
 # The placement equivalent of _die_preview_text. The board only has twelve
 # squares and a tile stays for the rest of the run, so the one thing the
@@ -7446,19 +7717,117 @@ func _flash_player_stop() -> void:
 
 # --- board graph -------------------------------------------------------
 
+# ring_cells holds a STORAGE key per square — unique and stable, nothing
+# more; every lookup (permanent_board, ring_index_map, _inside) only ever
+# treats it as an opaque array index, never as a meaningful coordinate.
+# Assigning them is therefore just "one per square, in ring order": no
+# geometry, no risk of two sides' cells colliding as they grow at
+# different rates.
+#
+# Where a square actually appears on screen is a separate question,
+# answered by _board_cell_center — see there for why the four corners
+# never move regardless of how lopsided side_len gets.
 func _build_track_graph() -> void:
-	# The perimeter of the 5x5 grid, clockwise from the top-left start.
-	ring_cells = [
-		Vector2i(0, 0), Vector2i(1, 0), Vector2i(2, 0), Vector2i(3, 0), Vector2i(4, 0),
-		Vector2i(4, 1), Vector2i(4, 2), Vector2i(4, 3),
-		Vector2i(4, 4), Vector2i(3, 4), Vector2i(2, 4), Vector2i(1, 4),
-		Vector2i(0, 4), Vector2i(0, 3), Vector2i(0, 2), Vector2i(0, 1),
-	]
+	ring_cells = []
+	ring_side = []
+	ring_side_index = []
+	for side in SIDE_NAMES:
+		for i in range(int(side_len[side])):
+			ring_cells.append(Vector2i(ring_cells.size(), 0))
+			ring_side.append(side)
+			ring_side_index.append(i)
 	ring_index_map = {}
 	ring_forward = {}
 	for i in range(ring_cells.size()):
 		ring_index_map[ring_cells[i]] = i
 		ring_forward[ring_cells[i]] = ring_cells[(i + 1) % ring_cells.size()]
+
+# --- ring growth ---------------------------------------------------------
+# Placing a tile reward grows one side of the board by exactly one square
+# instead of overwriting a square already on it, so a run never spends
+# most of its length filling in squares that were never really there —
+# and which side grows, and where in it, is the player's choice (see
+# _on_cell_pressed's "reward_insert" branch), not something this session
+# decides for them. Two ceilings bound it: no side may pass MAX_SIDE_LEN
+# on its own — the fixed frame only has so much room before one side
+# packed with squares starts crowding out the others (see
+# _board_token_size) — and the ring as a whole may not pass MAX_RING_LEN
+# even if every side is still under its own cap. Once neither ceiling
+# leaves any room, tile rewards fall back to replacing an existing square
+# instead.
+const MAX_SIDE_LEN := 5
+
+func _can_grow_board() -> bool:
+	if ring_cells.size() >= MAX_RING_LEN:
+		return false
+	for side in SIDE_NAMES:
+		if int(side_len[side]) < MAX_SIDE_LEN:
+			return true
+	return false
+
+# Whether growing the specific side after_pos sits on is currently open —
+# distinct from _can_grow_board, which only asks whether *some* side
+# still has room. A side already at MAX_SIDE_LEN can be full while
+# others are not, and the player still has to be told which taps land
+# and which don't.
+func _can_insert_after(after_pos: Vector2i) -> bool:
+	if ring_cells.size() >= MAX_RING_LEN or not ring_index_map.has(after_pos):
+		return false
+	return int(side_len[_side_of(after_pos)]) < MAX_SIDE_LEN
+
+# Which side a ring square belongs to — the one side_len entry that
+# growing "after" this square would extend.
+func _side_of(pos: Vector2i) -> String:
+	var idx: int = int(ring_index_map.get(pos, -1))
+	if idx < 0 or idx >= ring_side.size():
+		return "top"
+	return str(ring_side[idx])
+
+const SIDE_NAME_JA := {"top": "上", "right": "右", "bottom": "下", "left": "左"}
+
+# Inserts tile_id into the ring immediately after after_pos, in ring
+# order, and grows after_pos's own side by one square to make room for
+# it. The ring's grid shape is only ever a rendering detail —
+# _build_track_graph regenerates it fresh from side_len — so this does
+# not try to track which physical grid cell held which tile across the
+# resize: it reads the current content off in ring order, splices the one
+# new entry in at the chosen point, rebuilds the (now one square longer)
+# grid shape, and writes the same ordered content back onto it. A tile
+# placed three floors ago keeps the same neighbours it always had; it
+# just answers to a different grid position afterward, the same way it
+# already would after a save/load. Returns false (and changes nothing) if
+# after_pos's side is already at MAX_SIDE_LEN, the ring is already at
+# MAX_RING_LEN, or after_pos is not on the ring at all.
+func _grow_ring_with_tile(tile_id: String, after_pos: Vector2i) -> bool:
+	if not _can_insert_after(after_pos):
+		return false
+	var side := _side_of(after_pos)
+	var insert_index: int = int(ring_index_map[after_pos]) + 1
+	var old_ring: Array[Vector2i] = ring_cells.duplicate()
+	var old_step := player_step
+	var content: Array[String] = []
+	var fouled: Array[String] = []
+	for cell in old_ring:
+		content.append(str(permanent_board[cell.y][cell.x]))
+		fouled.append(str(temp_board[cell.y][cell.x]))
+	content.insert(insert_index, tile_id)
+	fouled.insert(insert_index, "none")
+	# player_step is carried across encounters (see _start_encounter), so
+	# an insertion ahead of it has to shift it the same way it shifted
+	# every old step from that point on — otherwise the next fight would
+	# quietly open on a different square than the one just left.
+	if old_step >= insert_index:
+		player_step = old_step + 1
+
+	side_len[side] = int(side_len[side]) + 1
+	_build_track_graph()
+
+	for i in range(ring_cells.size()):
+		var cell: Vector2i = ring_cells[i]
+		permanent_board[cell.y][cell.x] = content[i]
+		temp_board[cell.y][cell.x] = fouled[i]
+	player_pos = _pos_for_step(player_step)
+	return true
 
 func _normalize_step(step: int) -> int:
 	if ring_cells.is_empty():
@@ -7611,20 +7980,23 @@ func _random_empty_cell() -> Vector2i:
 		return Vector2i(-1, -1)
 	return choices[rng.randi_range(0, choices.size() - 1)]
 
+# Always allocated at the ceiling, regardless of the active ring: growth
+# then never needs to resize or copy this array, only write into more of
+# it.
 func _make_empty_board(value: String) -> Array:
 	var board := []
-	for y in range(BOARD_H):
+	for y in range(MAX_BOARD_H):
 		var row := []
-		for x in range(BOARD_W):
+		for x in range(MAX_BOARD_W):
 			row.append(value)
 		board.append(row)
 	return board
 
 func _idx(x: int, y: int) -> int:
-	return y * BOARD_W + x
+	return y * MAX_BOARD_W + x
 
 func _inside(pos: Vector2i) -> bool:
-	return pos.x >= 0 and pos.x < BOARD_W and pos.y >= 0 and pos.y < BOARD_H
+	return pos.x >= 0 and pos.x < MAX_BOARD_W and pos.y >= 0 and pos.y < MAX_BOARD_H
 
 # --- lookups -----------------------------------------------------------
 
@@ -7653,8 +8025,28 @@ func _is_warp_face(v: int) -> bool:
 func _warp_face_label(v: int) -> String:
 	return str((WARP_FACES.get(v, {}) as Dictionary).get("label", "?"))
 
+# A corner is the last square of the side that runs into it (top's own
+# last square is the top-right corner; the next side, right, starts one
+# past it) — not a fixed ring step, since which square that is depends on
+# every side_len grown before it, so this reads it off the live ring
+# rather than off WARP_FACES. RESET_FACE and the top-left corner always
+# land on the start, which is ring_cells[0] regardless of size.
 func _warp_face_step(v: int) -> int:
-	return int((WARP_FACES.get(v, {}) as Dictionary).get("step", 0))
+	if v == RESET_FACE or v == CORNER_TL:
+		return 0
+	var side := ""
+	match v:
+		CORNER_TR:
+			side = "right"
+		CORNER_BR:
+			side = "bottom"
+		CORNER_BL:
+			side = "left"
+		_:
+			return 0
+	# The square right before that side begins is the corner it turns at.
+	var idx := ring_side.find(side)
+	return 0 if idx <= 0 else idx - 1
 
 func _faces_text(faces: Array) -> String:
 	var sorted_faces: Array = faces.duplicate()

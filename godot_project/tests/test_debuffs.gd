@@ -19,20 +19,36 @@ func _init() -> void:
 	await process_frame
 	await process_frame
 
-	# --- the board is sixteen squares ---------------------------------
-	check("ring size", main.ring_cells.size(), 16)
-	check("board is 5x5", [main.BOARD_W, main.BOARD_H], [5, 5])
-	check("top-left corner warps to step 0", main.WARP_FACES[main.CORNER_TL]["step"], 0)
-	check("top-right corner warps to step 4", main.WARP_FACES[main.CORNER_TR]["step"], 4)
-	check("bottom-right corner warps to step 8", main.WARP_FACES[main.CORNER_BR]["step"], 8)
-	check("bottom-left corner warps to step 12", main.WARP_FACES[main.CORNER_BL]["step"], 12)
+	# --- the board is eight squares, and none of them are empty --------
+	check("ring size", main.ring_cells.size(), 8)
+	check("starting side lengths are 3/2/2/1",
+		[main.side_len["top"], main.side_len["right"], main.side_len["bottom"], main.side_len["left"]],
+		[3, 2, 2, 1])
+	# The four corner warps are the quarter points of whatever ring exists,
+	# resolved live off the current board size (see _warp_face_step).
+	check("top-left corner warps to step 0", main._warp_face_step(main.CORNER_TL), 0)
+	check("top-right corner warps to step 2", main._warp_face_step(main.CORNER_TR), 2)
+	check("bottom-right corner warps to step 4", main._warp_face_step(main.CORNER_BR), 4)
+	check("bottom-left corner warps to step 6", main._warp_face_step(main.CORNER_BL), 6)
 	var perimeter := true
 	for cell in main.ring_cells:
-		if cell.x != 0 and cell.x != 4 and cell.y != 0 and cell.y != 4:
+		if cell.x != 0 and cell.x != 2 and cell.y != 0 and cell.y != 2:
 			perimeter = false
 	check("every ring cell is on the perimeter", perimeter, true)
+	check("the four corner warps land on distinct squares",
+		_corner_steps_distinct(main), true)
 	check("hero tiles all sit on the ring",
 		_hero_tiles_on_ring(main), true)
+
+	# The board a run actually opens on: eight squares, none of them filler.
+	main._start_run("knight")
+	check("the starting board fills every square", _ring_fully_tiled(main), true)
+	check("the starting board is 攻撃3/防御3/回復1/巡り路1",
+		_starting_mix(main), {"strike": 3, "ward": 3, "respite": 1, "reroll_path": 1})
+	# The yardstick the rest of the tile table is priced against.
+	check("斬撃 is 6 damage on stop", _amount(main, "strike", "attack"), 6)
+	check("守り is 5 shield on stop", _amount(main, "ward", "shield"), 5)
+	check("息継ぎ is 3 HP on stop", _amount(main, "respite", "heal"), 3)
 
 	# --- 炎上: charges for entering, every time ------------------------
 	# Roll 3 over two burning squares: 2 + 2 = 4 HP.
@@ -69,6 +85,32 @@ func _init() -> void:
 
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
+
+func _corner_steps_distinct(main) -> bool:
+	var seen := {}
+	for face in [main.CORNER_TL, main.CORNER_TR, main.CORNER_BR, main.CORNER_BL]:
+		seen[main._normalize_step(main._warp_face_step(face))] = true
+	return seen.size() == 4
+
+func _ring_fully_tiled(main) -> bool:
+	for cell in main.ring_cells:
+		if str(main.permanent_board[cell.y][cell.x]) == "empty":
+			return false
+	return true
+
+func _starting_mix(main) -> Dictionary:
+	var mix := {}
+	for cell in main.ring_cells:
+		var id := str(main.permanent_board[cell.y][cell.x])
+		mix[id] = int(mix.get(id, 0)) + 1
+	return mix
+
+func _amount(main, tile_id: String, op: String) -> int:
+	for raw in main.tile_defs[tile_id]["effects"]:
+		var eff: Dictionary = raw
+		if str(eff["op"]) == op and str(eff.get("on", "stop")) == "stop":
+			return int(eff["amount"])
+	return -1
 
 func _hero_tiles_on_ring(main) -> bool:
 	for entry in main.hero_defs["knight"]["tiles"]:
@@ -262,7 +304,9 @@ func charge_clock_case(main) -> void:
 	main.map_col = 0
 	main._start_encounter()
 	var here: Vector2i = main.player_pos
-	var far: Vector2i = main._pos_for_step(main._track_index(here) + 8)
+	# Half a lap away, whatever the ring's length happens to be.
+	var far: Vector2i = main._pos_for_step(
+		main._track_index(here) + int(main.ring_cells.size() / 2))
 
 	check("a fight opens with one turn on every square",
 		main._cell_charge(far), 1)
