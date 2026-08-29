@@ -3154,12 +3154,18 @@ func _board_cell_center(pos: Vector2i) -> Vector2:
 	var side: String = ring_side[idx]
 	var local: int = ring_side_index[idx]
 	var count: int = int(side_len[side])
-	if preview_gap_index >= 0 and preview_gap_index < ring_side.size() \
-			and ring_side[preview_gap_index] == side:
-		var insert_local: int = ring_side_index[preview_gap_index] + 1
-		count += 1
-		if local >= insert_local:
-			local += 1
+	if preview_gap_index >= 0 and preview_gap_index < ring_side.size():
+		# The side and local index this preview will actually credit —
+		# see _gap_insert_target. At most three of the four side-to-side
+		# seams redirect this to the side that starts there rather than
+		# the tapped cell's own side, specifically so the square already
+		# sitting on a fixed corner never has to answer here at all.
+		var target := _gap_insert_target(preview_gap_index)
+		if str(target["side"]) == side:
+			var insert_local: int = int(target["local"])
+			count += 1
+			if local >= insert_local:
+				local += 1
 	var rel := _side_render_pos(side, local, count)
 	return origin + rel * step
 
@@ -3167,8 +3173,9 @@ func _board_cell_center(pos: Vector2i) -> Vector2:
 # post-insert layout _board_cell_center now answers every other square on
 # that side with — the one slot no existing ring cell owns yet.
 func _preview_ghost_center() -> Vector2:
-	var side: String = ring_side[preview_gap_index]
-	var insert_local: int = ring_side_index[preview_gap_index] + 1
+	var target := _gap_insert_target(preview_gap_index)
+	var side: String = str(target["side"])
+	var insert_local: int = int(target["local"])
 	var count: int = int(side_len[side]) + 1
 	var rel := _side_render_pos(side, insert_local, count)
 	return _board_origin() + rel * _board_spacing()
@@ -7657,7 +7664,7 @@ func _on_reward_selected(tile_type: String, tile_name: String) -> void:
 # _on_cell_pressed's "reward_place" branch — but confirming here inserts
 # a new square right after the tapped one instead of overwriting it.
 func _confirm_insert(pos: Vector2i) -> void:
-	var side := _side_of(pos)
+	var side: String = str(_gap_insert_target(int(ring_index_map[pos]))["side"])
 	if not _grow_ring_with_tile(pending_reward_type, pos):
 		return
 	preview_gap_index = -1
@@ -7784,13 +7791,16 @@ func _on_gap_pressed(i: int) -> void:
 
 # The insertion equivalent of _place_preview_text — no destruction warning,
 # because insertion never overwrites anything: the tapped square keeps its
-# own tile, and the new one lands right after it in the same side/列.
+# own tile. The new one usually lands right after it, in the same side/列
+# — except at the three seams _gap_insert_target credits to the side that
+# starts there instead (see its comment), where the tapped square still
+# keeps its own tile untouched, but the new one opens the next 列.
 func _insert_preview_text(pos: Vector2i) -> String:
 	var tile: Dictionary = tile_defs[pending_reward_type]
 	var parts := []
 	parts.append("%s %s：%s" % [
 		_t(tile["name"]), _trigger_label(str(tile["trigger"])), _t(tile["effect"])])
-	var side := _side_of(pos)
+	var side: String = str(_gap_insert_target(int(ring_index_map[pos]))["side"])
 	parts.append("%s列に挿し込みます（既存のマスは壊れません、%s列 %d/%d）" % [
 		SIDE_NAME_JA[side], SIDE_NAME_JA[side], int(side_len[side]), MAX_SIDE_LEN])
 	var ahead := _steps_ahead(pos)
@@ -7943,7 +7953,8 @@ func _can_grow_board() -> bool:
 func _can_insert_after(after_pos: Vector2i) -> bool:
 	if ring_cells.size() >= MAX_RING_LEN or not ring_index_map.has(after_pos):
 		return false
-	return int(side_len[_side_of(after_pos)]) < MAX_SIDE_LEN
+	var target := _gap_insert_target(int(ring_index_map[after_pos]))
+	return int(side_len[str(target["side"])]) < MAX_SIDE_LEN
 
 # Which side a ring square belongs to — the one side_len entry that
 # growing "after" this square would extend.
@@ -7954,6 +7965,38 @@ func _side_of(pos: Vector2i) -> String:
 	return str(ring_side[idx])
 
 const SIDE_NAME_JA := {"top": "上", "right": "右", "bottom": "下", "left": "左"}
+
+# For the gap right after ring_cells[gap_index] (between it and its
+# ring-order successor): which side a reward inserted there is credited
+# to, and the local index (0-based, within that side, counting the new
+# square) it lands at.
+#
+# Ordinarily that is simply the side of the cell right before the gap,
+# appended right after it — a new local index one past that cell's own.
+# But three of the four side-to-side seams are different: top's end into
+# right's start, right's end into bottom's start, and bottom's end into
+# left's start. At each of those, the cell right before the gap is its
+# own side's corner-anchored *last* square (top's TR, right's BR,
+# bottom's BL — see _side_render_pos). Crediting growth there to that
+# side would make the new square the new last square, handing it the
+# fixed corner the old square already sits on and visibly bumping that
+# square off a corner the player never touched — which reads as "the
+# square I tapped next to jumped into the corner" rather than "a square
+# landed between the two I tapped between". Growth at those three seams
+# is credited instead to the side that starts there, as its new first
+# square (local index 0) — which touches no corner at all, so the
+# existing corner square never moves.
+#
+# The fourth seam, left's end into top's start, has no such problem —
+# top's TL is top's own local index 0, never touched by growing left —
+# so it keeps the ordinary rule.
+func _gap_insert_target(gap_index: int) -> Dictionary:
+	var prev_side: String = ring_side[gap_index]
+	var next_idx: int = (gap_index + 1) % ring_cells.size()
+	var next_side: String = ring_side[next_idx]
+	if next_side != prev_side and prev_side != "left":
+		return {"side": next_side, "local": 0}
+	return {"side": prev_side, "local": ring_side_index[gap_index] + 1}
 
 # Inserts tile_id into the ring immediately after after_pos, in ring
 # order, and grows after_pos's own side by one square to make room for
@@ -7971,7 +8014,7 @@ const SIDE_NAME_JA := {"top": "上", "right": "右", "bottom": "下", "left": "�
 func _grow_ring_with_tile(tile_id: String, after_pos: Vector2i) -> bool:
 	if not _can_insert_after(after_pos):
 		return false
-	var side := _side_of(after_pos)
+	var side: String = str(_gap_insert_target(int(ring_index_map[after_pos]))["side"])
 	var insert_index: int = int(ring_index_map[after_pos]) + 1
 	var old_ring: Array[Vector2i] = ring_cells.duplicate()
 	var old_step := player_step

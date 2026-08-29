@@ -99,6 +99,11 @@ func _init() -> void:
 	# dropped into today's gap while its neighbours stay put ------------
 	await _preview_layout_case()
 
+	# --- the gap right after a corner square grows the side that starts
+	# there, not the corner square's own side, so the corner square never
+	# gets bumped off the corner it already sits on -----------------------
+	await _corner_seam_case()
+
 	print("\n%d failure(s)" % fails)
 	quit(1 if fails > 0 else 0)
 
@@ -265,3 +270,55 @@ func _preview_layout_case() -> void:
 	main._on_cell_pressed(main._idx(main.ring_cells[0].x, main.ring_cells[0].y))
 	check("cancelling the preview restores the square that had moved",
 		main._board_cell_center(main.ring_cells[1]), top_before[1])
+
+# The gap right after a side's own corner square (top's TR, right's BR,
+# bottom's BL) used to grow that square's own side by appending past it —
+# which makes the *new* square the side's new last square, handing it the
+# fixed corner the old square already sat on, and visibly bumping the old
+# square off a corner the player never tapped. Tapping "the square one
+# before the top-right corner" read as "it went into the corner instead"
+# and "I can't insert between the two squares I tapped between" — because
+# neither the tapped corner square nor its neighbour across the seam ever
+# moved to make room; only the corner ownership silently swapped. This
+# seam should instead grow the side that *starts* there (here, right,
+# prepended at its own local index 0), which touches no corner at all, so
+# the existing corner square never moves and the new square lands exactly
+# where the gap visually sits: between the corner square and its neighbour
+# on the next side over.
+func _corner_seam_case() -> void:
+	var main = load("res://scripts/Main.gd").new()
+	root.add_child(main)
+	await process_frame
+	await process_frame
+	main._start_run("knight")
+
+	# top is ring_cells[0..2] (local 0..2, local 2 = the fixed TR corner);
+	# right is ring_cells[3..4] (local 0..1). Gap 2 is the seam between
+	# them — the gap right after top's own corner square.
+	var corner_cell: Vector2i = main.ring_cells[2]
+	var corner_before: Vector2 = main._board_cell_center(corner_cell)
+	check("the tapped square really is the fixed top-right corner",
+		corner_before, main._board_origin() + main.FRAME_TR * main._board_spacing())
+	var right_first_before: Vector2 = main._board_cell_center(main.ring_cells[3])
+
+	main._on_reward_selected("strike", "斬撃マス")
+	main._on_gap_pressed(2)
+
+	check("the corner square keeps its own slot while this seam is previewed",
+		main._board_cell_center(corner_cell), corner_before)
+	check("the ghost does not take the corner",
+		main._preview_ghost_center() != corner_before, true)
+	check("the ghost lands at the start of the side that opens at this seam",
+		main._preview_ghost_center(),
+		main._board_origin() + main._side_render_pos("right", 0, 3) * main._board_spacing())
+	check("the side's old first square shifts down to make room for it",
+		main._board_cell_center(main.ring_cells[3]),
+		main._board_origin() + main._side_render_pos("right", 1, 3) * main._board_spacing())
+	check("that old first square actually moved from where it opened",
+		main._board_cell_center(main.ring_cells[3]) != right_first_before, true)
+
+	main._on_gap_pressed(2)  # confirm
+	check("the seam grew the side that starts there", int(main.side_len["right"]), 3)
+	check("the corner square's own side was untouched", int(main.side_len["top"]), 3)
+	check("the corner square is still exactly at the corner after confirming",
+		main._board_cell_center(main.ring_cells[2]), corner_before)
